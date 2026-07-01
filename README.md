@@ -8,3 +8,6 @@ SYOKUDO MORE WORTH
 
 
 KIZUNA MORE WORTH
+
+協力企業様\\
+(有)エムコーポレーション
