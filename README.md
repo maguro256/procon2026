@@ -1,1 +1,2 @@
-# FACTORY MORE WORTH ~工場をもっとわーすに。~
+# FACTORY MORE WORTH 
+#/~工場をもっとわーすに。/~
