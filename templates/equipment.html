@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}機材管理 | Gemmba 管理{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>機材・モジュール管理</h1>
+  <p class="page-sub">機材ごとにモジュールIDを登録すると、モジュールからの状態報告（API）がこの機材に紐付きます。</p>
+</header>
+
+<section class="panel">
+  <h2 class="panel-title">機材を登録</h2>
+  <form method="post" action="{{ url_for('add_equipment') }}" class="form-row">
+    <label>機材名
+      <input type="text" name="name" placeholder="例: レーザー加工機 #2" required>
+    </label>
+    <label>モジュールID（任意・後で紐付け可）
+      <input type="text" name="module_id" placeholder="例: MOD-A-03">
+    </label>
+    <button type="submit" class="btn btn-primary">登録する</button>
+  </form>
+</section>
+
+<h2 class="section-title">登録済み機材（{{ equipment|length }}台）</h2>
+<table class="table">
+  <thead><tr><th>ID</th><th>機材名</th><th>モジュールID</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th>最終更新</th><th></th></tr></thead>
+  <tbody>
+  {% for e in equipment %}
+    <tr>
+      <td>{{ e.id }}</td>
+      <td class="strong">{{ e.name }}</td>
+      <td>{{ e.module_id or '未接続' }}</td>
+      <td><span class="badge badge-{{ e.status }}">{{ E[e.status] }}</span></td>
+      <td>{{ e.worker_name or '—' }}</td>
+      <td>{{ e.task_title or '—' }}</td>
+      <td>{{ e.updated_at }}</td>
+      <td>
+        <form method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
+              onsubmit="return confirm('機材「{{ e.name }}」を削除しますか？')">
+          <button type="submit" class="btn btn-danger btn-sm">削除</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty">機材が登録されていません。</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<section class="panel api-note">
+  <h2 class="panel-title">モジュール連携API（実装済みの受け口）</h2>
+  <ul class="api-list">
+    <li><code>POST /api/equipment/&lt;module_id&gt;/status</code> — モジュールからの状態報告（status / nfc_tag_id / task_id）</li>
+    <li><code>GET /api/workers/&lt;nfc_tag_id&gt;/next_task</code> — NFCタッチ時、次のタスクを優先度順に返す</li>
+    <li><code>POST /api/tasks</code> — 音声入力からのタスク登録（Whisper→Gemma の出力を想定）</li>
+    <li><code>POST /api/tasks/&lt;task_id&gt;/complete</code> — 完了タッチ。所要時間を記録しAIの学習フックを呼ぶ</li>
+  </ul>
+</section>
+{% endblock %}

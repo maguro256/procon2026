@@ -1,0 +1,90 @@
+"""
+db.py - SQLite データベース層
+標準ライブラリの sqlite3 のみ使用。追加インストール不要。
+"""
+import sqlite3
+from pathlib import Path
+
+DB_PATH = Path(__file__).parent / "gemmba.db"
+
+SCHEMA = """
+-- 作業者: スライドの方針通り、事前登録は「勤続年数」1項目のみ + 名前
+CREATE TABLE IF NOT EXISTS workers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    years_of_service REAL NOT NULL DEFAULT 0,   -- 勤続年数（AIの初期文脈ベクトルに使用）
+    nfc_tag_id TEXT UNIQUE,                     -- 腕輪のICチップID（後で紐付け可能）
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 機材: 各機材の横に設置するモジュールと1対1で対応
+CREATE TABLE IF NOT EXISTS equipment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    module_id TEXT UNIQUE,                      -- モジュール(ESP32)の識別子
+    status TEXT NOT NULL DEFAULT 'idle',        -- idle / working / stopped / maintenance
+    current_worker_id INTEGER REFERENCES workers(id),
+    current_task_id INTEGER REFERENCES tasks(id),
+    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- タスク
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    difficulty INTEGER NOT NULL DEFAULT 3,      -- 難易度 1-5（AIの文脈ベクトルに使用）
+    priority TEXT NOT NULL DEFAULT 'normal',    -- urgent / high / normal / low
+    quantity INTEGER DEFAULT 1,
+    deadline TEXT,                              -- 期限 (YYYY-MM-DD)
+    status TEXT NOT NULL DEFAULT 'todo',        -- todo / assigned / in_progress / done
+    assigned_worker_id INTEGER REFERENCES workers(id),
+    equipment_id INTEGER REFERENCES equipment(id),
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 作業実績ログ: NFCタッチで収集する所要時間データ（WariAthena の学習用）
+CREATE TABLE IF NOT EXISTS work_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    worker_id INTEGER NOT NULL REFERENCES workers(id),
+    equipment_id INTEGER REFERENCES equipment(id),
+    started_at TEXT,
+    completed_at TEXT,
+    duration_sec INTEGER                        -- 実所要時間（報酬 r の計算に使用）
+);
+"""
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db(seed: bool = True):
+    conn = get_db()
+    conn.executescript(SCHEMA)
+    # 初回のみサンプルデータを投入（動作確認用。不要なら seed=False で呼ぶ）
+    if seed and conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 0:
+        conn.executescript("""
+        INSERT INTO workers (name, years_of_service, nfc_tag_id) VALUES
+            ('田中 太郎', 12.0, 'TAG-0001'),
+            ('佐藤 花子', 3.5,  'TAG-0002'),
+            ('鈴木 一郎', 0.5,  NULL);
+        INSERT INTO equipment (name, module_id, status) VALUES
+            ('レーザー加工機 #1', 'MOD-A-01', 'working'),
+            ('旋盤 #2',          'MOD-A-02', 'idle'),
+            ('プレス機 #1',      'MOD-B-01', 'stopped');
+        INSERT INTO tasks (title, difficulty, priority, quantity, deadline, status) VALUES
+            ('製品A 組立', 3, 'urgent', 30, date('now', '+1 day'), 'in_progress'),
+            ('旋盤メンテ #2', 2, 'normal', 1, date('now', '+3 day'), 'todo'),
+            ('製品B 加工', 4, 'high', 20, date('now', '+2 day'), 'todo');
+        UPDATE equipment SET current_worker_id = 1, current_task_id = 1 WHERE id = 1;
+        UPDATE tasks SET assigned_worker_id = 1, equipment_id = 1 WHERE id = 1;
+        """)
+    conn.commit()
+    conn.close()

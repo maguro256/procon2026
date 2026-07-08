@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Gemmba 管理{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">Ge</span>
+      <div>
+        <div class="brand-name">Gemmba</div>
+        <div class="brand-sub">管理者コンソール</div>
+      </div>
+    </div>
+    <nav>
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}">
+        使用状況ダッシュボード</a>
+      <a href="{{ url_for('tasks') }}" class="{{ 'active' if request.endpoint == 'tasks' }}">
+        タスク管理</a>
+      <a href="{{ url_for('workers') }}" class="{{ 'active' if request.endpoint == 'workers' }}">
+        作業者管理</a>
+      <a href="{{ url_for('equipment') }}" class="{{ 'active' if request.endpoint == 'equipment' }}">
+        機材・モジュール管理</a>
+    </nav>
+    <div class="sidebar-foot">現場が自律的に動く仕組みを、低コストで。</div>
+  </aside>
+
+  <main class="content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+        {% for category, msg in messages %}
+          <div class="flash flash-{{ category }}">{{ msg }}</div>
+        {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>
