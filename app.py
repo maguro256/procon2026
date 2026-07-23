@@ -271,6 +271,17 @@ def delete_equipment(eq_id):
 # ------------------------------------------------ API（モジュール/AI連携用）
 # ESP32 側からはここを HTTP で叩く想定。WebSocket 化する場合もこの層を置き換えるだけでよい。
 
+@app.route("/api/equipment/<module_id>/status", methods=["GET"])
+def api_get_equipment_status(module_id):
+    """モジュールからの状態確認。タッチ時にハード側が「開始/終了/ロック中」を判定するために使う"""
+    conn = db.get_db()
+    eq = conn.execute("SELECT * FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
+    conn.close()
+    if not eq:
+        return jsonify({"error": "unknown module_id"}), 404
+    return jsonify(dict(eq))
+
+
 @app.route("/api/equipment/<module_id>/status", methods=["POST"])
 def api_update_equipment_status(module_id):
     """
@@ -308,7 +319,7 @@ def api_next_task(nfc_tag_id):
         conn.close()
         return jsonify({"error": "unknown tag"}), 404
     rows = conn.execute("""
-        SELECT id, title, priority, difficulty, quantity, deadline, status FROM tasks
+        SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
         ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
@@ -317,6 +328,42 @@ def api_next_task(nfc_tag_id):
     """, (w["id"],)).fetchall()
     conn.close()
     return jsonify({"worker": {"id": w["id"], "name": w["name"]}, "tasks": [dict(r) for r in rows]})
+
+
+@app.route("/api/tasks/<int:task_id>/start", methods=["POST"])
+def api_start_task(task_id):
+    """
+    モジュールでのタッチ開始（1回目）で呼ぶ。タスクを着手状態にし、対応する機材もロックする。
+    body 例: {"nfc_tag_id": "TAG-0001", "module_id": "MOD-A-01"}
+    """
+    data = request.get_json(silent=True) or {}
+    conn = db.get_db()
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        return jsonify({"error": "task not found"}), 404
+
+    worker = conn.execute("SELECT * FROM workers WHERE nfc_tag_id = ?", (data.get("nfc_tag_id"),)).fetchone()
+    equipment = conn.execute("SELECT * FROM equipment WHERE module_id = ?", (data.get("module_id"),)).fetchone()
+    if not worker or not equipment:
+        conn.close()
+        return jsonify({"error": "unknown worker or module_id"}), 404
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    started_at = task["started_at"] or now
+    conn.execute(
+        """UPDATE tasks SET status = 'in_progress', assigned_worker_id = ?, equipment_id = ?,
+           started_at = ? WHERE id = ?""",
+        (worker["id"], equipment["id"], started_at, task_id),
+    )
+    conn.execute(
+        """UPDATE equipment SET status = 'working', current_worker_id = ?, current_task_id = ?,
+           updated_at = datetime('now','localtime') WHERE id = ?""",
+        (worker["id"], task_id, equipment["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "started_at": started_at})
 
 
 @app.route("/api/tasks", methods=["POST"])
