@@ -2,7 +2,7 @@
 hard/main.py - MQTT⇔アプリ本体 連携ブリッジ
 
 各機材のモジュール(ESP32/Pi)は NFCタッチを検知すると
-  topic: pi/<device_id>/data
+  topic: pi/<module_id>/data
   payload: {"tag_id": "<社員証のICタグID>"}
 を publish する。本スクリプトはこれを購読し、app.py が公開する
 HTTP API (/api/...) を叩いて実際のタスク割当・機材ロックを行う。
@@ -30,37 +30,12 @@ MQTT_PORT = int(os.environ.get("GEMMBA_MQTT_PORT", "1883"))
 HTTP_TIMEOUT = 5
 
 
-def load_devices():
-    # 登録済みの端末読み込み（device_id -> {hostname, ip, module_id, ...}）
-    devices_file = os.path.join(os.path.dirname(__file__), 'devices.json')
-    with open(devices_file, 'r') as f:
-        devices = json.load(f)
-    return devices
-
-
-def load_clients():
-    # 登録済みのクライアント読み込み（tag_id -> name のローカル表示用キャッシュ）
-    clients_file = os.path.join(os.path.dirname(__file__), 'clients.json')
-    with open(clients_file, 'r') as f:
-        clients = json.load(f)
-
-    id_to_name = {}
-    for info in clients.values():
-        id_to_name[info['ID']] = info['name']
-    return id_to_name
-
-
 def main():
-    devices = load_devices()
-    clients = load_clients()
-    print("loaded devices")
-    print("loaded clients")
     print(f"app server: {APP_BASE_URL}")
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.user_data_set({'devices': devices, 'clients': clients})
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     client.loop_forever()
 
@@ -71,48 +46,37 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
-    devices = userdata['devices']
-    clients = userdata['clients']
-
-    topic_parts = msg.topic.split("/")
-    device_id = topic_parts[1]
-
-    if device_id not in devices:
-        print("Unknown device: ", device_id)
-        return
-    module_id = devices[device_id].get('module_id', device_id)
+    #pi/<module_id>/data
+    module_id = msg.topic.split("/")[1]
 
     try:
         msg_json = json.loads(msg.payload.decode("utf-8"))
     except ValueError:
-        print(f"[{device_id}] invalid JSON payload: {msg.payload!r}")
+        print(f"[{module_id}] invalid JSON payload: {msg.payload!r}")
         return
 
     tag_id = msg_json.get("tag_id")
     if not tag_id:
-        print(f"[{device_id}] payload missing tag_id")
+        print(f"[{module_id}] payload missing tag_id")
         return
 
-    display_name = clients.get(tag_id, tag_id)
-    print(f"[{device_id}] touch: tag={tag_id} ({display_name}) -> module {module_id}")
-
-    handle_touch(device_id, module_id, tag_id)
+    handle_touch(module_id, tag_id)
 
 
-def handle_touch(device_id, module_id, tag_id):
+def handle_touch(module_id, tag_id):
     """1回のNFCタッチを、機材の現在状態に応じて開始/終了/拒否に振り分けてAPIを叩く"""
     try:
         w_resp = requests.get(f"{APP_BASE_URL}/api/workers/{tag_id}/next_task", timeout=HTTP_TIMEOUT)
         eq_resp = requests.get(f"{APP_BASE_URL}/api/equipment/{module_id}/status", timeout=HTTP_TIMEOUT)
     except requests.RequestException as e:
-        print(f"[{device_id}] app server unreachable: {e}")
+        print(f"[{module_id}] app server unreachable: {e}")
         return
 
     if w_resp.status_code == 404:
-        print(f"[{device_id}] unknown NFC tag (not registered as a worker): {tag_id}")
+        print(f"[{module_id}] unknown NFC tag (not registered as a worker): {tag_id}")
         return
     if eq_resp.status_code == 404:
-        print(f"[{device_id}] module_id not registered as equipment: {module_id}")
+        print(f"[{module_id}] module_id not registered as equipment: {module_id}")
         return
     w_resp.raise_for_status()
     eq_resp.raise_for_status()
@@ -122,20 +86,20 @@ def handle_touch(device_id, module_id, tag_id):
     equipment = eq_resp.json()
 
     if equipment["status"] in ("stopped", "maintenance"):
-        print(f"[{device_id}] {worker['name']}: equipment unavailable ({equipment['status']})")
+        print(f"[{module_id}] {worker['name']}: equipment unavailable ({equipment['status']})")
         return
 
     if equipment["status"] == "working":
         if equipment["current_worker_id"] == worker["id"]:
-            end_session(device_id, module_id, worker, equipment)
+            end_session(module_id, module_id, worker, equipment)
         else:
-            print(f"[{device_id}] equipment locked by another worker; rejecting {worker['name']}'s touch")
+            print(f"[{module_id}] equipment locked by another worker; rejecting {worker['name']}'s touch")
         return
 
-    start_session(device_id, module_id, tag_id, worker, equipment, tasks)
+    start_session(module_id, tag_id, worker, equipment, tasks)
 
 
-def start_session(device_id, module_id, tag_id, worker, equipment, tasks):
+def start_session(module_id, tag_id, worker, equipment, tasks):
     """機材が空きの状態でのタッチ = 開始。担当タスクがあれば着手、無ければフリー利用でロック"""
     candidate = next(
         (t for t in tasks if t.get("equipment_id") in (None, equipment["id"])),
@@ -148,14 +112,14 @@ def start_session(device_id, module_id, tag_id, worker, equipment, tasks):
             json={"nfc_tag_id": tag_id, "module_id": module_id},
             timeout=HTTP_TIMEOUT,
         )
-        print(f"[{device_id}] {worker['name']} started task: {candidate['title']}")
+        print(f"[{module_id}] {worker['name']} started task: {candidate['title']}")
     else:
         requests.post(
             f"{APP_BASE_URL}/api/equipment/{module_id}/status",
             json={"status": "working", "nfc_tag_id": tag_id},
             timeout=HTTP_TIMEOUT,
         )
-        print(f"[{device_id}] {worker['name']} started free-use (no task assigned)")
+        print(f"[{module_id}] {worker['name']} started free-use (no task assigned)")
 
     # 誘導機能: 他の特定機材に紐づいた至急/高優先タスクがあれば知らせる
     elsewhere = next(
@@ -164,7 +128,7 @@ def start_session(device_id, module_id, tag_id, worker, equipment, tasks):
         None,
     )
     if elsewhere:
-        print(f"[{device_id}] NOTE: {worker['name']} has a higher-priority task at another equipment: {elsewhere['title']}")
+        print(f"[{module_id}] NOTE: {worker['name']} has a higher-priority task at another equipment: {elsewhere['title']}")
 
 
 def end_session(device_id, module_id, worker, equipment):
@@ -172,9 +136,9 @@ def end_session(device_id, module_id, worker, equipment):
     task_id = equipment.get("current_task_id")
     if task_id:
         requests.post(f"{APP_BASE_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
-        print(f"[{device_id}] {worker['name']} completed task #{task_id}")
+        print(f"[{module_id}] {worker['name']} completed task #{task_id}")
     else:
-        print(f"[{device_id}] {worker['name']} ended free-use")
+        print(f"[{module_id}] {worker['name']} ended free-use")
 
     requests.post(
         f"{APP_BASE_URL}/api/equipment/{module_id}/status",

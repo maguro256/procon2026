@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS equipment (
     status TEXT NOT NULL DEFAULT 'idle',        -- idle / working / stopped / maintenance
     current_worker_id INTEGER REFERENCES workers(id),
     current_task_id INTEGER REFERENCES tasks(id),
+    ip TEXT,
+    hostname TEXT,
+    last_seen TEXT,                              -- 最終通信時刻
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -75,10 +78,10 @@ def init_db(seed: bool = True):
             ('田中 太郎', 12.0, 'TAG-0001'),
             ('佐藤 花子', 3.5,  'TAG-0002'),
             ('鈴木 一郎', 0.5,  NULL);
-        INSERT INTO equipment (name, module_id, status) VALUES
-            ('レーザー加工機 #1', 'MOD-A-01', 'working'),
-            ('旋盤 #2',          'MOD-A-02', 'idle'),
-            ('プレス機 #1',      'MOD-B-01', 'stopped');
+        INSERT INTO equipment (name, module_id, status,ip,hostname) VALUES
+            ('レーザー加工機 #1', 'MOD-A-01', 'working',NULL,NULL),
+            ('旋盤 #2',          'MOD-A-02', 'idle','192.168.137.212','pi01'),
+            ('プレス機 #1',      'MOD-B-01', 'stopped',NULL,NULL);
         INSERT INTO tasks (title, difficulty, priority, quantity, deadline, status) VALUES
             ('製品A 組立', 3, 'urgent', 30, date('now', '+1 day'), 'in_progress'),
             ('旋盤メンテ #2', 2, 'normal', 1, date('now', '+3 day'), 'todo'),
