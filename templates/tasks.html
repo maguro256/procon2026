@@ -6,81 +6,85 @@
   <p class="page-sub">例外的なタスクの追加や、内容・優先度の変更、手動での割り当てをここで行います。</p>
 </header>
 
-<section class="panel">
-  <h2 class="panel-title">タスクを登録</h2>
-  <form method="post" action="{{ url_for('add_task') }}" class="form-grid">
-    <label class="span2">タスク名
-      <input type="text" name="title" placeholder="例: 製品C 検品" required>
-    </label>
-    <label>優先度
-      <select name="priority">
+<section class="card elev-sm form-panel">
+  <h4>タスクを登録</h4>
+  <form method="post" action="{{ url_for('add_task') }}" class="task-form-grid">
+    <div class="field"><label>タスク名 *</label>
+      <input class="input" type="text" name="title" placeholder="例：製品C 検品" required>
+    </div>
+    <div class="field"><label>優先度</label>
+      <select class="input" name="priority">
         <option value="urgent">至急</option>
         <option value="high">高</option>
         <option value="normal" selected>通常</option>
         <option value="low">低</option>
       </select>
-    </label>
-    <label>難易度（1-5）
-      <input type="number" name="difficulty" min="1" max="5" value="3">
-    </label>
-    <label>数量
-      <input type="number" name="quantity" min="1" value="1">
-    </label>
-    <label>期限
-      <input type="date" name="deadline">
-    </label>
-    <label class="span2">補足（任意）
-      <input type="text" name="description" placeholder="顧客案件・注意点など">
-    </label>
-    <button type="submit" class="btn btn-primary">登録する</button>
+    </div>
+    <div class="field"><label>難易度（1〜5）</label>
+      <input class="input" type="number" name="difficulty" min="1" max="5" value="3">
+    </div>
+    <div class="field"><label>数量</label>
+      <input class="input" type="number" name="quantity" min="1" value="1">
+    </div>
+    <div class="field"><label>期限</label>
+      <input class="input" type="date" name="deadline">
+    </div>
+    <div class="field span-all"><label>補足（任意）</label>
+      <input class="input" type="text" name="description" placeholder="顧客案件・注意点など">
+    </div>
+    <button type="submit" class="btn btn-primary">登録</button>
   </form>
 </section>
 
-<h2 class="section-title">タスク一覧（優先度順）</h2>
+<h3 class="section-title">タスク一覧（優先度順）</h3>
+<div class="task-list">
 {% for t in tasks %}
-<article class="task-card {{ 'task-done' if t.status == 'done' }}">
-  <div class="task-main">
-    <div class="task-title-row">
-      <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
-      <h3>{{ t.title }}</h3>
-      <span class="badge badge-status">{{ S[t.status] }}</span>
-    </div>
-    <div class="task-meta">
-      難易度 {{ t.difficulty }} ・ 数量 {{ t.quantity }} ・ 期限 {{ t.deadline or 'なし' }}
-      {% if t.description %} ・ {{ t.description }}{% endif %}
-    </div>
+<article class="card elev-sm task-card {{ 'task-done' if t.status == 'done' }}">
+  <div class="task-head">
+    <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
+    <h3>{{ t.title }}</h3>
+    <span class="badge badge-status">{{ S[t.status] }}</span>
+  </div>
+  <div class="task-meta">
+    難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
+    {% if t.description %}　・　{{ t.description }}{% endif %}
   </div>
   <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions">
-    <select name="assigned_worker_id" title="担当者">
-      <option value="">担当者なし</option>
-      {% for w in worker_list %}
-      <option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>
-      {% endfor %}
-    </select>
-    <select name="equipment_id" title="機材">
-      <option value="">機材なし</option>
-      {% for e in equipment_list %}
-      <option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>
-      {% endfor %}
-    </select>
-    <select name="status" title="状態">
-      {% for key, label in S.items() %}
-      <option value="{{ key }}" {{ 'selected' if t.status == key }}>{{ label }}</option>
-      {% endfor %}
-    </select>
-    <button type="submit" class="btn btn-sm">更新</button>
+    <div class="field"><label>担当者</label>
+      <select class="input" name="assigned_worker_id" title="担当者">
+        <option value="">担当者なし</option>
+        {% for w in worker_list %}
+        <option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>機材</label>
+      <select class="input" name="equipment_id" title="機材">
+        <option value="">機材なし</option>
+        {% for e in equipment_list %}
+        <option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>状態</label>
+      <select class="input" name="status" title="状態">
+        {% for key, label in S.items() %}
+        <option value="{{ key }}" {{ 'selected' if t.status == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-secondary">更新</button>
+    <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai" title="WariAthena による自動割り当て（現在はダミー）">AI割当（WariAthena）</button>
+    <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
+    </button>
   </form>
-  <div class="task-side">
-    <form method="post" action="{{ url_for('auto_assign', task_id=t.id) }}">
-      <button type="submit" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て（現在はダミー）">AI割り当て</button>
-    </form>
-    <form method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
-          onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')">
-      <button type="submit" class="btn btn-danger btn-sm">削除</button>
-    </form>
-  </div>
+  <form id="ai-assign-{{ t.id }}" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}" style="display:none;"></form>
+  <form id="delete-task-{{ t.id }}" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
+        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')" style="display:none;"></form>
 </article>
 {% else %}
 <p class="empty">タスクはまだありません。上のフォームから登録してください。</p>
 {% endfor %}
+</div>
 {% endblock %}
