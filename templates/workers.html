@@ -6,6 +6,31 @@
   <p class="page-sub">事前登録は名前と勤続年数のみ。得意・不得意は実績データからAIが学習します。</p>
 </header>
 
+{% if pending_tags %}
+<section class="panel" style="border-left: 4px solid #e67e22;">
+  <h2 class="panel-title">未登録タグを検出（{{ pending_tags|length }}件）</h2>
+  <p style="margin-bottom:1rem;color:#888;">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。</p>
+  {% for tag_id, module_id in pending_tags.items() %}
+  <div style="padding:0.75rem 0; border-top:1px solid #eee;">
+    <p style="margin-bottom:0.5rem;">
+      タグID: <strong>{{ tag_id }}</strong>
+      {% if module_id %}（検出モジュール: {{ module_id }}）{% endif %}
+    </p>
+    <form method="post" action="{{ url_for('add_worker') }}" class="form-row">
+      <input type="hidden" name="nfc_tag_id" value="{{ tag_id }}">
+      <label>名前
+        <input type="text" name="name" placeholder="例: 山田 太郎" required>
+      </label>
+      <label>勤続年数
+        <input type="number" name="years_of_service" step="0.5" min="0" value="0" required>
+      </label>
+      <button type="submit" class="btn btn-primary">このタグで登録</button>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
 <section class="panel">
   <h2 class="panel-title">新しい作業者を登録</h2>
   <form method="post" action="{{ url_for('add_worker') }}" class="form-row">

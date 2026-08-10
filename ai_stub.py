@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 ai_stub.py - タスク割り当てAI (WariAthena) の差し込み口
 

@@ -10,15 +10,23 @@ app.py - Gemmba 管理者画面（雛形）
     画面 (HTML)   : ダッシュボード / 作業者管理 / タスク管理 / 機材管理
     API  (JSON)   : モジュール(ESP32)や割り当てAIが叩くエンドポイント
 """
+import os
+import json
+import threading
 from datetime import datetime
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
+import paho.mqtt.client as mqtt
+import requests
 
 import db
 import ai_stub
 
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
+
+# 未登録NFCタグの一時保持: {tag_id: module_id}
+_pending_tags: dict = {}
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
@@ -69,7 +77,7 @@ def workers():
         FROM workers w ORDER BY w.id
     """).fetchall()
     conn.close()
-    return render_template("workers.html", workers=rows)
+    return render_template("workers.html", workers=rows, pending_tags=_pending_tags)
 
 
 @app.route("/workers/add", methods=["POST"])
@@ -87,6 +95,7 @@ def add_worker():
             (name, float(years or 0), nfc),
         )
         conn.commit()
+        _pending_tags.pop(nfc, None)
         flash(f"{name} さんを登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に使われています", "error")
@@ -420,6 +429,170 @@ def api_complete_task(task_id):
     return jsonify({"ok": True, "duration_sec": duration})
 
 
+@app.route("/api/unknown_tag", methods=["POST"])
+def api_unknown_tag():
+    """hard/main.py から未登録タグの通知を受け取り、管理画面に表示するために保持する"""
+    data = request.get_json(silent=True) or {}
+    tag_id = data.get("nfc_tag_id", "").strip()
+    module_id = data.get("module_id", "")
+    if not tag_id:
+        return jsonify({"error": "nfc_tag_id required"}), 400
+    conn = db.get_db()
+    already = conn.execute("SELECT id FROM workers WHERE nfc_tag_id = ?", (tag_id,)).fetchone()
+    conn.close()
+    if already:
+        return jsonify({"ok": True, "note": "already registered"})
+    _pending_tags[tag_id] = module_id
+    return jsonify({"ok": True, "pending": len(_pending_tags)})
+
+
+# ------------------------------------------------ MQTT ブリッジ（旧 hard/main.py を統合）
+# ラズパイ(raspi/raspi.py)が publish する NFC タッチを購読し、
+# 上の HTTP API を localhost 経由で叩いて割当・ロックを行う。app.py 内の
+# バックグラウンドスレッドで動くので、別プロセス(hard/main.py)は不要。
+
+MQTT_HOST = os.environ.get("GEMMBA_MQTT_HOST", "localhost")
+MQTT_PORT = int(os.environ.get("GEMMBA_MQTT_PORT", "1883"))
+SELF_URL = os.environ.get("GEMMBA_SELF_URL", "http://127.0.0.1:5000")
+HTTP_TIMEOUT = 5
+
+
+def _load_module_map():
+    """devices.json の デバイスID → 機材(module_id) 対応表を読み込む"""
+    path = os.path.join(os.path.dirname(__file__), "hard", "devices.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k: v.get("module_id", k) for k, v in data.items()}
+    except (OSError, ValueError):
+        return {}
+
+
+_MODULE_MAP = _load_module_map()
+
+
+def _mqtt_on_connect(client, userdata, flags, reason_code, properties):
+    print(f"[MQTT] connected to broker (reason={reason_code})")
+    client.subscribe("pi/+/data")
+
+
+def _mqtt_on_message(client, userdata, msg):
+    # topic: pi/<device_id>/data
+    device_id = msg.topic.split("/")[1]
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except ValueError:
+        print(f"[{device_id}] invalid JSON payload: {msg.payload!r}")
+        return
+    tag_id = payload.get("tag_id")
+    if not tag_id:
+        print(f"[{device_id}] payload missing tag_id")
+        return
+    module_id = _MODULE_MAP.get(device_id, device_id)  # pi01 → MOD-A-01
+    _handle_touch(module_id, tag_id)
+
+
+def _handle_touch(module_id, tag_id):
+    """1回のNFCタッチを機材の状態に応じて 開始/終了/拒否 に振り分ける"""
+    try:
+        w_resp = requests.get(f"{SELF_URL}/api/workers/{tag_id}/next_task", timeout=HTTP_TIMEOUT)
+        eq_resp = requests.get(f"{SELF_URL}/api/equipment/{module_id}/status", timeout=HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"[{module_id}] self API unreachable: {e}")
+        return
+
+    if w_resp.status_code == 404:
+        print(f"[{module_id}] unknown NFC tag: {tag_id} → notifying (作業者管理画面に表示)")
+        try:
+            requests.post(
+                f"{SELF_URL}/api/unknown_tag",
+                json={"nfc_tag_id": tag_id, "module_id": module_id},
+                timeout=HTTP_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            print(f"[{module_id}] failed to notify unknown_tag: {e}")
+        return
+    if eq_resp.status_code == 404:
+        print(f"[{module_id}] module_id not registered as equipment: {module_id}")
+        return
+
+    worker = w_resp.json()["worker"]
+    tasks = w_resp.json()["tasks"]
+    equipment = eq_resp.json()
+
+    if equipment["status"] in ("stopped", "maintenance"):
+        print(f"[{module_id}] {worker['name']}: equipment unavailable ({equipment['status']})")
+        return
+
+    if equipment["status"] == "working":
+        if equipment["current_worker_id"] == worker["id"]:
+            _end_session(module_id, worker, equipment)
+        else:
+            print(f"[{module_id}] locked by another worker; rejecting {worker['name']}")
+        return
+
+    _start_session(module_id, tag_id, worker, equipment, tasks)
+
+
+def _start_session(module_id, tag_id, worker, equipment, tasks):
+    """空き機材でのタッチ = 開始。担当タスクがあれば着手、無ければフリー利用でロック"""
+    candidate = next((t for t in tasks if t.get("equipment_id") in (None, equipment["id"])), None)
+    if candidate:
+        requests.post(
+            f"{SELF_URL}/api/tasks/{candidate['id']}/start",
+            json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
+        )
+        print(f"[{module_id}] {worker['name']} started task: {candidate['title']}")
+    else:
+        requests.post(
+            f"{SELF_URL}/api/equipment/{module_id}/status",
+            json={"status": "working", "nfc_tag_id": tag_id}, timeout=HTTP_TIMEOUT,
+        )
+        print(f"[{module_id}] {worker['name']} started free-use (no task)")
+
+    elsewhere = next(
+        (t for t in tasks
+         if t.get("equipment_id") not in (None, equipment["id"]) and t["priority"] in ("urgent", "high")),
+        None,
+    )
+    if elsewhere:
+        print(f"[{module_id}] NOTE: {worker['name']} has higher-priority task elsewhere: {elsewhere['title']}")
+
+
+def _end_session(module_id, worker, equipment):
+    """使用中の本人が再タッチ = 終了。タスク中なら完了記録、フリー利用ならロック解除のみ"""
+    task_id = equipment.get("current_task_id")
+    if task_id:
+        requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
+        print(f"[{module_id}] {worker['name']} completed task #{task_id}")
+    else:
+        print(f"[{module_id}] {worker['name']} ended free-use")
+    requests.post(
+        f"{SELF_URL}/api/equipment/{module_id}/status",
+        json={"status": "idle"}, timeout=HTTP_TIMEOUT,
+    )
+
+
+def start_mqtt_bridge():
+    """MQTT クライアントをバックグラウンドスレッドで起動する"""
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = _mqtt_on_connect
+        client.on_message = _mqtt_on_message
+        client.connect(MQTT_HOST, MQTT_PORT, 60)
+        threading.Thread(target=client.loop_forever, daemon=True).start()
+        print(f"[MQTT] bridge started (broker {MQTT_HOST}:{MQTT_PORT})")
+    except Exception as e:
+        print(f"[MQTT] bridge NOT started (broker unreachable): {e}")
+        print("       → Web/APIは動きますが、NFCタッチは受信されません。")
+
+
+DEBUG = True
+
 if __name__ == "__main__":
     db.init_db()
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # debug=True のリローダーは子プロセスで再実行されるため、実際に配信する
+    # プロセス(WERKZEUG_RUN_MAIN)でのみ MQTT を起動して二重接続を防ぐ。
+    if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_mqtt_bridge()
+    app.run(debug=DEBUG, host="0.0.0.0", port=5000, threaded=True)

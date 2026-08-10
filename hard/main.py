@@ -73,7 +73,15 @@ def handle_touch(module_id, tag_id):
         return
 
     if w_resp.status_code == 404:
-        print(f"[{module_id}] unknown NFC tag (not registered as a worker): {tag_id}")
+        print(f"[{module_id}] unknown NFC tag: {tag_id} → notifying app server")
+        try:
+            requests.post(
+                f"{APP_BASE_URL}/api/unknown_tag",
+                json={"nfc_tag_id": tag_id, "module_id": module_id},
+                timeout=HTTP_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            print(f"[{module_id}] failed to notify app server: {e}")
         return
     if eq_resp.status_code == 404:
         print(f"[{module_id}] module_id not registered as equipment: {module_id}")
