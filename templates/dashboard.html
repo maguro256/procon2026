@@ -6,51 +6,63 @@
   <p class="page-sub">各機材の稼働状況とタスクの流れをひと目で確認できます。モジュールからの状態報告で自動更新されます（API連携は未接続）。</p>
 </header>
 
-<section class="stat-row">
-  <div class="stat"><span class="stat-num">{{ counts.working_eq }}</span><span class="stat-label">稼働中の機材</span></div>
-  <div class="stat"><span class="stat-num">{{ counts.active_tasks }}</span><span class="stat-label">作業中のタスク</span></div>
-  <div class="stat"><span class="stat-num">{{ counts.open_tasks }}</span><span class="stat-label">未完了タスク</span></div>
-  <div class="stat"><span class="stat-num">{{ counts.workers }}</span><span class="stat-label">登録作業者</span></div>
+<section class="stat-grid">
+  <div class="card elev-sm">
+    <div class="card-kicker">稼働中の機材</div>
+    <div class="stat-num">{{ counts.working_eq }}</div>
+  </div>
+  <div class="card elev-sm">
+    <div class="card-kicker">作業中のタスク</div>
+    <div class="stat-num">{{ counts.active_tasks }}</div>
+  </div>
+  <div class="card elev-sm">
+    <div class="card-kicker">未完了タスク</div>
+    <div class="stat-num">{{ counts.open_tasks }}</div>
+  </div>
+  <div class="card elev-sm">
+    <div class="card-kicker">登録作業者</div>
+    <div class="stat-num">{{ counts.workers }}</div>
+  </div>
 </section>
 
-<h2 class="section-title">機材の状況</h2>
+<h3 class="section-title">機材の状況</h3>
 <section class="eq-grid">
   {% for e in equipment %}
-  <article class="eq-card status-{{ e.status }}">
+  <article class="card elev-sm eq-card status-{{ e.status }}">
+    <span class="app-led"></span>
     <div class="eq-card-head">
-      <h3>{{ e.name }}</h3>
+      <div class="card-title">{{ e.name }}</div>
       <span class="badge badge-{{ e.status }}">{{ E[e.status] }}</span>
     </div>
+    <div class="mono">{{ e.module_id or '未接続' }}</div>
     <dl class="eq-meta">
-      <div><dt>モジュール</dt><dd>{{ e.module_id or '未接続' }}</dd></div>
-      <div><dt>担当者</dt><dd>{{ e.worker_name or '—' }}</dd></div>
-      <div><dt>実行中タスク</dt><dd>{{ e.task_title or '—' }}</dd></div>
-      {% if e.task_title %}
-      <div><dt>数量 / 期限</dt><dd>{{ e.task_quantity or '—' }} 個 / {{ e.task_deadline or '—' }}</dd></div>
-      {% endif %}
+      <div><span class="k">担当者：</span>{{ e.worker_name or '—' }}</div>
+      <div><span class="k">実行中：</span>{{ e.task_title or '—' }}{% if e.task_title %}　<span class="text-muted">×{{ e.task_quantity or '—' }} ／ 期限 {{ e.task_deadline or '—' }}</span>{% endif %}</div>
     </dl>
-    <div class="eq-updated">最終更新: {{ e.updated_at }}</div>
+    <div class="card-meta eq-updated">最終更新：{{ e.updated_at }}</div>
   </article>
   {% else %}
   <p class="empty">機材が登録されていません。「機材・モジュール管理」から追加してください。</p>
   {% endfor %}
 </section>
 
-<h2 class="section-title">最近のタスク</h2>
-<table class="table">
-  <thead><tr><th>タスク</th><th>優先度</th><th>状態</th><th>担当</th><th>期限</th></tr></thead>
-  <tbody>
-  {% for t in recent %}
-    <tr>
-      <td>{{ t.title }}</td>
-      <td><span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span></td>
-      <td>{{ S[t.status] }}</td>
-      <td>{{ t.worker_name or '未割当' }}</td>
-      <td>{{ t.deadline or '—' }}</td>
-    </tr>
-  {% else %}
-    <tr><td colspan="5" class="empty">タスクはまだありません。</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+<h3 class="section-title">最近のタスク</h3>
+<div class="card table-wrap">
+  <table class="table">
+    <thead><tr><th>優先度</th><th>タスク名</th><th>状態</th><th>担当</th><th>期限</th></tr></thead>
+    <tbody>
+    {% for t in recent %}
+      <tr>
+        <td><span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span></td>
+        <td>{{ t.title }}</td>
+        <td>{{ S[t.status] }}</td>
+        <td>{{ t.worker_name or '未割当' }}</td>
+        <td>{{ t.deadline or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">タスクはまだありません。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endblock %}

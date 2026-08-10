@@ -7,34 +7,38 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<div class="layout">
+<div class="app">
   <aside class="sidebar">
-    <div class="brand">
-      <span class="brand-mark">Ge</span>
-      <div>
-        <div class="brand-name">Gemmba</div>
-        <div class="brand-sub">管理者コンソール</div>
-      </div>
+    <div>
+      <div class="brand-name">Gemmba</div>
+      <div class="brand-sub">管理者コンソール</div>
     </div>
-    <nav>
-      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}">
-        使用状況ダッシュボード</a>
-      <a href="{{ url_for('tasks') }}" class="{{ 'active' if request.endpoint == 'tasks' }}">
-        タスク管理</a>
-      <a href="{{ url_for('workers') }}" class="{{ 'active' if request.endpoint == 'workers' }}">
-        作業者管理</a>
-      <a href="{{ url_for('equipment') }}" class="{{ 'active' if request.endpoint == 'equipment' }}">
-        機材・モジュール管理</a>
+    <nav class="sidebar-nav">
+      <a href="{{ url_for('dashboard') }}" class="navlink {{ 'active' if request.endpoint == 'dashboard' }}">
+        <span class="navdot"></span>使用状況ダッシュボード</a>
+      <a href="{{ url_for('tasks') }}" class="navlink {{ 'active' if request.endpoint == 'tasks' }}">
+        <span class="navdot"></span>タスク管理</a>
+      <a href="{{ url_for('workers') }}" class="navlink {{ 'active' if request.endpoint == 'workers' }}">
+        <span class="navdot"></span>作業者管理</a>
+      <a href="{{ url_for('equipment') }}" class="navlink {{ 'active' if request.endpoint == 'equipment' }}">
+        <span class="navdot"></span>機材・モジュール管理</a>
     </nav>
-    <div class="sidebar-foot">現場が自律的に動く仕組みを、低コストで。</div>
+    <div class="sidebar-foot">現場が自律的に動く仕組みを、<br>低コストで。</div>
   </aside>
 
-  <main class="content">
+  <main class="main">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         <div class="flashes">
         {% for category, msg in messages %}
-          <div class="flash flash-{{ category }}">{{ msg }}</div>
+          <div class="flash flash-{{ 'ok' if category == 'ok' else 'error' }}">
+            {% if category == 'ok' %}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>
+            {% else %}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>
+            {% endif %}
+            <div>{{ msg }}</div>
+          </div>
         {% endfor %}
         </div>
       {% endif %}
