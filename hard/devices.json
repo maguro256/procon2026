@@ -1,8 +1,0 @@
-{
-    "pi01": {
-        "hostname": "pi01",
-        "ip": "192.168.137.212",
-        "module_id": "MOD-A-01",
-        "last_seen": null
-    }
-}
