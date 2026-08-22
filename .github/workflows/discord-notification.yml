@@ -1,0 +1,20 @@
+name: Discord Notification
+
+on:
+  push:
+    branches:
+      - main # 通知したいブランチ名（必要に応じて変更してください）
+
+jobs:
+  discord-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord Webhook Action
+        uses: rjstone/discord-webhook-notify@v1
+        with:
+          severity: info
+          
+          avatar_url: https://githubassets.com
+          text: "リポジトリに新しくPushされました"
+          details: "コミットメッセージ: ${{ github.event.head_commit.message }}"
+          webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
