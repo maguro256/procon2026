@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# DBのバックアップ（gemmba.db 本体は追跡する）
+gemmba.db.bak
+gemmba.db.before-reset-*
+
+# ラズパイのブローカー探索キャッシュ（環境ごとに異なる）
+raspi/.broker_cache.json

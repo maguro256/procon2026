@@ -3,8 +3,31 @@
 {% block content %}
 <header class="page-head">
   <h1>機材・モジュール管理</h1>
-  <p class="page-sub">機材ごとにモジュールIDを登録すると、モジュールからの状態報告（API）がこの機材に紐付きます。</p>
+  <p class="page-sub">モジュールIDはAPI（HTTP）の宛先、デバイスIDはラズパイがMQTTで名乗る名前（<span class="mono">DEVICE_ID</span>）です。デバイスIDを紐付けると、そのラズパイのNFCタッチがこの機材の操作として扱われます。</p>
 </header>
+
+{% if pending_modules %}
+<section class="card elev-sm form-panel" style="border-left: 4px solid #e67e22;">
+  <h4>未登録モジュールを検出（{{ pending_modules|length }}件）</h4>
+  <p class="text-muted" style="margin-bottom:1rem;">ネットワーク上にモジュールが見つかりましたが、どの機材にも紐付いていません。設置先の機材を選んで紐付けてください。</p>
+  {% for device_id, info in pending_modules.items() %}
+  <div style="padding:.75rem 0; border-top:1px solid #eee;">
+    <p style="margin-bottom:.5rem;">デバイスID: <strong class="mono">{{ device_id }}</strong>
+      <span class="text-muted">（IP: {{ info.ip or '不明' }} ／ 検出 {{ info.seen_at }}）</span></p>
+    <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
+      <input type="hidden" name="hostname" value="{{ device_id }}">
+      <select class="input" name="equipment_id" required>
+        <option value="">紐付ける機材を選択…</option>
+        {% for e in equipment %}
+        <option value="{{ e.id }}">{{ e.name }}{% if e.hostname %}（現在: {{ e.hostname }}）{% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-primary">紐付ける</button>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
 
 <section class="card elev-sm form-panel narrow">
   <h4>機材を登録</h4>
@@ -15,6 +38,9 @@
     <div class="field"><label>モジュールID（任意）</label>
       <input class="input" type="text" name="module_id" placeholder="後で紐付け可">
     </div>
+    <div class="field"><label>デバイスID（任意）</label>
+      <input class="input" type="text" name="hostname" placeholder="例：pi01">
+    </div>
     <button type="submit" class="btn btn-primary">登録</button>
   </form>
 </section>
@@ -22,17 +48,32 @@
 <h3 class="section-title">登録済み機材（{{ equipment|length }}台）</h3>
 <div class="card table-wrap" style="margin-bottom: var(--space-8);">
   <table class="table">
-    <thead><tr><th>ID</th><th>機材名</th><th>モジュールID</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th>最終更新</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>機材名</th><th>モジュールID</th><th>デバイスID（MQTT）</th><th>接続</th><th>最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
     <tbody>
     {% for e in equipment %}
       <tr>
         <td class="mono text-muted">{{ e.id }}</td>
         <td class="strong">{{ e.name }}</td>
         <td class="mono">{{ e.module_id or '未接続' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
+            <input type="hidden" name="equipment_id" value="{{ e.id }}">
+            <input class="input input-sm mono" type="text" name="hostname"
+                   value="{{ e.hostname or '' }}" placeholder="未紐付け">
+            <button type="submit" class="btn btn-sm btn-secondary">保存</button>
+          </form>
+        </td>
+        <td>
+          {% if e.online %}
+            <span class="badge badge-online" title="IP: {{ e.ip or '不明' }}">オンライン</span>
+          {% else %}
+            <span class="badge badge-offline">オフライン</span>
+          {% endif %}
+        </td>
+        <td class="mono text-muted">{{ e.last_seen or '—' }}</td>
         <td><span class="badge badge-{{ e.status }}">{{ E[e.status] }}</span></td>
         <td>{{ e.worker_name or '—' }}</td>
         <td>{{ e.task_title or '—' }}</td>
-        <td>{{ e.updated_at }}</td>
         <td class="num">
           <form method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
                 onsubmit="return confirm('機材「{{ e.name }}」を削除しますか？')">
@@ -43,7 +84,7 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="8" class="empty">機材が登録されていません。</td></tr>
+      <tr><td colspan="10" class="empty">機材が登録されていません。</td></tr>
     {% endfor %}
     </tbody>
   </table>

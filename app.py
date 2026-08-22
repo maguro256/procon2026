@@ -12,6 +12,7 @@ app.py - Gemmba 管理者画面（雛形）
 """
 import os
 import json
+import socket
 import threading
 from datetime import datetime
 
@@ -27,6 +28,8 @@ app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
 
 # 未登録NFCタグの一時保持: {tag_id: module_id}
 _pending_tags: dict = {}
+# どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
+_pending_modules: dict = {}
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
@@ -244,25 +247,64 @@ def equipment():
         ORDER BY e.id
     """).fetchall()
     conn.close()
-    return render_template("equipment.html", equipment=rows)
+    return render_template("equipment.html", equipment=rows, pending_modules=_pending_modules)
 
 
 @app.route("/equipment/add", methods=["POST"])
 def add_equipment():
     name = request.form.get("name", "").strip()
     module_id = request.form.get("module_id", "").strip() or None
+    hostname = request.form.get("hostname", "").strip() or None
     if not name:
         flash("機材名を入力してください", "error")
         return redirect(url_for("equipment"))
     conn = db.get_db()
     try:
-        conn.execute("INSERT INTO equipment (name, module_id) VALUES (?, ?)", (name, module_id))
+        conn.execute("INSERT INTO equipment (name, module_id, hostname) VALUES (?, ?, ?)",
+                     (name, module_id, hostname))
         conn.commit()
         flash(f"機材「{name}」を登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのモジュールIDは既に使われています", "error")
     finally:
         conn.close()
+    return redirect(url_for("equipment"))
+
+
+@app.route("/equipment/bind", methods=["POST"])
+def bind_equipment():
+    """
+    機材にモジュールのデバイスID(hostname)を紐付ける。MQTTの宛先解決に使う。
+    一覧のインライン編集と、未登録モジュールパネルの両方から呼ばれる。
+    """
+    eq_id = request.form.get("equipment_id", "").strip()
+    hostname = request.form.get("hostname", "").strip() or None
+    if not eq_id:
+        flash("紐付け先の機材を選んでください", "error")
+        return redirect(url_for("equipment"))
+
+    conn = db.get_db()
+    # 同じデバイスIDが複数機材に付くと宛先が一意に決まらないため、先に他を外す
+    if hostname:
+        conn.execute("UPDATE equipment SET hostname = NULL, online = 0 WHERE hostname = ? AND id != ?",
+                     (hostname, eq_id))
+    conn.execute("UPDATE equipment SET hostname = ? WHERE id = ?", (hostname, eq_id))
+
+    # 紐付け前に受信していた死活情報を引き継ぐ。次のハートビートを待たずに
+    # 「オンライン」と表示できる。
+    pending = _pending_modules.pop(hostname, None) if hostname else None
+    if pending:
+        conn.execute(
+            """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
+               last_seen = datetime('now','localtime') WHERE id = ?""",
+            (pending.get("ip"), eq_id),
+        )
+    elif not hostname:
+        conn.execute("UPDATE equipment SET online = 0 WHERE id = ?", (eq_id,))
+    conn.commit()
+    conn.close()
+
+    flash(f"デバイスID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
     return redirect(url_for("equipment"))
 
 
@@ -457,39 +499,105 @@ SELF_URL = os.environ.get("GEMMBA_SELF_URL", "http://127.0.0.1:5000")
 HTTP_TIMEOUT = 5
 
 
-def _load_module_map():
-    """devices.json の デバイスID → 機材(module_id) 対応表を読み込む"""
-    path = os.path.join(os.path.dirname(__file__), "hard", "devices.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return {k: v.get("module_id", k) for k, v in data.items()}
-    except (OSError, ValueError):
-        return {}
+def _find_equipment_by_device(conn, device_id):
+    """
+    デバイスID(ラズパイの DEVICE_ID) から機材を引く。
+    モジュールの同一性はこの device_id で決まり、IPには依存しない。
+    hostname への紐付けが本筋だが、module_id をそのままデバイス名に
+    している構成でも動くよう両方を見る（hostname 一致を優先）。
+    """
+    return conn.execute(
+        """SELECT id, name, module_id FROM equipment
+           WHERE hostname = ? OR module_id = ?
+           ORDER BY (hostname = ?) DESC LIMIT 1""",
+        (device_id, device_id, device_id),
+    ).fetchone()
 
 
-_MODULE_MAP = _load_module_map()
+def _resolve_module_id(device_id):
+    """NFCタッチの宛先となる module_id を返す。通信があった証拠として last_seen も更新する"""
+    conn = db.get_db()
+    row = _find_equipment_by_device(conn, device_id)
+    if row:
+        conn.execute(
+            "UPDATE equipment SET last_seen = datetime('now','localtime'), online = 1 WHERE id = ?",
+            (row["id"],),
+        )
+        conn.commit()
+    conn.close()
+    return row["module_id"] if row else None
 
 
 def _mqtt_on_connect(client, userdata, flags, reason_code, properties):
     print(f"[MQTT] connected to broker (reason={reason_code})")
-    client.subscribe("pi/+/data")
+    # status は retained で publish されるので、購読した瞬間に現在オンラインの
+    # モジュールが一括で流れてくる。app.py を再起動しても状態が復元される。
+    client.subscribe([("pi/+/data", 0), ("pi/+/status", 1)])
 
 
 def _mqtt_on_message(client, userdata, msg):
-    # topic: pi/<device_id>/data
-    device_id = msg.topic.split("/")[1]
+    # topic: pi/<device_id>/data （NFCタッチ） または pi/<device_id>/status （死活）
+    parts = msg.topic.split("/")
+    if len(parts) < 3:
+        return
+    device_id, kind = parts[1], parts[2]
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except ValueError:
         print(f"[{device_id}] invalid JSON payload: {msg.payload!r}")
         return
+
+    if kind == "status":
+        _handle_presence(device_id, payload)
+        return
+
     tag_id = payload.get("tag_id")
     if not tag_id:
         print(f"[{device_id}] payload missing tag_id")
         return
-    module_id = _MODULE_MAP.get(device_id, device_id)  # pi01 → MOD-A-01
+    module_id = _resolve_module_id(device_id)  # pi01 → MOD-A-02
+    if not module_id:
+        print(f"[{device_id}] このデバイスIDに対応する機材がありません。"
+              f"機材管理画面で「デバイスID」に '{device_id}' を設定してください。")
+        return
     _handle_touch(module_id, tag_id)
+
+
+def _handle_presence(device_id, payload):
+    """
+    モジュールの死活通知。ラズパイが接続時に online、切断時は LWT により
+    ブローカーが offline を代理送信する。IPは変わっても device_id は不変なので、
+    ここで受け取った ip は「今どこにいるか」の記録用として上書きするだけでよい。
+    """
+    online = bool(payload.get("online"))
+    ip = payload.get("ip")
+    conn = db.get_db()
+    row = _find_equipment_by_device(conn, device_id)
+
+    if not row:
+        # 未登録モジュール。機材管理画面に出して紐付けを促す（未登録タグと同じ流れ）
+        if online:
+            _pending_modules[device_id] = {"ip": ip, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            print(f"[{device_id}] 未登録モジュールを検出 (ip={ip}) → 機材管理画面に表示")
+        else:
+            _pending_modules.pop(device_id, None)
+        conn.close()
+        return
+
+    _pending_modules.pop(device_id, None)
+    if online:
+        conn.execute(
+            """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
+               last_seen = datetime('now','localtime') WHERE id = ?""",
+            (ip, row["id"]),
+        )
+    else:
+        # 切断時は last_seen を更新しない（最終「通信」時刻を残すため）
+        conn.execute("UPDATE equipment SET online = 0 WHERE id = ?", (row["id"],))
+    conn.commit()
+    conn.close()
+    print(f"[{device_id}] {row['name']} が{'オンライン' if online else 'オフライン'}になりました"
+          + (f" (ip={ip})" if online and ip else ""))
 
 
 def _handle_touch(module_id, tag_id):
@@ -573,8 +681,81 @@ def _end_session(module_id, worker, equipment):
     )
 
 
+# --------------------------------------------------- ブローカー自動探索（UDP）
+# ラズパイ側にPCのIPを固定で持たせると、DHCPでIPが変わるたびに手で書き換える
+# ことになる。ラズパイがLANへブロードキャストで問い合わせ、ここが応答する。
+
+DISCOVERY_PORT = int(os.environ.get("GEMMBA_DISCOVERY_PORT", "50505"))
+DISCOVERY_REQUEST = b"GEMMBA_DISCOVER_V1"
+
+
+def _outbound_ip_toward(peer_ip):
+    """
+    peer に到達するインターフェースの自IPを返す。
+    このPCのようにWi-Fiが複数枚ある場合でも、問い合わせ元に届く側を自動で選べる。
+    UDPなので connect() しても実際のパケットは飛ばない。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((peer_ip, 9))
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def _discovery_responder(sock):
+    while True:
+        try:
+            data, addr = sock.recvfrom(1024)
+        except OSError as e:
+            # Windowsでは、応答先が既にソケットを閉じていると次の recvfrom が
+            # WSAECONNRESET(10054) を投げる。UDPなので無視して受信を続ける。
+            if sock.fileno() == -1:
+                print(f"[discovery] responder stopped: {e}")
+                return
+            continue
+        if data.strip() != DISCOVERY_REQUEST:
+            continue
+        host = _outbound_ip_toward(addr[0])
+        if not host:
+            continue
+        reply = json.dumps({"host": host, "port": MQTT_PORT}).encode("utf-8")
+        try:
+            sock.sendto(reply, addr)
+            print(f"[discovery] {addr[0]} へ broker {host}:{MQTT_PORT} を通知しました")
+        except OSError as e:
+            print(f"[discovery] {addr[0]} への応答に失敗: {e}")
+
+
+def start_discovery_responder():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Windows限定。応答先が閉じていた場合にICMPを例外へ昇格させる挙動を止める
+        if hasattr(socket, "SIO_UDP_CONNRESET"):
+            try:
+                sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except OSError:
+                pass
+        sock.bind(("", DISCOVERY_PORT))
+    except OSError as e:
+        print(f"[discovery] responder NOT started (udp/{DISCOVERY_PORT}): {e}")
+        print("       → ラズパイ側は GEMMBA_BROKER_HOST でIPを直接指定してください。")
+        return
+    threading.Thread(target=_discovery_responder, args=(sock,), daemon=True).start()
+    print(f"[discovery] responder started (udp/{DISCOVERY_PORT})")
+
+
 def start_mqtt_bridge():
     """MQTT クライアントをバックグラウンドスレッドで起動する"""
+    # 前回終了時の online が残っていると誤表示になる。購読時に retained な
+    # status が流れてくるので、いったん全部落としてから真の状態を受け直す。
+    conn = db.get_db()
+    conn.execute("UPDATE equipment SET online = 0")
+    conn.commit()
+    conn.close()
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         client.on_connect = _mqtt_on_connect
@@ -594,5 +775,6 @@ if __name__ == "__main__":
     # debug=True のリローダーは子プロセスで再実行されるため、実際に配信する
     # プロセス(WERKZEUG_RUN_MAIN)でのみ MQTT を起動して二重接続を防ぐ。
     if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_discovery_responder()
         start_mqtt_bridge()
     app.run(debug=DEBUG, host="0.0.0.0", port=5000, threaded=True)

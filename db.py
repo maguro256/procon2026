@@ -26,8 +26,9 @@ CREATE TABLE IF NOT EXISTS equipment (
     current_worker_id INTEGER REFERENCES workers(id),
     current_task_id INTEGER REFERENCES tasks(id),
     ip TEXT,
-    hostname TEXT,
+    hostname TEXT,                               -- モジュール(ラズパイ)の DEVICE_ID。IPが変わっても不変
     last_seen TEXT,                              -- 最終通信時刻
+    online INTEGER DEFAULT 0,                    -- 1=接続中。MQTTのLWT/ハートビートで自動更新
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -61,6 +62,18 @@ CREATE TABLE IF NOT EXISTS work_logs (
 """
 
 
+# CREATE TABLE IF NOT EXISTS は既存テーブルを更新しないため、SCHEMA にカラムを
+# 足しても運用中の gemmba.db には反映されない。追加したカラムはここにも1行書く。
+MIGRATIONS = {
+    "equipment": {
+        "ip": "TEXT",
+        "hostname": "TEXT",
+        "last_seen": "TEXT",
+        "online": "INTEGER DEFAULT 0",
+    },
+}
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -68,11 +81,25 @@ def get_db():
     return conn
 
 
+def migrate(conn):
+    """SCHEMA との差分カラムを既存テーブルへ追加する（冪等）"""
+    for table, columns in MIGRATIONS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column, decl in columns.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                print(f"[db] migrate: {table}.{column} を追加しました")
+
+
 def init_db(seed: bool = True):
+    # サンプル投入は「DBファイルが存在しなかった初回」に限る。テーブルが空か
+    # どうかで判定すると、意図的に全削除した後の起動でサンプルが復活してしまう。
+    first_run = not DB_PATH.exists()
     conn = get_db()
     conn.executescript(SCHEMA)
+    migrate(conn)
     # 初回のみサンプルデータを投入（動作確認用。不要なら seed=False で呼ぶ）
-    if seed and conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 0:
+    if seed and first_run:
         conn.executescript("""
         INSERT INTO workers (name, years_of_service, nfc_tag_id) VALUES
             ('田中 太郎', 12.0, 'TAG-0001'),

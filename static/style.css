@@ -165,6 +165,10 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 }
 .input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
 .input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+.input-sm { min-height: 30px; padding: 3px 8px; font-size: 13px; }
+
+/* 機材テーブル内のデバイスID紐付け（入力欄＋保存ボタンを1行に） */
+.bind-form { display: flex; gap: var(--space-2); align-items: center; min-width: 160px; }
 
 /* ---------------- カード ---------------- */
 .card {
@@ -192,6 +196,9 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .badge-working { background: var(--color-accent-100); color: var(--color-accent-800); }
 .badge-idle { background: var(--color-neutral-100); color: var(--color-neutral-800); }
 .badge-stopped { border: 1px solid var(--color-divider); color: var(--color-text); background: transparent; }
+/* モジュールの死活（機材のstatusとは別軸なので専用の色を持たせる） */
+.badge-online { background: #1f7a4d; color: #fff; }
+.badge-offline { border: 1px solid var(--color-divider); color: color-mix(in srgb, var(--color-text) 55%, transparent); background: transparent; }
 .badge-maintenance { border: 1px solid var(--color-warn); color: var(--color-warn); background: transparent; }
 /* 優先度 */
 .badge-p-urgent { background: var(--color-accent-100); color: var(--color-accent-800); }
@@ -273,7 +280,7 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .task-form-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; gap: var(--space-3); align-items: end; }
 .task-form-grid .span-all { grid-column: 1 / -1; }
 .worker-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
-.equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr auto; gap: var(--space-3); align-items: end; }
+.equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
 
 /* ---------------- タスク一覧 ---------------- */
 .task-list { display: flex; flex-direction: column; gap: var(--space-3); }
