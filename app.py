@@ -12,9 +12,12 @@ app.py - Gemmba 管理者画面（雛形）
 """
 import os
 import json
+import queue
 import socket
 import threading
+import time
 from datetime import datetime
+from uuid import uuid4
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 import paho.mqtt.client as mqtt
@@ -83,6 +86,17 @@ def workers():
     return render_template("workers.html", workers=rows, pending_tags=_pending_tags)
 
 
+def _back_to(default_endpoint):
+    """
+    フォームの next へ戻る。ポップアップはどの画面からでも出るので、登録後に
+    作業者管理へ飛ばされると元の画面を見失う。外部URLへは飛ばさない。
+    """
+    nxt = request.form.get("next", "")
+    if nxt.startswith("/") and not nxt.startswith("//"):
+        return redirect(nxt)
+    return redirect(url_for(default_endpoint))
+
+
 @app.route("/workers/add", methods=["POST"])
 def add_worker():
     name = request.form.get("name", "").strip()
@@ -90,7 +104,7 @@ def add_worker():
     nfc = request.form.get("nfc_tag_id", "").strip() or None
     if not name:
         flash("名前を入力してください", "error")
-        return redirect(url_for("workers"))
+        return _back_to("workers")
     conn = db.get_db()
     try:
         conn.execute(
@@ -104,7 +118,7 @@ def add_worker():
         flash("そのICタグIDは既に使われています", "error")
     finally:
         conn.close()
-    return redirect(url_for("workers"))
+    return _back_to("workers")
 
 
 @app.route("/workers/<int:worker_id>/delete", methods=["POST"])
@@ -260,10 +274,15 @@ def add_equipment():
         return redirect(url_for("equipment"))
     conn = db.get_db()
     try:
-        conn.execute("INSERT INTO equipment (name, module_id, hostname) VALUES (?, ?, ?)",
-                     (name, module_id, hostname))
+        cur = conn.execute("INSERT INTO equipment (name, module_id, hostname) VALUES (?, ?, ?)",
+                           (name, module_id, hostname))
         conn.commit()
-        flash(f"機材「{name}」を登録しました", "ok")
+        if not module_id:
+            # 空のままだとタッチが宛先不明で捨てられるので、ここで採番しておく
+            row = conn.execute("SELECT id, name, module_id FROM equipment WHERE id = ?",
+                               (cur.lastrowid,)).fetchone()
+            module_id = _ensure_module_id(conn, row)
+        flash(f"機材「{name}」を登録しました（モジュールID: {module_id}）", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのモジュールIDは既に使われています", "error")
     finally:
@@ -361,6 +380,90 @@ def api_update_equipment_status(module_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/pending", methods=["GET"])
+def api_pending():
+    """
+    未登録のICタグ・モジュールの一覧。管理画面がポーリングして、タッチされた
+    瞬間に登録フォームをポップアップで出すために使う。
+    """
+    conn = db.get_db()
+    names = {r["module_id"]: r["name"] for r in
+             conn.execute("SELECT module_id, name FROM equipment WHERE module_id IS NOT NULL")}
+    conn.close()
+    with _replies_lock:
+        confirms = [
+            {"request_id": rid, "device_id": s["device_id"], "text": s["text"],
+             "lines": s["lines"], "equipment_name": s["equipment_name"],
+             "worker_name": s["worker_name"]}
+            for rid, s in _pending_replies.items()
+            if s.get("text") is not None and not s["event"].is_set()
+        ]
+    return jsonify({
+        "tags": [{"tag_id": tag, "module_id": mod, "equipment_name": names.get(mod)}
+                 for tag, mod in _pending_tags.items()],
+        "modules": [dict(info, device_id=dev) for dev, info in _pending_modules.items()],
+        "confirms": confirms,
+    })
+
+
+@app.route("/api/confirm/<request_id>", methods=["POST"])
+def api_answer_confirm(request_id):
+    """
+    モジュールの代わりに管理画面から Yes/No を返す。
+
+    モジュールに物理ボタン（TODO.md の B-2）が付くまでの操作手段。実運用では
+    現場の作業者が機材の前で答えるのが本来の流れで、これはデモ用の抜け道。
+    """
+    data = request.get_json(silent=True) or {}
+    with _replies_lock:
+        slot = _pending_replies.get(request_id)
+        if slot is None or slot["event"].is_set():
+            return jsonify({"error": "その問い合わせは既に終わっています"}), 404
+        slot["answer"] = bool(data.get("answer"))
+        slot["event"].set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/equipment/<module_id>/cmd", methods=["POST"])
+def api_send_equipment_cmd(module_id):
+    """
+    モジュールへ指示を送る（下り通信の入口）。動作確認と、将来の管理画面からの
+    呼び出しを想定している。
+    body 例:
+        {"cmd": "display", "lines": ["点検してください"]}
+        {"cmd": "led", "state": "maintenance"}
+        {"cmd": "confirm", "text": "この機材を使いますか？", "timeout": 20}
+    confirm のときだけモジュールの応答を待ち、answer(true/false/null) を返す。
+    """
+    data = request.get_json(silent=True) or {}
+    cmd = data.get("cmd")
+    if not cmd:
+        return jsonify({"error": "cmd required"}), 400
+
+    conn = db.get_db()
+    eq = conn.execute("SELECT * FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
+    conn.close()
+    if not eq:
+        return jsonify({"error": "unknown module_id"}), 404
+    device_id = _device_id_of(eq)
+    if not device_id:
+        return jsonify({"error": "no device bound to this equipment"}), 409
+
+    fields = {k: v for k, v in data.items() if k != "cmd"}
+    if cmd == "confirm":
+        answer = request_confirm(
+            device_id,
+            fields.pop("text", ""),
+            timeout=float(fields.pop("timeout", CMD_TIMEOUT_SEC)),
+            **fields,
+        )
+        return jsonify({"ok": answer is not None, "answer": answer})
+
+    if not send_cmd(device_id, cmd, **fields):
+        return jsonify({"error": "module unreachable"}), 503
+    return jsonify({"ok": True})
+
+
 @app.route("/api/workers/<nfc_tag_id>/next_task", methods=["GET"])
 def api_next_task(nfc_tag_id):
     """NFCタッチ時: その作業者に表示すべき次のタスクを優先度順に返す"""
@@ -369,12 +472,13 @@ def api_next_task(nfc_tag_id):
     if not w:
         conn.close()
         return jsonify({"error": "unknown tag"}), 404
+    # デモの割当方針: 登録が古いものから順に出す。優先度や難易度は見ない。
+    # 本実装（TODO.md の D-1 / WariAthena）ではここが文脈ベクトルによる選択に変わる。
     rows = conn.execute("""
         SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
-        ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-                 deadline IS NULL, deadline
+        ORDER BY created_at, id
         LIMIT 5
     """, (w["id"],)).fetchall()
     conn.close()
@@ -507,32 +611,223 @@ def _find_equipment_by_device(conn, device_id):
     している構成でも動くよう両方を見る（hostname 一致を優先）。
     """
     return conn.execute(
-        """SELECT id, name, module_id FROM equipment
+        """SELECT id, name, module_id, online FROM equipment
            WHERE hostname = ? OR module_id = ?
            ORDER BY (hostname = ?) DESC LIMIT 1""",
         (device_id, device_id, device_id),
     ).fetchone()
 
 
+def _device_id_of(eq_row):
+    """機材レコードから MQTT の宛先となるデバイスIDを取り出す（_find_equipment_by_device の逆引き）"""
+    return eq_row["hostname"] or eq_row["module_id"]
+
+
+def _ensure_module_id(conn, row):
+    """
+    module_id が空の機材に採番する。
+
+    タッチ処理の宛先解決は module_id を返す作りなので、ここが NULL のままだと
+    「死活は映るのにタッチだけ黙って捨てられる」状態になる。機材登録フォームは
+    モジュールID欄を空にできるので、この状態は普通に作られてしまう。
+    """
+    if row["module_id"]:
+        return row["module_id"]
+    base = f"MOD-{row['id']:03d}"
+    candidate, n = base, 1
+    while conn.execute("SELECT 1 FROM equipment WHERE module_id = ?", (candidate,)).fetchone():
+        n += 1
+        candidate = f"{base}-{n}"
+    conn.execute("UPDATE equipment SET module_id = ? WHERE id = ?", (candidate, row["id"]))
+    conn.commit()
+    print(f"[equipment] 「{row['name']}」にモジュールIDを採番しました: {candidate}")
+    return candidate
+
+
 def _resolve_module_id(device_id):
     """NFCタッチの宛先となる module_id を返す。通信があった証拠として last_seen も更新する"""
     conn = db.get_db()
     row = _find_equipment_by_device(conn, device_id)
+    module_id = None
     if row:
+        module_id = _ensure_module_id(conn, row)
         conn.execute(
             "UPDATE equipment SET last_seen = datetime('now','localtime'), online = 1 WHERE id = ?",
             (row["id"],),
         )
         conn.commit()
     conn.close()
-    return row["module_id"] if row else None
+    return module_id
+
+
+# ------------------------------------------------ 下り通信（サーバー → モジュール）
+# 上り: pi/<device_id>/data (NFCタッチ), pi/<device_id>/status (死活)
+# 下り: pi/<device_id>/cmd   (指示)      → 応答は pi/<device_id>/reply
+#
+# 応答待ちは MQTT の受信スレッドを塞ぐとデッドロックする（返事のメッセージ自体を
+# 受け取れなくなる）。待つ側は必ず別スレッド、つまり下の _touch_worker か
+# Flask のリクエストスレッドで動かすこと。
+
+CMD_TIMEOUT_SEC = 30  # モジュールの応答を待つ既定の秒数
+
+_mqtt_client = None
+_pending_replies: dict = {}  # request_id -> {"event": Event, "answer": ...}
+_replies_lock = threading.Lock()
+
+
+def send_cmd(device_id, cmd, **fields):
+    """モジュールへ指示を1件送る。返事が要る場合は request_confirm を使う"""
+    if not device_id:
+        return False
+    client = _mqtt_client
+    if client is None or not client.is_connected():
+        print(f"[cmd] ブローカー未接続のため {device_id} へ '{cmd}' を送れません")
+        return False
+    payload = json.dumps(dict(fields, cmd=cmd), ensure_ascii=False)
+    # retain しない。再起動したモジュールに古い指示が復活すると誤動作になる
+    client.publish(f"pi/{device_id}/cmd", payload, qos=1)
+    return True
+
+
+def request_confirm(device_id, text, timeout=CMD_TIMEOUT_SEC, **fields):
+    """
+    モジュールに Yes/No を尋ねて答えを待つ。C-1（承認フロー）の土台。
+    戻り値: True=Yes / False=No / None=送れなかった or 時間切れ
+    """
+    request_id = uuid4().hex[:8]
+    # 待っている内容も持たせておく。モジュールに物理ボタンが付くまでは、
+    # 管理画面がこれを読んで代わりに答えられるようにするため（/api/pending）。
+    slot = {
+        "event": threading.Event(), "answer": None,
+        "device_id": device_id, "text": text,
+        "lines": fields.get("lines") or [],
+        "equipment_name": fields.get("equipment_name"),
+        "worker_name": fields.get("worker_name"),
+    }
+    with _replies_lock:
+        _pending_replies[request_id] = slot
+    try:
+        if not send_cmd(device_id, "confirm", request_id=request_id, text=text,
+                        timeout=timeout, **fields):
+            return None
+        # モジュール側のタイムアウトより少しだけ長く待つ。先に諦めると、
+        # 後から届いた答えの行き場が無くなる。
+        if not slot["event"].wait(timeout + 2):
+            print(f"[cmd] {device_id} から応答がありません (request_id={request_id})")
+            return None
+        return slot["answer"]
+    finally:
+        with _replies_lock:
+            _pending_replies.pop(request_id, None)
+
+
+def _handle_reply(device_id, payload):
+    """モジュールからの応答を、待っている request_confirm に渡す"""
+    request_id = payload.get("request_id")
+    with _replies_lock:
+        slot = _pending_replies.get(request_id)
+    if slot is None:
+        # 時間切れ後に届いた答えや、既に処理済みの request_id
+        print(f"[{device_id}] 待ち受けの無い応答を無視しました: {payload}")
+        return
+    slot["answer"] = payload.get("answer")
+    slot["event"].set()
+
+
+_screen_gen: dict = {}  # device_id -> 表示の世代番号。戻し処理の割り込み判定に使う
+_screen_lock = threading.Lock()
+
+
+def _notify(device_id, lines, led=None):
+    """モジュールの画面とLEDをまとめて更新する。部品が付くまでは向こうで print される"""
+    send_cmd(device_id, "display", lines=lines)
+    if led:
+        send_cmd(device_id, "led", state=led)
+    with _screen_lock:
+        _screen_gen[device_id] = gen = _screen_gen.get(device_id, 0) + 1
+    return gen
+
+
+def _notify_briefly(device_id, module_id, lines, led, sec=6):
+    """
+    エラー表示を出して、しばらくしたら本来の画面へ戻す。戻さないと
+    「未登録のICカードです」が次に誰かが操作するまで出しっぱなしになる。
+    戻す前に別の表示が出ていたら何もしない（世代番号で判定）。
+    """
+    gen = _notify(device_id, lines, led)
+
+    def revert():
+        time.sleep(sec)
+        with _screen_lock:
+            if _screen_gen.get(device_id) != gen:
+                return
+        conn = db.get_db()
+        row = conn.execute("SELECT id FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
+        conn.close()
+        if row:
+            _sync_module_state(device_id, row["id"])
+
+    threading.Thread(target=revert, daemon=True).start()
+
+
+def _sync_module_state(device_id, eq_id):
+    """
+    モジュールが（再）接続したときに、DB上の現状を画面とLEDへ反映する。
+    ラズパイが再起動しても表示が実態とずれない。
+    """
+    conn = db.get_db()
+    row = conn.execute("""
+        SELECT e.name, e.status, w.name AS worker_name, t.title AS task_title
+        FROM equipment e
+        LEFT JOIN workers w ON w.id = e.current_worker_id
+        LEFT JOIN tasks t   ON t.id = e.current_task_id
+        WHERE e.id = ?
+    """, (eq_id,)).fetchone()
+    conn.close()
+    if not row:
+        return
+    if row["status"] == "working":
+        lines = [f"{row['worker_name'] or '?'} さん 使用中", row["task_title"] or "フリー利用"]
+        led = "working" if row["task_title"] else "free"
+    elif row["status"] in ("stopped", "maintenance"):
+        lines = [row["name"], EQ_STATUS_LABELS.get(row["status"], row["status"])]
+        led = "error"
+    else:
+        lines = [row["name"], "社員証をタッチしてください"]
+        led = "idle"
+    _notify(device_id, lines, led)
+
+
+# タッチ処理は承認の応答待ちでブロックしうるので、MQTTの受信スレッドから外す。
+# 同じモジュールのタッチは順番に処理したいので、デバイスごとに1本のワーカーを持つ。
+_touch_queues: dict = {}
+_touch_lock = threading.Lock()
+
+
+def _dispatch_touch(device_id, module_id, tag_id):
+    with _touch_lock:
+        q = _touch_queues.get(device_id)
+        if q is None:
+            q = queue.Queue()
+            _touch_queues[device_id] = q
+            threading.Thread(target=_touch_worker, args=(device_id, q), daemon=True).start()
+    q.put((module_id, tag_id))
+
+
+def _touch_worker(device_id, q):
+    while True:
+        module_id, tag_id = q.get()
+        try:
+            _handle_touch(device_id, module_id, tag_id)
+        except Exception as e:  # ワーカーを絶対に落とさない
+            print(f"[{device_id}] タッチ処理で例外: {e}")
 
 
 def _mqtt_on_connect(client, userdata, flags, reason_code, properties):
     print(f"[MQTT] connected to broker (reason={reason_code})")
     # status は retained で publish されるので、購読した瞬間に現在オンラインの
     # モジュールが一括で流れてくる。app.py を再起動しても状態が復元される。
-    client.subscribe([("pi/+/data", 0), ("pi/+/status", 1)])
+    client.subscribe([("pi/+/data", 0), ("pi/+/status", 1), ("pi/+/reply", 1)])
 
 
 def _mqtt_on_message(client, userdata, msg):
@@ -550,6 +845,9 @@ def _mqtt_on_message(client, userdata, msg):
     if kind == "status":
         _handle_presence(device_id, payload)
         return
+    if kind == "reply":
+        _handle_reply(device_id, payload)
+        return
 
     tag_id = payload.get("tag_id")
     if not tag_id:
@@ -559,8 +857,9 @@ def _mqtt_on_message(client, userdata, msg):
     if not module_id:
         print(f"[{device_id}] このデバイスIDに対応する機材がありません。"
               f"機材管理画面で「デバイスID」に '{device_id}' を設定してください。")
+        _notify(device_id, ["未登録のモジュールです", "機材管理画面で紐付けてください"], "error")
         return
-    _handle_touch(module_id, tag_id)
+    _dispatch_touch(device_id, module_id, tag_id)
 
 
 def _handle_presence(device_id, payload):
@@ -585,6 +884,7 @@ def _handle_presence(device_id, payload):
         return
 
     _pending_modules.pop(device_id, None)
+    was_online = bool(row["online"])
     if online:
         conn.execute(
             """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
@@ -596,11 +896,17 @@ def _handle_presence(device_id, payload):
         conn.execute("UPDATE equipment SET online = 0 WHERE id = ?", (row["id"],))
     conn.commit()
     conn.close()
+    if online == was_online:
+        # 30秒ごとのハートビート。状態が変わっていないので何もしない。ここで
+        # 画面を送り直すと、表示中の承認プロンプト(C-1)を消してしまう。
+        return
     print(f"[{device_id}] {row['name']} が{'オンライン' if online else 'オフライン'}になりました"
           + (f" (ip={ip})" if online and ip else ""))
+    if online:
+        _sync_module_state(device_id, row["id"])
 
 
-def _handle_touch(module_id, tag_id):
+def _handle_touch(device_id, module_id, tag_id):
     """1回のNFCタッチを機材の状態に応じて 開始/終了/拒否 に振り分ける"""
     try:
         w_resp = requests.get(f"{SELF_URL}/api/workers/{tag_id}/next_task", timeout=HTTP_TIMEOUT)
@@ -610,7 +916,9 @@ def _handle_touch(module_id, tag_id):
         return
 
     if w_resp.status_code == 404:
-        print(f"[{module_id}] unknown NFC tag: {tag_id} → notifying (作業者管理画面に表示)")
+        print(f"[{module_id}] unknown NFC tag: {tag_id} → notifying (管理画面にポップアップ)")
+        _notify_briefly(device_id, module_id,
+                        ["未登録のICカードです", "管理画面から登録してください"], "error")
         try:
             requests.post(
                 f"{SELF_URL}/api/unknown_tag",
@@ -630,34 +938,93 @@ def _handle_touch(module_id, tag_id):
 
     if equipment["status"] in ("stopped", "maintenance"):
         print(f"[{module_id}] {worker['name']}: equipment unavailable ({equipment['status']})")
+        _notify_briefly(device_id, module_id,
+                        ["この機材は使用できません",
+                         EQ_STATUS_LABELS.get(equipment["status"], equipment["status"])], "error")
         return
 
     if equipment["status"] == "working":
         if equipment["current_worker_id"] == worker["id"]:
-            _end_session(module_id, worker, equipment)
+            _end_session(device_id, module_id, worker, equipment)
         else:
             print(f"[{module_id}] locked by another worker; rejecting {worker['name']}")
+            _notify_briefly(device_id, module_id,
+                            ["他の人が使用中です", f"{worker['name']} さんは使用できません"], "working")
         return
 
-    _start_session(module_id, tag_id, worker, equipment, tasks)
+    _start_session(device_id, module_id, tag_id, worker, equipment, tasks)
 
 
-def _start_session(module_id, tag_id, worker, equipment, tasks):
-    """空き機材でのタッチ = 開始。担当タスクがあれば着手、無ければフリー利用でロック"""
-    candidate = next((t for t in tasks if t.get("equipment_id") in (None, equipment["id"])), None)
-    if candidate:
-        requests.post(
-            f"{SELF_URL}/api/tasks/{candidate['id']}/start",
-            json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
+MAX_CHOICES = 3        # 1回のタッチで提示する候補の上限。多すぎると現場で待たされる
+CHOICE_TIMEOUT = 25    # 1件あたりの応答待ち秒数
+
+
+def _task_lines(task, index, total):
+    """選択画面の本文。表示は4行までで、この後に質問文と操作ヒントが付く"""
+    detail = f"{task.get('quantity') or 1}個"
+    if task.get("deadline"):
+        detail += f" / 期限 {task['deadline']}"
+    return [f"({index}/{total}) {task['title']}", detail]
+
+
+def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
+    """
+    空き機材でのタッチ = 開始。候補タスクを古い順に1件ずつ提示し、
+    承認されたら着手・ロックする（TODO.md の C-1 / C-2）。
+
+    - はい     → そのタスクに着手して機材をロック
+    - いいえ   → 次の候補へ。候補が尽きたらフリー利用を尋ねる
+    - 無応答   → 何もせず空きのまま戻す。ロックしっぱなしを防ぐ（C-4）
+    """
+    candidates = [t for t in tasks if t.get("equipment_id") in (None, equipment["id"])][:MAX_CHOICES]
+    total = len(candidates)
+
+    for i, task in enumerate(candidates, 1):
+        answer = request_confirm(
+            device_id, "このタスクに着手しますか？",
+            lines=_task_lines(task, i, total),
+            timeout=CHOICE_TIMEOUT,
+            equipment_name=equipment.get("name"), worker_name=worker["name"],
         )
-        print(f"[{module_id}] {worker['name']} started task: {candidate['title']}")
-    else:
+        if answer is None:
+            print(f"[{module_id}] {worker['name']}: 応答なしのため中止（{task['title']}）")
+            _notify_briefly(device_id, module_id, ["応答がありませんでした", "もう一度タッチしてください"], "idle")
+            return
+        if answer:
+            requests.post(
+                f"{SELF_URL}/api/tasks/{task['id']}/start",
+                json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
+            )
+            print(f"[{module_id}] {worker['name']} started task: {task['title']}")
+            _notify(device_id,
+                    [f"{worker['name']} さん", task["title"],
+                     _task_lines(task, i, total)[1], "終了時にもう一度タッチ"], "working")
+            _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks)
+            return
+        print(f"[{module_id}] {worker['name']}: スキップ（{task['title']}）")
+
+    # 候補が無い、または全部スキップされた
+    answer = request_confirm(
+        device_id, "フリー利用で使いますか？",
+        lines=["着手するタスクがありません"] if total == 0 else ["すべてスキップしました"],
+        timeout=CHOICE_TIMEOUT, equipment_name=equipment.get("name"),
+        worker_name=worker["name"],
+    )
+    if answer:
         requests.post(
             f"{SELF_URL}/api/equipment/{module_id}/status",
             json={"status": "working", "nfc_tag_id": tag_id}, timeout=HTTP_TIMEOUT,
         )
-        print(f"[{module_id}] {worker['name']} started free-use (no task)")
+        print(f"[{module_id}] {worker['name']} started free-use")
+        _notify(device_id, [f"{worker['name']} さん", "フリー利用中", "終了時にもう一度タッチ"], "free")
+        _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks)
+    else:
+        print(f"[{module_id}] {worker['name']}: 使用しないで終了")
+        _notify_briefly(device_id, module_id, ["キャンセルしました"], "idle", sec=3)
 
+
+def _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks):
+    """他の機材に優先タスクがあれば知らせる。C-3（誘導通知）は今のところ表示のみ"""
     elsewhere = next(
         (t for t in tasks
          if t.get("equipment_id") not in (None, equipment["id"]) and t["priority"] in ("urgent", "high")),
@@ -667,7 +1034,7 @@ def _start_session(module_id, tag_id, worker, equipment, tasks):
         print(f"[{module_id}] NOTE: {worker['name']} has higher-priority task elsewhere: {elsewhere['title']}")
 
 
-def _end_session(module_id, worker, equipment):
+def _end_session(device_id, module_id, worker, equipment):
     """使用中の本人が再タッチ = 終了。タスク中なら完了記録、フリー利用ならロック解除のみ"""
     task_id = equipment.get("current_task_id")
     if task_id:
@@ -679,6 +1046,7 @@ def _end_session(module_id, worker, equipment):
         f"{SELF_URL}/api/equipment/{module_id}/status",
         json={"status": "idle"}, timeout=HTTP_TIMEOUT,
     )
+    _notify(device_id, ["お疲れさまでした", "社員証をタッチしてください"], "idle")
 
 
 # --------------------------------------------------- ブローカー自動探索（UDP）
@@ -750,6 +1118,7 @@ def start_discovery_responder():
 
 def start_mqtt_bridge():
     """MQTT クライアントをバックグラウンドスレッドで起動する"""
+    global _mqtt_client
     # 前回終了時の online が残っていると誤表示になる。購読時に retained な
     # status が流れてくるので、いったん全部落としてから真の状態を受け直す。
     conn = db.get_db()
@@ -761,6 +1130,7 @@ def start_mqtt_bridge():
         client.on_connect = _mqtt_on_connect
         client.on_message = _mqtt_on_message
         client.connect(MQTT_HOST, MQTT_PORT, 60)
+        _mqtt_client = client  # 下り(cmd)の publish に使う
         threading.Thread(target=client.loop_forever, daemon=True).start()
         print(f"[MQTT] bridge started (broker {MQTT_HOST}:{MQTT_PORT})")
     except Exception as e:

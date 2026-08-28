@@ -309,3 +309,60 @@ code { font-family: var(--font-mono); background: var(--color-surface); padding:
   .task-form-grid, .worker-form-grid, .equipment-form-grid { grid-template-columns: 1fr; }
   .task-actions { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------------- 未登録ICカードのポップアップ ---------------- */
+/* 未登録タグがタッチされると、どの画面にいても割り込んで登録フォームを出す */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--space-6);
+  background: color-mix(in srgb, #141618 62%, transparent);
+  backdrop-filter: blur(2px);
+}
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  width: min(440px, 100%);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-lg);
+  animation: modal-in .16s ease-out;
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .modal { animation: none; } }
+
+.modal-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+.modal-head h4 { font-size: 16px; }
+.modal-badge {
+  flex: none; padding: 2px 8px; border-radius: var(--radius-sm);
+  font-size: 11px; letter-spacing: .04em;
+  background: #e67e22; color: #fff;
+}
+.modal-lead { font-size: 13px; line-height: 1.6; margin-bottom: var(--space-4); }
+
+.modal-facts {
+  display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4);
+  border-radius: var(--radius-md); background: var(--color-neutral-100);
+  font-size: 13px;
+}
+.modal-facts dt { color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+.modal-facts dd { word-break: break-all; }
+
+.modal-form { display: flex; flex-direction: column; gap: var(--space-4); }
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
+
+/* モジュールの応答待ち（タスクの選択）ポップアップ */
+.modal-badge.badge-wait { background: var(--color-accent-600); }
+.confirm-body {
+  padding: var(--space-4); margin-bottom: var(--space-3);
+  border-radius: var(--radius-md); background: var(--color-neutral-100);
+  border-left: 3px solid var(--color-accent);
+}
+.confirm-body p { font-size: 15px; line-height: 1.5; }
+.confirm-body p:first-child { font-weight: 600; margin-bottom: 2px; }
+.confirm-body p:not(:first-child) { font-size: 13px; color: color-mix(in srgb, var(--color-text) 65%, transparent); }
+.confirm-question { font-size: 14px; margin-bottom: var(--space-4); }
+.modal-note { font-size: 11px; line-height: 1.5; margin-top: var(--space-3); }

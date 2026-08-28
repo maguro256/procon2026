@@ -1,10 +1,18 @@
-import nfc
 import paho.mqtt.client as mqtt
 import json
 import os
+import queue
 import socket
+import sys
 import threading
 import time
+
+try:
+    import nfc
+except ImportError:
+    # リーダーが繋がっていないPCでも通信部分を動かせるようにする（sim.py 用）。
+    # 実機では必ず入っているので、ここに落ちたら nfcpy の導入を疑う。
+    nfc = None
 
 # 機材との対応付けに使う名前。管理画面の「デバイスID」と一致させること。
 # モジュールの同一性はこのIDで決まるので、IPが変わっても影響しない。
@@ -21,9 +29,15 @@ DISCOVERY_TIMEOUT = 3.0
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".broker_cache.json")
 STATUS_TOPIC = f"pi/{DEVICE_ID}/status"
 DATA_TOPIC = f"pi/{DEVICE_ID}/data"
+CMD_TOPIC = f"pi/{DEVICE_ID}/cmd"      # サーバーからの指示（下り）
+REPLY_TOPIC = f"pi/{DEVICE_ID}/reply"  # 指示への応答
 KEEPALIVE = 30          # この2倍ほど無応答だとブローカーがLWTを配信する
 HEARTBEAT_SEC = 30
 RETRY_SEC = 5
+
+# Yes/No の入力元。物理ボタン(B-2)が付くまでの代替手段。
+#   console(既定/キーボード) | yes | no | timeout
+INPUT_MODE = os.environ.get("GEMMBA_INPUT", "console")
 
 
 # ------------------------------------------------------------ ブローカー探索
@@ -120,17 +134,411 @@ def publish_online():
     client.publish(STATUS_TOPIC, payload, qos=1, retain=True)
 
 
+def publish_reply(body):
+    """サーバーの問い合わせに答える。request_id を付けて返さないと紐付かない"""
+    client.publish(REPLY_TOPIC, json.dumps(dict(body, device_id=DEVICE_ID), ensure_ascii=False), qos=1)
+
+
 def on_connect(client, userdata, flags, reason_code, properties):
     print(f"[MQTT] connected to {_broker['host']}:{_broker['port']} as {DEVICE_ID}")
     publish_online()
+    # 下り。自分宛てだけを購読する
+    client.subscribe(CMD_TOPIC, qos=1)
+    # 機材に紐付いていればサーバーが直後に本来の表示を送ってくるので、それまでの暫定表示
+    set_led("idle")
+    render_display(["社員証をタッチしてください"])
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
     print(f"[MQTT] disconnected (reason={reason_code})")
 
 
+def on_message(client, userdata, msg):
+    """
+    サーバーからの指示。NFC待ちは main スレッドでブロックしているので、
+    下りの処理はこのコールバック（paho のネットワークスレッド）側で完結させる。
+    """
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except ValueError:
+        print(f"[cmd] 壊れたペイロード: {msg.payload!r}")
+        return
+
+    cmd = payload.get("cmd")
+    if cmd == "display":
+        render_display(payload.get("lines") or [])
+    elif cmd == "led":
+        set_led(payload.get("state", "idle"))
+    elif cmd == "confirm":
+        # 答えを待つ間このスレッドを止めると後続の指示を取りこぼすので、別スレッドへ
+        threading.Thread(target=_handle_confirm, args=(payload,), daemon=True).start()
+    elif cmd == "ping":
+        publish_reply({"request_id": payload.get("request_id"), "answer": "pong"})
+    else:
+        print(f"[cmd] 未知のコマンド: {cmd}")
+
+
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
+client.on_message = on_message
+
+
+# ---------------------------------------------- 表示・LED・ボタン（B-1/B-2/B-3）
+# 2.8インチ SPI TFT (ILI9341) に描く。ディスプレイが無い・SPIが無効・PC上で
+# sim.py を動かしている場合は自動でコンソール出力に落ちるので、呼び出し側
+# （on_message）は環境を気にしなくてよい。
+#
+# ステータスLED(B-3)は独立した部品がまだ無いので、画面上部の色帯で代用している。
+
+LED_LABELS = {
+    "idle": "空き", "working": "作業中", "free": "フリー利用中",
+    "error": "使用不可", "offline": "オフライン",
+}
+
+LED_COLORS = {
+    "idle":    (0x2E, 0xA0, 0x43),
+    "working": (0xE0, 0x8A, 0x1E),
+    "free":    (0x2F, 0x6D, 0xCC),
+    "error":   (0xC8, 0x32, 0x32),
+    "offline": (0x5A, 0x5A, 0x5A),
+}
+
+BG_COLOR = (0x12, 0x12, 0x14)
+FG_COLOR = (0xF0, 0xF0, 0xF0)
+SUB_COLOR = (0x9A, 0x9A, 0xA0)
+
+# フォントは1つでは足りない。Raspberry Pi OS 標準の DroidSansFallbackFull は
+# 日本語を持つ代わりに ASCII のグリフが無く、'A' や '0' が豆腐(□)になる。逆に
+# DejaVuSans は英数字だけ。そこで候補を並べ、文字ごとに持っている方で描く。
+# apt で Noto CJK を入れれば1つで済むが、root が要るので依存させない。
+FONT_PATHS = [p for p in (
+    os.environ.get("GEMMBA_FONT"),                                 # 明示指定を最優先
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",             # 英数字・記号
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",   # 日本語
+) if p]
+DISPLAY_MODE = os.environ.get("GEMMBA_DISPLAY", "auto")  # auto | off
+
+_led_state = "idle"
+_last_lines = []
+_last_pushed = None  # 直前に描いた (lines, state)。同じなら描き直さない
+_lcd = None
+_fonts = {}          # role -> [ImageFont, ...] 前から順に、その字を持つ方を使う
+_ascent = {}         # role -> ベースライン位置（フォントを混ぜても行が揃うように）
+_notdef_cache = {}   # font -> 豆腐(.notdef)のビットマップ
+_glyph_cache = {}    # (role, 文字) -> 実際に使うフォント
+# MQTTの受信スレッドと confirm のスレッドが同時に描きに来るので直列化する
+_display_lock = threading.Lock()
+
+
+def _load_fonts():
+    """フォントを1度だけ読む。ハード無しでも呼べる（--preview 用）"""
+    from PIL import ImageFont
+
+    if _fonts:
+        return
+    for role, size in (("title", 26), ("body", 21), ("small", 15)):
+        loaded = []
+        for path in FONT_PATHS:
+            try:
+                loaded.append(ImageFont.truetype(path, size))
+            except OSError:
+                pass
+        if not loaded:
+            loaded = [ImageFont.load_default()]
+            print(f"[LCD] フォントを読めません（{FONT_PATHS}）。文字化けします。")
+        _fonts[role] = loaded
+        # 異なるフォントを混ぜて描くので、ベースラインを揃えないと上下にガタつく
+        _ascent[role] = max(f.getmetrics()[0] for f in loaded)
+
+
+def _has_glyph(font, ch):
+    """その文字の絵を持っているか。持っていなければ .notdef（豆腐）と同じ絵になる"""
+    from PIL import Image, ImageDraw
+
+    def bitmap(c):
+        img = Image.new("L", (48, 48), 0)
+        ImageDraw.Draw(img).text((4, 4), c, font=font, fill=255)
+        return img.tobytes()
+
+    notdef = _notdef_cache.get(font)
+    if notdef is None:
+        notdef = _notdef_cache[font] = bitmap(chr(0xE000))  # 私用領域＝まず入っていない
+    return bitmap(ch) != notdef
+
+
+def _font_for(role, ch):
+    """文字ごとに、その字を持っているフォントを選ぶ。結果は覚えておく"""
+    key = (role, ch)
+    font = _glyph_cache.get(key)
+    if font is None:
+        fonts = _fonts[role]
+        font = next((f for f in fonts if _has_glyph(f, ch)), fonts[0])
+        _glyph_cache[key] = font
+    return font
+
+
+def _text_width(text, role):
+    return sum(_font_for(role, ch).getlength(ch) for ch in text)
+
+
+def _draw_text(d, x, y, text, role, fill):
+    """フォントを混ぜて1行描く。y は行の上端で、内部でベースラインに揃える"""
+    baseline = y + _ascent[role]
+    for ch in text:
+        font = _font_for(role, ch)
+        d.text((x, baseline), ch, font=font, fill=fill, anchor="ls")
+        x += font.getlength(ch)
+    return x
+
+
+def init_display():
+    """LCDを開く。開けなければ None のままでコンソール出力になる（例外は出さない）"""
+    global _lcd
+    if DISPLAY_MODE == "off":
+        print("[LCD] GEMMBA_DISPLAY=off のため使いません")
+        return None
+    try:
+        import ili9341
+    except ImportError as e:
+        print(f"[LCD] 使えません（{e}）。コンソールに出力します。")
+        return None
+    try:
+        lcd = ili9341.open_display()
+    except Exception as e:
+        print(f"[LCD] 使えません（{e}）。コンソールに出力します。")
+        return None
+
+    _load_fonts()
+    _lcd = lcd
+    print(f"[LCD] {lcd.width}x{lcd.height} rotation={lcd.rotation} で初期化しました")
+    return lcd
+
+
+def _compose(lines, state, size=None):
+    """1画面ぶんの絵を作る。上部が状態の色帯、その下に本文、最下部に接続先"""
+    from PIL import Image, ImageDraw
+
+    W, H = size or (_lcd.width, _lcd.height)
+    img = Image.new("RGB", (W, H), BG_COLOR)
+    d = ImageDraw.Draw(img)
+
+    bar = 40
+    d.rectangle([0, 0, W, bar], fill=LED_COLORS.get(state, (0x5A, 0x5A, 0x5A)))
+    _draw_text(d, 10, 9, LED_LABELS.get(state, state), "body", (255, 255, 255))
+    _draw_text(d, W - _text_width(DEVICE_ID, "small") - 10, 14, DEVICE_ID, "small",
+               (255, 255, 255))
+
+    y = bar + 16
+    for i, line in enumerate(lines[:4]):
+        role = "title" if i == 0 else "body"
+        _draw_text(d, 12, y, _fit(str(line), role, W - 24), role,
+                   FG_COLOR if i == 0 else SUB_COLOR)
+        y += 36 if i == 0 else 29
+
+    foot = f"broker {_broker['host']}" if _broker["host"] else "ブローカー未接続"
+    _draw_text(d, 12, H - 22, foot, "small", (0x6E, 0x6E, 0x74))
+    return img
+
+
+def _fit(text, role, max_width):
+    """画面幅に収まらない行は末尾を … で詰める。機材名やタスク名は長くなりうる"""
+    if _text_width(text, role) <= max_width:
+        return text
+    while text and _text_width(text + "…", role) > max_width:
+        text = text[:-1]
+    return text + "…"
+
+
+def _push(lines, state):
+    """内容が変わっていなければ描かない。SPIの全面書き換えは200ms近くかかる"""
+    global _last_pushed
+    if _lcd is None:
+        return
+    key = (tuple(str(x) for x in lines), state)
+    if key == _last_pushed:
+        return
+    try:
+        with _display_lock:
+            _lcd.display(_compose(lines, state))
+        _last_pushed = key
+    except Exception as e:
+        print(f"[LCD] 描画に失敗: {e}")
+
+
+def render_display(lines):
+    global _last_lines
+    _last_lines = list(lines)
+    width = 34
+    print("┌" + "─" * width)
+    for line in lines:
+        print("│ " + str(line))
+    print("└" + "─" * width)
+    _push(_last_lines, _led_state)
+
+
+def set_led(state):
+    global _led_state
+    _led_state = state
+    print(f"[LED] {LED_LABELS.get(state, state)}")
+    _push(_last_lines, state)
+
+
+def _compose_selftest(size, rotation):
+    """動作確認画面の絵。ハード無しでも作れるよう lcd に依存させない"""
+    from PIL import Image, ImageDraw
+
+    W, H = size
+    img = Image.new("RGB", (W, H), BG_COLOR)
+    d = ImageDraw.Draw(img)
+
+    bars = [("R", (255, 0, 0)), ("G", (0, 255, 0)), ("B", (0, 0, 255)),
+            ("C", (0, 255, 255)), ("M", (255, 0, 255)), ("Y", (255, 255, 0)),
+            ("W", (255, 255, 255)), ("K", (0, 0, 0))]
+    bw = W / len(bars)
+    top, bh = 30, 60
+    for i, (label, color) in enumerate(bars):
+        x0 = int(i * bw)
+        x1 = int((i + 1) * bw) - 1
+        d.rectangle([x0, top, x1, top + bh], fill=color)
+        # ラベルは帯の下に置く（帯の上に書くと白/黒帯で読めない）
+        _draw_text(d, x0 + 6, top + bh + 4, label, "small", SUB_COLOR)
+
+    _draw_text(d, 32, 4, "ILI9341 動作確認", "body", FG_COLOR)  # 左上のかぎ括弧を避ける
+
+    y = top + bh + 28
+    for text, color in (
+        (f"{W}x{H}  rotation={rotation}", FG_COLOR),
+        (f"device_id: {DEVICE_ID}", SUB_COLOR),
+        ("日本語表示テスト: 旋盤 稼働中", (0x6C, 0xD0, 0x8A)),
+    ):
+        _draw_text(d, 10, y, text, "body", color)
+        y += 28
+
+    # 4隅のかぎ括弧。切れていたら表示領域か回転がずれている
+    m, L = 2, 22
+    for cx, cy, dx, dy in ((m, m, 1, 1), (W - m - 1, m, -1, 1),
+                           (m, H - m - 1, 1, -1), (W - m - 1, H - m - 1, -1, -1)):
+        d.line([cx, cy, cx + dx * L, cy], fill=(255, 255, 255), width=2)
+        d.line([cx, cy, cx, cy + dy * L], fill=(255, 255, 255), width=2)
+    return img
+
+
+def selftest(hold_sec=180):
+    """
+    ディスプレイの動作確認画面。配線・向き・色順(RGB/BGR)・日本語フォントを
+    一度に確認する。
+
+        python3 raspi.py --selftest [秒数]
+
+    見るべき点:
+      - 4隅のかぎ括弧が全部見えるか  → 表示領域と回転が合っているか
+      - 色帯のラベルと色が一致するか → RGB/BGRの順序（赤と青が逆なら要調整）
+      - 日本語が化けていないか       → フォント
+
+    描いたら hold_sec 秒そのまま保持する。プロセスが終わると gpiozero が
+    GPIO を解放し、バックライトを GPIO で制御している配線では消えてしまうため。
+    """
+    lcd = init_display()
+    if lcd is None:
+        print("[selftest] ディスプレイを開けませんでした。上のメッセージを確認してください。")
+        return 1
+
+    lcd.display(_compose_selftest((lcd.width, lcd.height), lcd.rotation))
+    print("[selftest] 表示しました。画面を確認してください。")
+    print("  ・4隅のかぎ括弧が全部見える → 表示領域と回転はOK")
+    print("  ・R/G/B の帯が赤/緑/青の順  → 色順はOK（赤と青が逆なら GEMMBA_LCD_ROTATION や配線を確認）")
+    print("  ・日本語が読める            → フォントOK")
+    print(f"[selftest] {hold_sec}秒間このまま表示します（Ctrl-C で終了）")
+    try:
+        time.sleep(hold_sec)
+    except KeyboardInterrupt:
+        pass
+    print("[selftest] 終了します。")
+    return 0
+
+
+def preview(path):
+    """
+    ハード無しで主要な画面を1枚のPNGに書き出す。SPIが通る前や開発PCで、
+    はみ出し・文字化け・配置を確認するため。
+
+        python3 raspi.py --preview /tmp/screens.png
+    """
+    from PIL import Image
+
+    rot = int(os.environ.get("GEMMBA_LCD_ROTATION", "90"))
+    size = (320, 240) if rot in (90, 270) else (240, 320)
+    _load_fonts()
+
+    screens = [
+        _compose_selftest(size, rot),
+        _compose(["test1", "社員証をタッチしてください"], "idle", size),
+        _compose(["山田 花子 さん", "製品A 組立", "数量 30 / 期限 2026-08-30"], "working", size),
+        _compose(["レーザー加工機 #1 の長い機材名テスト", "着手しますか？",
+                  "[y] はい  [n] いいえ"], "free", size),
+    ]
+    sheet = Image.new("RGB", (size[0] * 2 + 12, size[1] * 2 + 12), (60, 60, 66))
+    for i, img in enumerate(screens):
+        sheet.paste(img, ((i % 2) * (size[0] + 12), (i // 2) * (size[1] + 12)))
+    sheet.save(path)
+    print(f"[preview] {path} に {len(screens)} 画面を書き出しました ({size[0]}x{size[1]})")
+    return 0
+
+
+# console モードの入力。行を1本のスレッドで読んでキューに積む。都度 input() する
+# 実装だと、時間切れになった問い合わせのスレッドが stdin を掴んだまま残る。
+_stdin_lines = queue.Queue()
+
+
+def _stdin_reader():
+    for line in sys.stdin:
+        _stdin_lines.put(line.strip())
+
+
+def _console_ask(timeout):
+    while not _stdin_lines.empty():  # 問い合わせ前に打たれた行は捨てる
+        _stdin_lines.get_nowait()
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        try:
+            line = _stdin_lines.get(timeout=remaining).lower()
+        except queue.Empty:
+            return None
+        if line in ("y", "yes"):
+            return True
+        if line in ("n", "no"):
+            return False
+        print("y か n を入力してください")
+
+
+def ask_yes_no(text, lines, timeout):
+    """
+    Yes/No を取得する。B-2 で物理ボタンに差し替える箇所。
+    戻り値: True=はい / False=いいえ / None=時間切れ
+    """
+    render_display(list(lines) + [text, "[y] はい  [n] いいえ"])
+    if INPUT_MODE == "yes":
+        return True
+    if INPUT_MODE == "no":
+        return False
+    if INPUT_MODE == "timeout":
+        time.sleep(timeout)
+        return None
+    return _console_ask(timeout)
+
+
+def _handle_confirm(payload):
+    answer = ask_yes_no(
+        payload.get("text", ""),
+        payload.get("lines") or [],
+        float(payload.get("timeout", 30)),
+    )
+    if answer is None:
+        print("[cmd] 応答なしで時間切れ")
+    publish_reply({"request_id": payload.get("request_id"), "answer": answer})
 
 
 def connect_forever():
@@ -177,6 +585,9 @@ def heartbeat():
 # ------------------------------------------------------------ NFC
 
 def waitTouch():
+    if nfc is None:
+        raise RuntimeError("nfcpy が入っていません。リーダー無しで動かすなら raspi/sim.py を使ってください。")
+
     result = {}
 
     def on_tag_connect(tag):
@@ -200,10 +611,15 @@ def send_to_host_tag_id(tag_id):
 
 
 def main():
+    init_display()
+    set_led("offline")
+    render_display([f"Gemmba {DEVICE_ID}", "ブローカーを探しています…"])
     connect_forever()
     client.loop_start()
     threading.Thread(target=supervisor, daemon=True).start()
     threading.Thread(target=heartbeat, daemon=True).start()
+    if INPUT_MODE == "console":
+        threading.Thread(target=_stdin_reader, daemon=True).start()
 
     last_tag_id = None
     while True:
@@ -219,4 +635,11 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        arg = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
+        sys.exit(selftest(int(arg) if arg.isdigit() else 180))
+    if "--preview" in sys.argv:
+        i = sys.argv.index("--preview")
+        sys.exit(preview(sys.argv[i + 1] if len(sys.argv) > i + 1 else "screens.png"))
     main()
