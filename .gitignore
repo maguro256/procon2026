@@ -8,3 +8,8 @@ gemmba.db.before-reset-*
 
 # ラズパイのブローカー探索キャッシュ（環境ごとに異なる）
 raspi/.broker_cache.json
+
+# SQLiteの一時ファイル（app.py 稼働中に出る）
+gemmba.db-journal
+gemmba.db-wal
+gemmba.db-shm
