@@ -29,7 +29,7 @@ class RewardConverter:
     def to_reward(self,feedback,time_taken,task_type):
         time_score=self.return_task_avg(task_type,time_taken)[task_type]/time_taken
         reward=self.feedback_reward[feedback]*time_score
-        self.recordReward(choicetask,reward)
+        self.recordReward(task_type,reward)
         return reward
 
     def return_task_avg(self,task_type,taken_time):
@@ -47,19 +47,21 @@ class RewardConverter:
         return avg
     
     def recordReward(self,choicetask,reward):
-        self.learningdata[choicetask]=(self.learningdata[choicetask]*self.tasked_count+reward)/self.tasked_count
+        self.learningdata[choicetask]=(self.learningdata[choicetask]*self.tasked_count[choicetask]+reward)/self.tasked_count
 
 class elorating:
+    #試験的
     def __init__(self,n_workers=5,n_task_type=3):
-        rating=np.zeros(n_task_type,n_workers)
-        pass
+        self.rating=np.zeros((n_workers,n_task_type))
         
-    
+    def update_rating(self,worker_id,task_type,reward):
+        self.rating[worker_id][task_type]+=reward
+        
 
 class Simulator:
     def __init__(self,n_workers=5,n_task_type=3):
         self.workers=[worker(i) for i in range(n_workers)]
-        self.task_difficulty=[0.3,0.6,0.9]
+        self.task_difficulty=[0.15,0.3,0.45,0.6,0.85]       #タスク難易度1~5
         self.step_count=0
         self.current_task_type=None
     def get_context(self):
@@ -87,16 +89,18 @@ print("タスク終了後:",w.skill)
 sim=Simulator()
 w=worker(worker_id=0)
 r=RewardConverter()
-
+elo=elorating(n_workers=5,n_task_type=3)
 feedbacked=["easy","normal","hard"]
-for i in range(1000):
+for i in range(10000):
     choicetask=random.randrange(0,3)
     timetaken,feedback=w.simulate_output(choicetask)
     reward=r.to_reward(feedback,timetaken,choicetask)
     print(f"{timetaken} {feedbacked[feedback]} {choicetask}")
     print(reward)
+    elo.update_rating(worker_id=0, task_type=choicetask, reward=reward)
+print("elo rating:",elo.rating)
+print(w.skill)
 
-print(r.learningdata)
     
    
 
