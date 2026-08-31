@@ -13,3 +13,6 @@ raspi/.broker_cache.json
 gemmba.db-journal
 gemmba.db-wal
 gemmba.db-shm
+
+# タッチパネルのキャリブレーション結果（個体ごとに異なる）
+raspi/.touch_calibration.json

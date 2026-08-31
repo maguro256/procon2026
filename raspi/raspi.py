@@ -6,17 +6,20 @@ import socket
 import sys
 import threading
 import time
+import uuid
 
-try:
-    import nfc
-except ImportError:
-    # リーダーが繋がっていないPCでも通信部分を動かせるようにする（sim.py 用）。
-    # 実機では必ず入っているので、ここに落ちたら nfcpy の導入を疑う。
-    nfc = None
+# カードリーダーは RC522 (MFRC522) に一本化した。ドライバは raspi/rc522.py。
+# import は touch_loop() の中で行う。リーダーの無いPCでも sim.py が動くようにするため。
+#
+# 注意: RC522 は ISO14443A(MIFARE) 専用で **FeliCa は読めない**。
+# FeliCa の社員証を使う必要が出たら、USBリーダー(nfcpy)を併用する構成に戻すこと。
 
 # 機材との対応付けに使う名前。管理画面の「デバイスID」と一致させること。
 # モジュールの同一性はこのIDで決まるので、IPが変わっても影響しない。
 DEVICE_ID = os.environ.get("GEMMBA_DEVICE_ID", "pi01")
+
+# 起動ごとに変わる識別子。同じ device_id でも「再起動した」ことが分かる
+SESSION_ID = uuid.uuid4().hex[:8]
 
 # ブローカーはUDPブロードキャストで自動探索する。環境変数を指定した場合はそちらを優先。
 #   GEMMBA_BROKER_HOST=192.168.0.114 python raspi.py
@@ -34,6 +37,11 @@ REPLY_TOPIC = f"pi/{DEVICE_ID}/reply"  # 指示への応答
 KEEPALIVE = 30          # この2倍ほど無応答だとブローカーがLWTを配信する
 HEARTBEAT_SEC = 30
 RETRY_SEC = 5
+
+# この秒数だけカードが見えなければ「離れた」とみなす。RC522 は磁界の揺らぎで
+# 一時的に読めないことがあるので、途切れてすぐ離脱と判断しない
+TOUCH_RELEASE_SEC = float(os.environ.get("GEMMBA_TOUCH_RELEASE", "1.0"))
+TOUCH_POLL_SEC = float(os.environ.get("GEMMBA_TOUCH_POLL", "0.1"))
 
 # Yes/No の入力元。物理ボタン(B-2)が付くまでの代替手段。
 #   console(既定/キーボード) | yes | no | timeout
@@ -128,6 +136,9 @@ def publish_online():
     payload = json.dumps({
         "device_id": DEVICE_ID,
         "online": True,
+        # プロセスごとに変わる。サーバー側が「再起動したモジュール」を見分けて
+        # 画面を送り直すために使う（ハートビートでは変わらない）
+        "session": SESSION_ID,
         "ip": local_ip_toward(_broker["host"]) if _broker["host"] else None,
     })
     # retain=True にすると、app.py が後から起動しても現在の状態を受け取れる
@@ -457,6 +468,141 @@ def selftest(hold_sec=180):
     return 0
 
 
+TOUCH_CAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              ".touch_calibration.json")
+
+
+def load_calibration():
+    """生値→画面座標の変換係数。無ければ None（未キャリブレーション）"""
+    try:
+        with open(TOUCH_CAL_PATH, encoding="utf-8") as f:
+            return json.load(f)["coeffs"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def raw_to_screen(coeffs, rx, ry):
+    """
+    アフィン変換で生値を画面座標にする。
+
+        px = a1*rx + b1*ry + c1
+        py = a2*rx + b2*ry + c2
+
+    x/y の入れ替わりや上下左右の反転も係数側に吸収されるので、
+    パネルの向きを気にしなくてよい。
+    """
+    (a1, b1, c1), (a2, b2, c2) = coeffs
+    return int(a1 * rx + b1 * ry + c1), int(a2 * rx + b2 * ry + c2)
+
+
+def _wait_for_tap(touch, timeout=30):
+    """1回のタップの生値を返す。押した瞬間ではなく、値が落ち着いてから拾う"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:                      # 押されるまで待つ
+        if touch.read_touch():
+            break
+        time.sleep(0.02)
+    else:
+        return None
+
+    samples = []
+    while time.time() < deadline:                      # 押されている間ためる
+        point = touch.read_touch()
+        if point is None:
+            break
+        samples.append(point)
+        time.sleep(0.02)
+    if len(samples) < 3:
+        return None
+    # 押し始めと離し際は値が暴れるので中央付近だけ使う
+    core = samples[len(samples) // 4: max(len(samples) * 3 // 4, len(samples) // 4 + 1)]
+    xs = sorted(p[0] for p in core)
+    ys = sorted(p[1] for p in core)
+    while touch.read_touch():                          # 離すまで待つ
+        time.sleep(0.02)
+    return xs[len(xs) // 2], ys[len(ys) // 2]
+
+
+def touch_calibrate():
+    """
+    画面の5点を順にタップしてもらい、生値→画面座標の変換係数を最小二乗で求める。
+
+        python3 raspi.py --calibrate
+
+    結果は raspi/.touch_calibration.json に保存され、以後自動で読まれる。
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    try:
+        import xpt2046
+    except ImportError as e:
+        print(f"[calibrate] xpt2046.py がありません: {e}")
+        return 1
+
+    lcd = init_display()
+    if lcd is None:
+        print("[calibrate] ディスプレイを開けませんでした。")
+        return 1
+    try:
+        touch = xpt2046.open_touch()
+    except Exception as e:
+        print(f"[calibrate] タッチパネルを開けません: {e}")
+        return 1
+
+    W, H = lcd.width, lcd.height
+    m = 30
+    targets = [(m, m), (W - m, m), (W - m, H - m), (m, H - m), (W // 2, H // 2)]
+    measured = []
+
+    for i, (px, py) in enumerate(targets, 1):
+        img = Image.new("RGB", (W, H), BG_COLOR)
+        d = ImageDraw.Draw(img)
+        d.line([px - 12, py, px + 12, py], fill=(255, 255, 255), width=2)
+        d.line([px, py - 12, px, py + 12], fill=(255, 255, 255), width=2)
+        d.ellipse([px - 5, py - 5, px + 5, py + 5], outline=(0xE0, 0x8A, 0x1E), width=2)
+        _draw_text(d, 12, 10, f"キャリブレーション {i}/{len(targets)}", "body", FG_COLOR)
+        _draw_text(d, 12, H - 30, "十字の中心を押してください", "small", SUB_COLOR)
+        lcd.display(img)
+        print(f"[calibrate] {i}/{len(targets)}  画面の十字を押してください…", flush=True)
+
+        raw = _wait_for_tap(touch)
+        if raw is None:
+            print("[calibrate] 反応がありませんでした。中止します。")
+            touch.close()
+            return 1
+        print(f"           生値 x={raw[0]} y={raw[1]}")
+        measured.append(raw)
+        time.sleep(0.3)
+
+    # [rx, ry, 1] から [px, py] への最小二乗フィット
+    A = np.array([[rx, ry, 1.0] for rx, ry in measured])
+    coeffs = []
+    for axis in (0, 1):
+        b = np.array([t[axis] for t in targets], dtype=float)
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        coeffs.append([float(v) for v in sol])
+
+    errors = [max(abs(raw_to_screen(coeffs, rx, ry)[a] - targets[i][a]) for a in (0, 1))
+              for i, (rx, ry) in enumerate(measured)]
+    worst = max(errors)
+
+    with open(TOUCH_CAL_PATH, "w", encoding="utf-8") as f:
+        json.dump({"coeffs": coeffs, "size": [W, H]}, f, ensure_ascii=False, indent=2)
+
+    print(f"[calibrate] 保存しました: {TOUCH_CAL_PATH}")
+    print(f"[calibrate] 最大誤差 {worst}px" +
+          ("（十分です）" if worst <= 12 else "（大きいのでやり直しを勧めます）"))
+
+    img = Image.new("RGB", (W, H), BG_COLOR)
+    d = ImageDraw.Draw(img)
+    _draw_text(d, 12, 40, "キャリブレーション完了", "title", FG_COLOR)
+    _draw_text(d, 12, 90, f"最大誤差 {worst}px", "body", SUB_COLOR)
+    lcd.display(img)
+    touch.close()
+    return 0
+
+
 def preview(path):
     """
     ハード無しで主要な画面を1枚のPNGに書き出す。SPIが通る前や開発PCで、
@@ -584,20 +730,50 @@ def heartbeat():
 
 # ------------------------------------------------------------ NFC
 
-def waitTouch():
-    if nfc is None:
-        raise RuntimeError("nfcpy が入っていません。リーダー無しで動かすなら raspi/sim.py を使ってください。")
+def touch_loop(on_tag):
+    """
+    カードが1回タッチされるごとに on_tag(tag_id) を呼び続ける。RC522 を使う。
 
-    result = {}
+    「1回のタッチ」を成立させるには、カードが離れたことを判定する必要がある。
+    これが無いと、置いたままのカードを何度も読み直して連続発火する。
+    離脱は「一定時間カードが見えないこと」で判断する。在席フラグの類は
+    カードの種類によって当てにならないため（旧USBリーダーで実証済み）。
+    """
+    import rc522
 
-    def on_tag_connect(tag):
-        result['tag'] = tag
-        return True
+    # 1回のタッチ = 1回の呼び出しにするため、「カードが見えている間」を状態として持つ。
+    # read_uid() は磁界の揺らぎで一時的に None を返すことがあるので、
+    # 途切れてすぐ離脱とはみなさず TOUCH_RELEASE_SEC ぶんの猶予を置く。
+    holding, last_seen = False, 0.0
 
-    with nfc.ContactlessFrontend('usb') as clf:
-        clf.connect(rdwr={'on-connect': on_tag_connect})
-
-    return result.get('tag')
+    while True:
+        reader = None
+        try:
+            reader = rc522.open_reader()
+            print(f"[NFC] RC522 を初期化しました (VersionReg=0x{reader.version:02X})。"
+                  "カードを待っています。")
+            while True:
+                uid = reader.read_uid()
+                now = time.monotonic()
+                if uid:
+                    last_seen = now
+                    if not holding:
+                        holding = True
+                        print(f"Tag ID: {uid}")
+                        try:
+                            on_tag(uid)
+                        except Exception as e:   # 送信失敗でリーダーは止めない
+                            print(f"[NFC] 送信に失敗: {e}")
+                elif holding and now - last_seen >= TOUCH_RELEASE_SEC:
+                    holding = False
+                    print("[NFC] カードが離れました")
+                time.sleep(TOUCH_POLL_SEC)
+        except Exception as e:
+            print(f"[NFC] リーダーのエラー: {e}  5秒後に開き直します")
+            holding = False
+            if reader is not None:
+                reader.close()
+            time.sleep(5)
 
 
 def send_to_host_tag_id(tag_id):
@@ -607,7 +783,11 @@ def send_to_host_tag_id(tag_id):
         "timestamp": time.time(),
     })
     info = client.publish(DATA_TOPIC, payload, qos=1)
-    info.wait_for_publish()
+    # NFCのコールバックから呼ばれるので、無期限に待つとリーダーが止まる
+    try:
+        info.wait_for_publish(timeout=5)
+    except (RuntimeError, ValueError) as e:
+        print(f"[MQTT] タッチの送信を確認できませんでした: {e}")
 
 
 def main():
@@ -621,17 +801,7 @@ def main():
     if INPUT_MODE == "console":
         threading.Thread(target=_stdin_reader, daemon=True).start()
 
-    last_tag_id = None
-    while True:
-        tag = waitTouch()
-        if tag:
-            tag_id = tag.identifier.hex()
-            if tag_id != last_tag_id:
-                print(f"Tag ID: {tag_id}")
-                send_to_host_tag_id(tag_id)
-            last_tag_id = tag_id
-        else:
-            last_tag_id = None
+    touch_loop(send_to_host_tag_id)
 
 
 if __name__ == "__main__":
@@ -639,6 +809,8 @@ if __name__ == "__main__":
         i = sys.argv.index("--selftest")
         arg = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
         sys.exit(selftest(int(arg) if arg.isdigit() else 180))
+    if "--calibrate" in sys.argv:
+        sys.exit(touch_calibrate())
     if "--preview" in sys.argv:
         i = sys.argv.index("--preview")
         sys.exit(preview(sys.argv[i + 1] if len(sys.argv) > i + 1 else "screens.png"))

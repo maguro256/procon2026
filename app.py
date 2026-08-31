@@ -33,6 +33,8 @@ app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
 _pending_tags: dict = {}
 # どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
 _pending_modules: dict = {}
+# モジュールの起動セッション: {device_id: session}。再起動の検出に使う
+_module_sessions: dict = {}
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
@@ -884,7 +886,14 @@ def _handle_presence(device_id, payload):
         return
 
     _pending_modules.pop(device_id, None)
-    was_online = bool(row["online"])
+    # モジュールが再起動すると session が変わる。DB上は online のままなので
+    # 「変化なし」に見えるが、向こうの画面は起動時の汎用表示に戻っているため
+    # 送り直す必要がある。
+    session = payload.get("session")
+    restarted = bool(session) and _module_sessions.get(device_id) != session
+    if session:
+        _module_sessions[device_id] = session
+    was_online = bool(row["online"]) and not restarted
     if online:
         conn.execute(
             """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
