@@ -2,17 +2,23 @@
 __pycache__/
 *.py[cod]
 
-# DBのバックアップ（gemmba.db 本体は追跡する）
+# DB本体。追跡しない。
+#   - app.py が動いている間ハートビートが last_seen を書き続けるので、
+#     常に「変更あり」になって差分が汚れる
+#   - バイナリなので複数人で作業すると毎回コンフリクトする（実際に起きた）
+# db.py が初回起動時に作り、サンプルデータも入れる。デモ用のタスクは
+# `python demo_data.py` で投入する。
+gemmba.db
 gemmba.db.bak
 gemmba.db.before-reset-*
-
-# ラズパイのブローカー探索キャッシュ（環境ごとに異なる）
-raspi/.broker_cache.json
 
 # SQLiteの一時ファイル（app.py 稼働中に出る）
 gemmba.db-journal
 gemmba.db-wal
 gemmba.db-shm
+
+# ラズパイのブローカー探索キャッシュ（環境ごとに異なる）
+raspi/.broker_cache.json
 
 # タッチパネルのキャリブレーション結果（個体ごとに異なる）
 raspi/.touch_calibration.json
