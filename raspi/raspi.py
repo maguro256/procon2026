@@ -203,13 +203,14 @@ client.on_message = on_message
 
 LED_LABELS = {
     "idle": "空き", "working": "作業中", "free": "フリー利用中",
-    "error": "使用不可", "offline": "オフライン",
+    "guide": "移動してください", "error": "使用不可", "offline": "オフライン",
 }
 
 LED_COLORS = {
     "idle":    (0x2E, 0xA0, 0x43),
     "working": (0xE0, 0x8A, 0x1E),
     "free":    (0x2F, 0x6D, 0xCC),
+    "guide":   (0x7E, 0x3F, 0xB8),   # C-3 の誘導中。他のどの状態とも見間違えない紫
     "error":   (0xC8, 0x32, 0x32),
     "offline": (0x5A, 0x5A, 0x5A),
 }
