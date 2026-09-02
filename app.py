@@ -33,6 +33,8 @@ app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
 _pending_tags: dict = {}
 # どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
 _pending_modules: dict = {}
+# モジュールの起動セッション: {device_id: session}。再起動の検出に使う
+_module_sessions: dict = {}
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
@@ -884,7 +886,14 @@ def _handle_presence(device_id, payload):
         return
 
     _pending_modules.pop(device_id, None)
-    was_online = bool(row["online"])
+    # モジュールが再起動すると session が変わる。DB上は online のままなので
+    # 「変化なし」に見えるが、向こうの画面は起動時の汎用表示に戻っているため
+    # 送り直す必要がある。
+    session = payload.get("session")
+    restarted = bool(session) and _module_sessions.get(device_id) != session
+    if session:
+        _module_sessions[device_id] = session
+    was_online = bool(row["online"]) and not restarted
     if online:
         conn.execute(
             """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
@@ -958,6 +967,14 @@ def _handle_touch(device_id, module_id, tag_id):
 MAX_CHOICES = 3        # 1回のタッチで提示する候補の上限。多すぎると現場で待たされる
 CHOICE_TIMEOUT = 25    # 1件あたりの応答待ち秒数
 
+# --- C-3（誘導通知）の設定
+GUIDE_TIMEOUT = 25         # 「移動しますか？」の応答待ち秒数
+GUIDE_NOTICE_SEC = 15      # 移動元に行き先を出しておく秒数
+GUIDE_ARRIVAL_SEC = 180    # 移動先に「向かっています」を出しておく秒数。歩く時間ぶん長め
+PRIORITY_RANK = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+# ここに該当する優先度なら、この機材にやることがあっても呼び戻して誘導する
+GUIDE_PRIORITIES = ("urgent", "high")
+
 
 def _task_lines(task, index, total):
     """選択画面の本文。表示は4行までで、この後に質問文と操作ヒントが付く"""
@@ -979,6 +996,11 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
     candidates = [t for t in tasks if t.get("equipment_id") in (None, equipment["id"])][:MAX_CHOICES]
     total = len(candidates)
 
+    # 他機材に先にやるべきタスクがあれば、ロックする前に尋ねる（C-3）。着手して
+    # からでは、移動しても この機材が塞がったままになる。
+    if _guide_to_other_equipment(device_id, module_id, worker, equipment, tasks, bool(candidates)):
+        return
+
     for i, task in enumerate(candidates, 1):
         answer = request_confirm(
             device_id, "このタスクに着手しますか？",
@@ -999,7 +1021,6 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
             _notify(device_id,
                     [f"{worker['name']} さん", task["title"],
                      _task_lines(task, i, total)[1], "終了時にもう一度タッチ"], "working")
-            _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks)
             return
         print(f"[{module_id}] {worker['name']}: スキップ（{task['title']}）")
 
@@ -1017,21 +1038,74 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
         )
         print(f"[{module_id}] {worker['name']} started free-use")
         _notify(device_id, [f"{worker['name']} さん", "フリー利用中", "終了時にもう一度タッチ"], "free")
-        _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks)
     else:
         print(f"[{module_id}] {worker['name']}: 使用しないで終了")
         _notify_briefly(device_id, module_id, ["キャンセルしました"], "idle", sec=3)
 
 
-def _warn_if_task_elsewhere(device_id, module_id, worker, equipment, tasks):
-    """他の機材に優先タスクがあれば知らせる。C-3（誘導通知）は今のところ表示のみ"""
-    elsewhere = next(
-        (t for t in tasks
-         if t.get("equipment_id") not in (None, equipment["id"]) and t["priority"] in ("urgent", "high")),
-        None,
+def _pick_guidance(conn, equipment, tasks, has_candidates):
+    """
+    「この機材ではなく、あちらでやってほしい」タスクを1件選ぶ（C-3）。
+    戻り値: (task, 移動先の機材row) / 該当なしなら (None, None)
+    """
+    others = [t for t in tasks if t.get("equipment_id") not in (None, equipment["id"])]
+    # 優先度の高い順。同順位は API が返した順（＝登録の古い順）のまま
+    others.sort(key=lambda t: PRIORITY_RANK.get(t.get("priority"), 9))
+
+    for task in others:
+        # 優先度が高くないタスクは、この機材でやることが無いときだけ誘導する。
+        # そうでないと、ここで作業できるのに毎回よそへ歩かされることになる。
+        if task.get("priority") not in GUIDE_PRIORITIES and has_candidates:
+            continue
+        row = conn.execute(
+            """SELECT id, name, module_id, hostname, status, online
+               FROM equipment WHERE id = ?""",
+            (task["equipment_id"],),
+        ).fetchone()
+        # 使用中・停止中の機材へ送っても無駄足になる。空きだけを誘導先にする
+        if row and row["status"] == "idle":
+            return task, row
+    return None, None
+
+
+def _guide_to_other_equipment(device_id, module_id, worker, equipment, tasks, has_candidates):
+    """
+    他機材に先にやるべきタスクがあれば、そちらへ移動するか尋ねる（C-3）。
+
+    戻り値 True = 誘導した。呼び出し側はこの機材をロックせずに終了する
+    """
+    conn = db.get_db()
+    try:
+        task, target = _pick_guidance(conn, equipment, tasks, has_candidates)
+    finally:
+        conn.close()
+    if not task:
+        return False
+
+    label = PRIORITY_LABELS.get(task.get("priority"), task.get("priority"))
+    answer = request_confirm(
+        device_id, f"{target['name']} へ移動しますか？",
+        lines=[f"{target['name']} に{label}のタスク", task["title"]],
+        timeout=GUIDE_TIMEOUT,
+        equipment_name=equipment.get("name"), worker_name=worker["name"],
     )
-    if elsewhere:
-        print(f"[{module_id}] NOTE: {worker['name']} has higher-priority task elsewhere: {elsewhere['title']}")
+    if not answer:
+        # いいえ / 無応答。断ったのだから、この機材での通常フローへ戻す
+        print(f"[{module_id}] {worker['name']}: 誘導を辞退（{target['name']} / {task['title']}）")
+        return False
+
+    print(f"[{module_id}] {worker['name']} を {target['name']} へ誘導: {task['title']}")
+    _notify_briefly(device_id, module_id,
+                    [f"{target['name']} へ移動してください", task["title"],
+                     "移動先で社員証をタッチ"], "guide", sec=GUIDE_NOTICE_SEC)
+
+    # 移動先にも予告を出す。着いた本人が「ここで合っている」と確認できる。
+    # 相手がオフラインでも send_cmd が黙って捨てるので、分岐は要らない。
+    if target["hostname"]:
+        _notify_briefly(target["hostname"], target["module_id"],
+                        [f"{worker['name']} さんが向かっています", task["title"],
+                         "社員証をタッチしてください"], "guide", sec=GUIDE_ARRIVAL_SEC)
+    return True
 
 
 def _end_session(device_id, module_id, worker, equipment):
