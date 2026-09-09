@@ -25,6 +25,7 @@ import requests
 
 import db
 import ai_stub
+import permissions as perms
 
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
@@ -58,7 +59,9 @@ def _ai_logs(conn):
 
 @app.context_processor
 def inject_labels():
-    return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS)
+    # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
+    return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS,
+                PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms)
 
 
 # ---------------------------------------------------------------- 画面
@@ -119,14 +122,16 @@ def add_worker():
     name = request.form.get("name", "").strip()
     years = request.form.get("years_of_service", "0").strip()
     nfc = request.form.get("nfc_tag_id", "").strip() or None
+    role = request.form.get("role") or perms.DEFAULT_ROLE
+    held = perms.dump(request.form.getlist("permissions"))
     if not name:
         flash("名前を入力してください", "error")
         return _back_to("workers")
     conn = db.get_db()
     try:
         conn.execute(
-            "INSERT INTO workers (name, years_of_service, nfc_tag_id) VALUES (?, ?, ?)",
-            (name, float(years or 0), nfc),
+            "INSERT INTO workers (name, years_of_service, role, permissions, nfc_tag_id) VALUES (?, ?, ?, ?, ?)",
+            (name, float(years or 0), role, held, nfc),
         )
         conn.commit()
         _pending_tags.pop(nfc, None)
@@ -136,6 +141,27 @@ def add_worker():
     finally:
         conn.close()
     return _back_to("workers")
+
+
+@app.route("/workers/<int:worker_id>/update", methods=["POST"])
+def update_worker(worker_id):
+    """役職・保有権限・勤続年数の変更（D-2）。資格は後から取るものなので編集口が要る"""
+    f = request.form
+    conn = db.get_db()
+    row = conn.execute("SELECT name FROM workers WHERE id = ?", (worker_id,)).fetchone()
+    if not row:
+        conn.close()
+        flash("作業者が見つかりません", "error")
+        return redirect(url_for("workers"))
+    conn.execute(
+        "UPDATE workers SET years_of_service = ?, role = ?, permissions = ? WHERE id = ?",
+        (float(f.get("years_of_service") or 0), f.get("role") or perms.DEFAULT_ROLE,
+         perms.dump(f.getlist("permissions")), worker_id),
+    )
+    conn.commit()
+    conn.close()
+    flash(f"{row['name']} さんの役職・権限を更新しました", "ok")
+    return redirect(url_for("workers"))
 
 
 @app.route("/workers/<int:worker_id>/delete", methods=["POST"])
@@ -176,13 +202,14 @@ def add_task():
         return redirect(url_for("tasks"))
     conn = db.get_db()
     conn.execute(
-        """INSERT INTO tasks (title, description, difficulty, priority, quantity, deadline)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO tasks (title, description, difficulty, priority, required_permissions, quantity, deadline)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             title,
             f.get("description", "").strip(),
             int(f.get("difficulty", 3)),
             f.get("priority", "normal"),
+            perms.dump(f.getlist("required_permissions")),
             int(f.get("quantity", 1) or 1),
             f.get("deadline") or None,
         ),
@@ -209,6 +236,25 @@ def update_task(task_id):
     equipment_id = f.get("equipment_id") or None
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # 必要権限（D-2）。チェックボックスは未チェックだと POST に現れないので、
+    # フォームに含まれていたことを隠しフィールドで見分ける。含まれない経路から
+    # 呼ばれたときに既存の設定を消さないため。
+    if "req_perm_form" in f:
+        required_perms = perms.dump(f.getlist("required_permissions"))
+    else:
+        required_perms = task["required_permissions"]
+
+    # 手動割り当てでも権限は無視できない。判定は「このフォームで指定された必要権限」
+    # に対して行うので、必要権限を外すのと同時に割り当てる操作は通る。
+    if worker_id:
+        cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
+        lacking = perms.missing(cand, {"required_permissions": required_perms}) if cand else []
+        if lacking:
+            conn.close()
+            flash(f"{cand['name']} さんは権限が足りないため割り当てできません"
+                  f"（不足: {'・'.join(perms.labels(lacking))}）", "error")
+            return redirect(url_for("tasks"))
+
     started_at = task["started_at"]
     completed_at = task["completed_at"]
     if status == "in_progress" and not started_at:
@@ -229,8 +275,8 @@ def update_task(task_id):
 
     conn.execute(
         """UPDATE tasks SET status = ?, assigned_worker_id = ?, equipment_id = ?,
-           started_at = ?, completed_at = ? WHERE id = ?""",
-        (status, worker_id, equipment_id, started_at, completed_at, task_id),
+           required_permissions = ?, started_at = ?, completed_at = ? WHERE id = ?""",
+        (status, worker_id, equipment_id, required_perms, started_at, completed_at, task_id),
     )
     conn.commit()
     conn.close()
@@ -245,14 +291,23 @@ def auto_assign(task_id):
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)
-    wid = ai_stub.assign_task(dict(task), [dict(w) for w in workers_], logs)
+    # 権限（D-2）はハード制約なので、学習器に渡す前に候補から落とす。
+    # 無資格者を選ばせてから弾くのでは、AI が選べなかった理由を説明できない。
+    eligible = perms.eligible_workers([dict(w) for w in workers_], task)
+    dropped = len(workers_) - len(eligible)
+    wid = ai_stub.assign_task(dict(task), eligible, logs)
     if wid:
         conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned' WHERE id = ?", (wid, task_id))
         conn.commit()
+        note = f"（実績 {len(logs)} 件から学習"
+        note += f" / 権限不足の {dropped} 名を除外）" if dropped else "）"
         if ai_stub.is_ready():
-            flash(f"AIがタスクを割り当てました（実績 {len(logs)} 件から学習）", "ok")
+            flash(f"AIがタスクを割り当てました{note}", "ok")
         else:
             flash("AI本体を読み込めなかったため、勤続年数で暫定割り当てしました", "error")
+    elif dropped:
+        flash(f"必要権限（{'・'.join(perms.labels(task['required_permissions']))}）を"
+              f"持つ作業者がいません", "error")
     else:
         flash("割り当て候補がいません", "error")
     conn.close()
@@ -493,19 +548,26 @@ def api_next_task(nfc_tag_id):
         conn.close()
         return jsonify({"error": "unknown tag"}), 404
     # 割当方針: WariAthena(ai_stub) が「この人が速く終わらせられそうな順」に並べ替える。
-    # 着手済み(in_progress)のものだけは投げ出させないよう先頭に固定する。
     rows = [dict(r) for r in conn.execute("""
-        SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id FROM tasks
+        SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id,
+               required_permissions
+        FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
         ORDER BY created_at, id
     """, (w["id"],)).fetchall()]
     logs = _ai_logs(conn)
     conn.close()
+    # 着手済みは投げ出させないよう先頭に固定する。ここは権限で落とさない。
+    # 作業中に資格が取り消されても、完了して機材を解放する経路は残す必要がある。
     in_progress = [t for t in rows if t["status"] == "in_progress"]
-    rest = [t for t in rows if t["status"] != "in_progress"]
+    # 未着手の候補は権限（D-2）を満たすものだけ。この1行でモジュール側の
+    # 候補提示（C-1/C-2）と他機材への誘導（C-3）の両方に効く。
+    rest = perms.eligible_tasks(w, [t for t in rows if t["status"] != "in_progress"])
     ordered = in_progress + ai_stub.rank_tasks(dict(w), rest, logs)
-    return jsonify({"worker": {"id": w["id"], "name": w["name"]}, "tasks": ordered[:5]})
+    return jsonify({"worker": {"id": w["id"], "name": w["name"], "role": w["role"],
+                               "permissions": perms.held(w)},
+                    "tasks": ordered[:5]})
 
 
 @app.route("/api/tasks/<int:task_id>/start", methods=["POST"])
@@ -526,6 +588,15 @@ def api_start_task(task_id):
     if not worker or not equipment:
         conn.close()
         return jsonify({"error": "unknown worker or module_id"}), 404
+
+    # 候補は api_next_task で絞ってあるが、このAPIは単体でも叩けるので二重に見る（D-2）
+    lacking = perms.missing(worker, task)
+    if lacking:
+        conn.close()
+        print(f"[{data.get('module_id')}] {worker['name']}: 権限不足で着手を拒否 "
+              f"({'/'.join(lacking)}) task={task['title']}")
+        return jsonify({"error": "permission denied", "missing": lacking,
+                        "missing_labels": perms.labels(lacking)}), 403
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     started_at = task["started_at"] or now
@@ -552,13 +623,15 @@ def api_create_task():
         return jsonify({"error": "title required"}), 400
     conn = db.get_db()
     cur = conn.execute(
-        """INSERT INTO tasks (title, description, difficulty, priority, quantity, deadline)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
+                            quantity, deadline)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             data["title"],
             data.get("description", ""),
             int(data.get("difficulty", 3)),
             data.get("priority", "normal"),
+            perms.dump(data.get("required_permissions")),
             int(data.get("quantity", 1)),
             data.get("deadline"),
         ),
@@ -1033,10 +1106,19 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
             _notify_briefly(device_id, module_id, ["応答がありませんでした", "もう一度タッチしてください"], "idle")
             return
         if answer:
-            requests.post(
+            res = requests.post(
                 f"{SELF_URL}/api/tasks/{task['id']}/start",
                 json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
             )
+            # 権限不足(403)など。候補は絞ってあるので通常は起きないが、承認の間に
+            # 権限や必要権限が変わることはある。作業中画面を出すとロックした様に見える
+            if res.status_code != 200:
+                body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+                reason = "・".join(body.get("missing_labels") or []) or "着手できませんでした"
+                print(f"[{module_id}] {worker['name']}: 着手に失敗 ({res.status_code}) {reason}")
+                _notify_briefly(device_id, module_id,
+                                ["このタスクには権限が必要です", reason], "error")
+                return
             print(f"[{module_id}] {worker['name']} started task: {task['title']}")
             _notify(device_id,
                     [f"{worker['name']} さん", task["title"],

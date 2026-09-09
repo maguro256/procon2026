@@ -1,0 +1,127 @@
+"""
+permissions.py - 役職と保有権限のモデル（TODO.md の D-2）
+
+`概要` の評価軸のうち「人物側: 役職・保有権限」「タスク側: 権限」を担当する。
+
+**これは学習の特徴量ではなく、候補集合を絞るハード制約**として使う。
+無資格者に危険作業を割り当てて失敗から学ぶ、という設計は成立しないため、
+WariAthena(ai_stub) を呼ぶ「前」にここで候補を落とす。勤続年数でも代用できない
+（20年でも無資格は不可、1年でも有資格なら可）。
+
+DBの持ち方:
+    workers.role         役職コード1つ。ROLE_GRANTS の既定権限が自動で付く
+    workers.permissions  個別に付与した権限コード。カンマ区切り
+    tasks.required_permissions
+                         そのタスクに必要な権限コード。カンマ区切りで
+                         **すべて**必要。空なら誰でも着手できる
+
+有効な権限 = 役職由来 ∪ 個別付与。役職を割当に効かせるのはこの経路で、
+文脈ベクトルには足していない（AI.py の predict() が8次元固定のため。
+役職を特徴量にする案は TODO.md の D-2 に残してある）。
+"""
+
+# 権限コード → 表示名。現場の法定資格を想定した最小セット。
+# 増やすときはここに1行足すだけでよく、DBのスキーマ変更は要らない。
+PERMISSIONS = {
+    "forklift":   "フォークリフト運転",
+    "crane":      "クレーン・玉掛け",
+    "press":      "プレス機械作業主任者",
+    "welding":    "アーク溶接",
+    "electric":   "低圧電気取扱",
+    "inspection": "完成検査",
+}
+
+# 役職コード → 表示名。上から順に権限が広い想定で並べている
+ROLES = {
+    "member":     "一般作業者",
+    "leader":     "班長",
+    "supervisor": "作業主任者",
+    "manager":    "管理者",
+}
+DEFAULT_ROLE = "member"
+
+# 役職に自動で付く権限。個別付与と合わせて「有効な権限」になる。
+# 管理者は全部持つ（デモで権限切れを起こしても詰まないようにする意味もある）
+ROLE_GRANTS = {
+    "member":     (),
+    "leader":     ("inspection",),
+    "supervisor": ("inspection", "press"),
+    "manager":    tuple(PERMISSIONS),
+}
+
+
+def _get(obj, key, default=""):
+    """sqlite3.Row と dict のどちらでも同じように読む。無い列は default"""
+    try:
+        value = obj[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def parse(text) -> list:
+    """カンマ区切りの権限コード列を list にする。重複と空白は落とす"""
+    if not text:
+        return []
+    if isinstance(text, (list, tuple, set)):
+        items = list(text)
+    else:
+        items = str(text).replace("、", ",").split(",")
+    out = []
+    for item in items:
+        code = str(item).strip()
+        if code and code not in out:
+            out.append(code)
+    return out
+
+
+def dump(codes) -> str:
+    """フォームから来た権限コード列をDBに入れる形（カンマ区切り）にする"""
+    return ",".join(parse(codes))
+
+
+def label(code) -> str:
+    """権限コードの表示名。未知のコードはそのまま返す（DBの値を消さない）"""
+    return PERMISSIONS.get(code, code)
+
+
+def labels(codes) -> list:
+    return [label(c) for c in parse(codes)]
+
+
+def role_label(code) -> str:
+    return ROLES.get(code or DEFAULT_ROLE, code or DEFAULT_ROLE)
+
+
+def granted_by_role(role) -> list:
+    return list(ROLE_GRANTS.get(role or DEFAULT_ROLE, ()))
+
+
+def held(worker) -> list:
+    """その作業者が実際に持っている権限（役職由来 ∪ 個別付与）"""
+    return parse(granted_by_role(_get(worker, "role")) + parse(_get(worker, "permissions")))
+
+
+def required(task) -> list:
+    """そのタスクに必要な権限"""
+    return parse(_get(task, "required_permissions"))
+
+
+def missing(worker, task) -> list:
+    """不足している権限。空リストなら着手できる"""
+    have = set(held(worker))
+    return [c for c in required(task) if c not in have]
+
+
+def allows(worker, task) -> bool:
+    return not missing(worker, task)
+
+
+def eligible_workers(workers, task) -> list:
+    """タスクの必要権限を満たす作業者だけを残す。順序は入力のまま"""
+    return [w for w in workers if allows(w, task)]
+
+
+def eligible_tasks(worker, tasks) -> list:
+    """その作業者が着手できるタスクだけを残す。順序は入力のまま"""
+    return [t for t in tasks if allows(worker, t)]

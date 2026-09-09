@@ -279,7 +279,8 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .form-panel.narrow { max-width: 640px; }
 .task-form-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; gap: var(--space-3); align-items: end; }
 .task-form-grid .span-all { grid-column: 1 / -1; }
-.worker-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
+.worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }
+.worker-form-grid .span-all, .worker-edit-grid .span-all { grid-column: 1 / -1; }
 .equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
 
 /* ---------------- タスク一覧 ---------------- */
@@ -302,11 +303,51 @@ code { font-family: var(--font-mono); background: var(--color-surface); padding:
 
 .empty { color: color-mix(in srgb, var(--color-text) 45%, transparent); font-size: .9rem; padding: var(--space-4) 0; }
 
+/* ---------------- 役職・権限（D-2） ---------------- */
+/* 権限は学習の特徴量ではなく候補を絞る条件なので、一覧でも編集でも
+   「誰が何を持っているか」が一目で分かることを優先している */
+.perm-checks { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.perm-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; font-size: 13px;
+  border: 1px solid var(--color-divider); border-radius: var(--radius-sm);
+  cursor: pointer; user-select: none;
+}
+.perm-check:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.perm-check input { margin: 0; accent-color: var(--color-accent); }
+.perm-check em {
+  font-style: normal; font-size: 10px; letter-spacing: .04em;
+  padding: 1px 5px; border-radius: var(--radius-sm);
+  background: var(--color-neutral-100); color: var(--color-neutral-800);
+}
+/* 役職で自動的に付く権限。外せないので入力ではなく表示として見せる */
+.perm-check.is-granted { cursor: default; opacity: .75; background: var(--color-surface); }
+
+.perm-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.task-perms { font-size: 12px; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+
+/* 一覧の下にぶら下がる編集フォーム。開くまでは1行しか占めない */
+.edit-row td { padding-top: 0; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }
+.edit-row summary,
+.perm-edit summary {
+  font-size: 12px; cursor: pointer; width: fit-content;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+.edit-row summary:hover, .perm-edit summary:hover { color: var(--color-accent); }
+.edit-row details[open] summary, .perm-edit[open] summary { margin-bottom: var(--space-3); }
+.worker-edit-grid {
+  display: grid; grid-template-columns: 140px 160px auto; gap: var(--space-3);
+  align-items: end; padding-bottom: var(--space-3);
+}
+.task-actions .span-all { grid-column: 1 / -1; }
+.perm-edit { margin-top: var(--space-2); }
+
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr !important; }
   .sidebar { position: static !important; height: auto; }
   .stat-grid { grid-template-columns: repeat(2,1fr); }
   .task-form-grid, .worker-form-grid, .equipment-form-grid { grid-template-columns: 1fr; }
+  .worker-edit-grid { grid-template-columns: 1fr; }
   .task-actions { grid-template-columns: 1fr 1fr; }
 }
 

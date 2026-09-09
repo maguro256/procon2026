@@ -1,0 +1,41 @@
+{# 役職・権限（D-2）の入力部品。作業者管理とタスク管理の両方から使う #}
+
+{% macro role_select(selected, name='role') %}
+<select class="input" name="{{ name }}">
+  {% for code, label in ROLES.items() %}
+  <option value="{{ code }}" {{ 'selected' if (selected or 'member') == code }}>{{ label }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}
+
+{# 権限のチェックボックス群。selected は権限コードのリスト。
+   granted に渡したコードは「役職で自動的に付く」ぶんで、外せないよう固定表示する #}
+{% macro perm_checks(name, selected, granted=[]) %}
+<div class="perm-checks">
+  {% for code, label in PERMISSIONS.items() %}
+  <label class="perm-check {{ 'is-granted' if code in granted }}">
+    <input type="checkbox" name="{{ name }}" value="{{ code }}"
+           {{ 'checked' if code in selected or code in granted }} {{ 'disabled' if code in granted }}>
+    <span>{{ label }}</span>
+    {% if code in granted %}<em>役職</em>{% endif %}
+  </label>
+  {# disabled のチェックボックスは送信されない。役職と個別付与の両方で持っている権限を
+     ここで落とすと、後で役職を下げたときに黙って消える。隠しフィールドで残す #}
+  {% if code in granted and code in selected %}
+  <input type="hidden" name="{{ name }}" value="{{ code }}">
+  {% endif %}
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# 権限コード列をバッジで並べる。role_granted のぶんは色を分けて出自を分かるようにする #}
+{% macro perm_badges(codes, granted=[], empty='—') %}
+{% set list = perms.parse(codes) %}
+{% if list %}
+<span class="perm-badges">
+  {% for code in list %}
+  <span class="tag {{ 'tag-neutral' if code in granted else 'tag-accent' }}">{{ perms.label(code) }}</span>
+  {% endfor %}
+</span>
+{% else %}<span class="text-muted">{{ empty }}</span>{% endif %}
+{% endmacro %}

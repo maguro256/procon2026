@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import perm_checks, perm_badges with context %}
 {% block title %}タスク管理 | Gemmba 管理{% endblock %}
 {% block content %}
 <header class="page-head">
@@ -32,6 +33,9 @@
     <div class="field span-all"><label>補足（任意）</label>
       <input class="input" type="text" name="description" placeholder="顧客案件・注意点など">
     </div>
+    <div class="field span-all"><label>必要権限（チェックしたものを<strong>すべて</strong>持つ人にだけ提示されます）</label>
+      {{ perm_checks('required_permissions', []) }}
+    </div>
     <button type="submit" class="btn btn-primary">登録</button>
   </form>
 </section>
@@ -49,6 +53,9 @@
     難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
     {% if t.description %}　・　{{ t.description }}{% endif %}
   </div>
+  {% if perms.parse(t.required_permissions) %}
+  <div class="task-perms">必要権限 {{ perm_badges(t.required_permissions) }}</div>
+  {% endif %}
   <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions">
     <div class="field"><label>担当者</label>
       <select class="input" name="assigned_worker_id" title="担当者">
@@ -74,10 +81,16 @@
       </select>
     </div>
     <button type="submit" class="btn btn-secondary">更新</button>
-    <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai" title="WariAthena による自動割り当て（現在はダミー）">AI割当（WariAthena）</button>
+    <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
     <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
     </button>
+    {# チェックボックスは未チェックだと送信されないので、このフォーム経由だと分かる目印を付ける #}
+    <input type="hidden" name="req_perm_form" value="1">
+    <details class="perm-edit span-all">
+      <summary>必要権限を編集</summary>
+      {{ perm_checks('required_permissions', perms.parse(t.required_permissions)) }}
+    </details>
   </form>
   <form id="ai-assign-{{ t.id }}" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}" style="display:none;"></form>
   <form id="delete-task-{{ t.id }}" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"

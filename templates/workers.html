@@ -1,15 +1,17 @@
 {% extends "base.html" %}
+{% from "_macros.html" import role_select, perm_checks, perm_badges with context %}
 {% block title %}作業者管理 | Gemmba 管理{% endblock %}
 {% block content %}
 <header class="page-head">
   <h1>作業者管理</h1>
-  <p class="page-sub">事前登録は名前と勤続年数のみ。得意・不得意は実績データからAIが学習します。</p>
+  <p class="page-sub">事前登録は名前・勤続年数・役職・保有権限のみ。得意・不得意は実績データからAIが学習します。
+    権限は学習の対象ではなく、必要権限を満たさない人にはそのタスクを出さないための条件です。</p>
 </header>
 
 {% if pending_tags %}
 <section class="card elev-sm form-panel" style="border-left: 4px solid #e67e22;">
   <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
-  <p class="text-muted" style="margin-bottom:1rem;">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。</p>
+  <p class="text-muted" style="margin-bottom:1rem;">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。保有権限は登録後に編集できます。</p>
   {% for tag_id, module_id in pending_tags.items() %}
   <div style="padding:.75rem 0; border-top:1px solid #eee;">
     <p style="margin-bottom:.5rem;">タグID: <strong class="mono">{{ tag_id }}</strong>{% if module_id %} <span class="text-muted">（検出モジュール: {{ module_id }}）</span>{% endif %}</p>
@@ -21,6 +23,7 @@
       <div class="field"><label>勤続年数 *</label>
         <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
       </div>
+      <div class="field"><label>役職</label>{{ role_select(None) }}</div>
       <button type="submit" class="btn btn-primary">このタグで登録</button>
     </form>
   </div>
@@ -28,7 +31,7 @@
 </section>
 {% endif %}
 
-<section class="card elev-sm form-panel narrow">
+<section class="card elev-sm form-panel">
   <h4>作業者を登録</h4>
   <form method="post" action="{{ url_for('add_worker') }}" class="worker-form-grid">
     <div class="field"><label>名前 *</label>
@@ -37,8 +40,12 @@
     <div class="field"><label>勤続年数 *</label>
       <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
     </div>
+    <div class="field"><label>役職</label>{{ role_select(None) }}</div>
     <div class="field"><label>腕輪ICタグID（任意）</label>
       <input class="input" type="text" name="nfc_tag_id" placeholder="後で紐付け可">
+    </div>
+    <div class="field span-all"><label>保有権限（役職で付くぶんは登録後に自動で加わります）</label>
+      {{ perm_checks('permissions', []) }}
     </div>
     <button type="submit" class="btn btn-primary">登録</button>
   </form>
@@ -47,16 +54,18 @@
 <h3 class="section-title">登録済み作業者（{{ workers|length }}名）</h3>
 <div class="card table-wrap">
   <table class="table">
-    <thead><tr><th>ID</th><th>名前</th><th>勤続年数</th><th>ICタグ</th><th>担当中タスク</th><th>登録日</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>名前</th><th>役職</th><th>勤続年数</th><th>保有権限</th><th>ICタグ</th><th>担当中</th><th></th></tr></thead>
     <tbody>
     {% for w in workers %}
+      {% set granted = perms.granted_by_role(w.role) %}
       <tr>
         <td class="mono text-muted">{{ w.id }}</td>
         <td class="strong">{{ w.name }}</td>
+        <td>{{ perms.role_label(w.role) }}</td>
         <td>{{ w.years_of_service }} 年</td>
+        <td>{{ perm_badges(perms.held(w), granted, empty='権限なし') }}</td>
         <td class="mono">{{ w.nfc_tag_id or '未紐付け' }}</td>
         <td>{{ w.open_tasks }} 件</td>
-        <td>{{ w.created_at[:10] }}</td>
         <td class="num">
           <form method="post" action="{{ url_for('delete_worker', worker_id=w.id) }}"
                 onsubmit="return confirm('{{ w.name }} さんを削除しますか？担当中のタスクは未割当に戻ります。')">
@@ -66,8 +75,26 @@
           </form>
         </td>
       </tr>
+      <tr class="edit-row">
+        <td colspan="8">
+          <details>
+            <summary>役職・権限を編集</summary>
+            <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="worker-edit-grid">
+              <div class="field"><label>勤続年数</label>
+                <input class="input input-sm" type="number" name="years_of_service" step="0.5" min="0"
+                       value="{{ w.years_of_service }}">
+              </div>
+              <div class="field"><label>役職</label>{{ role_select(w.role) }}</div>
+              <div class="field span-all"><label>保有権限（個別付与）</label>
+                {{ perm_checks('permissions', perms.parse(w.permissions), granted) }}
+              </div>
+              <button type="submit" class="btn btn-secondary btn-sm">保存</button>
+            </form>
+          </details>
+        </td>
+      </tr>
     {% else %}
-      <tr><td colspan="7" class="empty">作業者が登録されていません。</td></tr>
+      <tr><td colspan="8" class="empty">作業者が登録されていません。</td></tr>
     {% endfor %}
     </tbody>
   </table>

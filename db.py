@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS workers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     years_of_service REAL NOT NULL DEFAULT 0,   -- 勤続年数（AIの初期文脈ベクトルに使用）
+    role TEXT NOT NULL DEFAULT 'member',        -- 役職。permissions.ROLES のコード
+    permissions TEXT NOT NULL DEFAULT '',       -- 個別付与の保有権限。カンマ区切り
     nfc_tag_id TEXT UNIQUE,                     -- 腕輪のICチップID（後で紐付け可能）
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     description TEXT DEFAULT '',
     difficulty INTEGER NOT NULL DEFAULT 3,      -- 難易度 1-5（AIの文脈ベクトルに使用）
     priority TEXT NOT NULL DEFAULT 'normal',    -- urgent / high / normal / low
+    required_permissions TEXT NOT NULL DEFAULT '',  -- 必要権限。カンマ区切りで全部必要。空なら誰でも可
     quantity INTEGER DEFAULT 1,
     deadline TEXT,                              -- 期限 (YYYY-MM-DD)
     status TEXT NOT NULL DEFAULT 'todo',        -- todo / assigned / in_progress / done
@@ -65,6 +68,14 @@ CREATE TABLE IF NOT EXISTS work_logs (
 # CREATE TABLE IF NOT EXISTS は既存テーブルを更新しないため、SCHEMA にカラムを
 # 足しても運用中の gemmba.db には反映されない。追加したカラムはここにも1行書く。
 MIGRATIONS = {
+    "workers": {
+        # D-2: 役職・保有権限。既存DBにも入るよう空文字を既定にしてある
+        "role": "TEXT NOT NULL DEFAULT 'member'",
+        "permissions": "TEXT NOT NULL DEFAULT ''",
+    },
+    "tasks": {
+        "required_permissions": "TEXT NOT NULL DEFAULT ''",
+    },
     "equipment": {
         "ip": "TEXT",
         "hostname": "TEXT",
@@ -101,18 +112,18 @@ def init_db(seed: bool = True):
     # 初回のみサンプルデータを投入（動作確認用。不要なら seed=False で呼ぶ）
     if seed and first_run:
         conn.executescript("""
-        INSERT INTO workers (name, years_of_service, nfc_tag_id) VALUES
-            ('田中 太郎', 12.0, 'TAG-0001'),
-            ('佐藤 花子', 3.5,  'TAG-0002'),
-            ('鈴木 一郎', 0.5,  NULL);
+        INSERT INTO workers (name, years_of_service, role, permissions, nfc_tag_id) VALUES
+            ('田中 太郎', 12.0, 'supervisor', 'forklift,crane', 'TAG-0001'),
+            ('佐藤 花子', 3.5,  'leader',     'welding',        'TAG-0002'),
+            ('鈴木 一郎', 0.5,  'member',     '',               NULL);
         INSERT INTO equipment (name, module_id, status,ip,hostname) VALUES
             ('レーザー加工機 #1', 'MOD-A-01', 'working',NULL,NULL),
             ('旋盤 #2',          'MOD-A-02', 'idle','192.168.137.212','pi01'),
             ('プレス機 #1',      'MOD-B-01', 'stopped',NULL,NULL);
-        INSERT INTO tasks (title, difficulty, priority, quantity, deadline, status) VALUES
-            ('製品A 組立', 3, 'urgent', 30, date('now', '+1 day'), 'in_progress'),
-            ('旋盤メンテ #2', 2, 'normal', 1, date('now', '+3 day'), 'todo'),
-            ('製品B 加工', 4, 'high', 20, date('now', '+2 day'), 'todo');
+        INSERT INTO tasks (title, difficulty, priority, required_permissions, quantity, deadline, status) VALUES
+            ('製品A 組立', 3, 'urgent', '',      30, date('now', '+1 day'), 'in_progress'),
+            ('旋盤メンテ #2', 2, 'normal', '',      1, date('now', '+3 day'), 'todo'),
+            ('製品B 加工', 4, 'high',   'welding', 20, date('now', '+2 day'), 'todo');
         UPDATE equipment SET current_worker_id = 1, current_task_id = 1 WHERE id = 1;
         UPDATE tasks SET assigned_worker_id = 1, equipment_id = 1 WHERE id = 1;
         """)
