@@ -37,6 +37,9 @@ REPLY_TOPIC = f"pi/{DEVICE_ID}/reply"  # 指示への応答
 KEEPALIVE = 30          # この2倍ほど無応答だとブローカーがLWTを配信する
 HEARTBEAT_SEC = 30
 RETRY_SEC = 5
+# 同じ失敗が延々と続くときに、この回数に1回だけ出す。PCが落ちている間ずっと
+# 再探索を繰り返すので、間引かないとログがSDカードを埋める（実測: 9日で9.5MB）
+LOG_REPEAT_EVERY = 60
 
 # この秒数だけカードが見えなければ「離れた」とみなす。RC522 は磁界の揺らぎで
 # 一時的に読めないことがあるので、途切れてすぐ離脱と判断しない
@@ -46,6 +49,32 @@ TOUCH_POLL_SEC = float(os.environ.get("GEMMBA_TOUCH_POLL", "0.1"))
 # Yes/No の入力元。物理ボタン(B-2)が付くまでの代替手段。
 #   console(既定/キーボード) | yes | no | timeout
 INPUT_MODE = os.environ.get("GEMMBA_INPUT", "console")
+
+
+# ------------------------------------------------------------ ログ
+
+# 再接続まわりは「いつ落ちて、いつ戻ったか」が分からないと後から追えないので
+# 時刻を付ける。表示のコンソール代替出力は素の print のままにしてある。
+_repeat = {"key": None, "count": 0}
+
+
+def log(msg, key=None):
+    """
+    時刻付きで1行出す。key を渡すと、同じ key が続く間は LOG_REPEAT_EVERY 回に
+    1回へ間引く（PC不在時の再試行ログが無限に伸びるのを防ぐ）。
+    """
+    stamp = time.strftime("%m-%d %H:%M:%S")
+    if key is None:
+        _repeat["key"], _repeat["count"] = None, 0
+        print(f"[{stamp}] {msg}")
+        return
+    if key != _repeat["key"]:
+        _repeat["key"], _repeat["count"] = key, 1
+        print(f"[{stamp}] {msg}")
+        return
+    _repeat["count"] += 1
+    if _repeat["count"] % LOG_REPEAT_EVERY == 0:
+        print(f"[{stamp}] {msg}（同じ状態が {_repeat['count']} 回続いています）")
 
 
 # ------------------------------------------------------------ ブローカー探索
@@ -70,7 +99,7 @@ def discover_broker():
             if info.get("host"):
                 return info["host"], int(info.get("port", 1883))
     except OSError as e:
-        print(f"[discovery] ブロードキャストに失敗: {e}")
+        log(f"[discovery] ブロードキャストに失敗: {e}", key=f"bcast:{e}")
     finally:
         sock.close()
     return None
@@ -90,7 +119,7 @@ def save_cache(host, port):
         with open(CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump({"host": host, "port": port}, f)
     except OSError as e:
-        print(f"[discovery] キャッシュ保存に失敗: {e}")
+        log(f"[discovery] キャッシュ保存に失敗: {e}")
 
 
 def resolve_broker():
@@ -102,7 +131,8 @@ def resolve_broker():
         return found
     cached = load_cache()
     if cached:
-        print(f"[discovery] 応答なし。前回のブローカー {cached[0]}:{cached[1]} を試します。")
+        log(f"[discovery] 応答なし。前回のブローカー {cached[0]}:{cached[1]} を試します。",
+            key=f"cache:{cached[0]}:{cached[1]}")
         return cached
     return None
 
@@ -151,7 +181,7 @@ def publish_reply(body):
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
-    print(f"[MQTT] connected to {_broker['host']}:{_broker['port']} as {DEVICE_ID}")
+    log(f"[MQTT] connected to {_broker['host']}:{_broker['port']} as {DEVICE_ID}")
     publish_online()
     # 下り。自分宛てだけを購読する
     client.subscribe(CMD_TOPIC, qos=1)
@@ -161,7 +191,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
-    print(f"[MQTT] disconnected (reason={reason_code})")
+    log(f"[MQTT] disconnected (reason={reason_code})", key=f"disc:{reason_code}")
 
 
 def on_message(client, userdata, msg):
@@ -188,6 +218,10 @@ def on_message(client, userdata, msg):
     else:
         print(f"[cmd] 未知のコマンド: {cmd}")
 
+
+# paho の自動再接続は既定で最大120秒まで待ち幅を伸ばす。supervisor() が
+# loop_stop() でその待ちに合流するため、待ち幅が長いと再探索の開始が遅れる。
+client.reconnect_delay_set(min_delay=1, max_delay=RETRY_SEC)
 
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
@@ -700,9 +734,11 @@ def connect_forever():
                 save_cache(host, port)
                 return
             except OSError as e:
-                print(f"[MQTT] {host}:{port} へ接続できません ({e})")
+                log(f"[MQTT] {host}:{port} へ接続できません ({e})",
+                    key=f"conn:{host}:{port}:{e}")
         else:
-            print("[discovery] ブローカーが見つかりません（PC側の app.py は起動していますか？）")
+            log("[discovery] ブローカーが見つかりません（PC側の app.py は起動していますか？）",
+                key="nofind")
         time.sleep(RETRY_SEC)
 
 
@@ -715,7 +751,7 @@ def supervisor():
         time.sleep(RETRY_SEC)
         if client.is_connected():
             continue
-        print("[MQTT] 切断を検知。ブローカーを再探索します。")
+        log("[MQTT] 切断を検知。ブローカーを再探索します。", key="research")
         client.loop_stop()
         connect_forever()
         client.loop_start()
