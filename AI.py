@@ -103,43 +103,47 @@ class Simulator:
         self.current_task_type=random.randrange(len(self.task_difficulty))
         for i in range(len(self.workers)):
             difficulty=self.task_difficulty[self.current_task_type]
-            contexts.append(self.workers[i].get_context(difficulty,choicetask))
+            contexts.append(self.workers[i].get_context(difficulty,self.current_task_type))
         return contexts,self.current_task_type
 
 
-sim=Simulator()
-matrix = [[0 for _ in range(5)] for _ in range(5)]
-r=RewardConverter()
-ae=AssignmentEngine()
-#elo=elorating(n_workers=5,n_task_type=3)
-feedbacked=["easy","normal","hard"]
-for i in range(10000):
-    choicetask=random.randrange(0,5)
-    j=0
-    index=0
-    max_predict=float('-inf')
-    for workers in sim.workers:
-        predict= ae.choice_worker(workers.get_context(sim.task_difficulty[choicetask],choicetask),ae.beliefs[j].sample_theta(),j)
-        if max_predict<predict:
-            max_predict=predict
-            index=j
-        j=j+1
-    matrix[choicetask][index]=matrix[choicetask][index]+1
-    timetaken,feedback=sim.workers[index].simulate_output(choicetask)
-    reward=r.to_reward(feedback,timetaken,choicetask)
-    ae.beliefs[index].update(sim.workers[index].get_context(sim.task_difficulty[choicetask],choicetask),reward)
-    print(f"選択タスク{choicetask}")
-    print(f"選択された人{index}")
-    
 
-    
-   
-for w in sim.workers:
-    print("各workerSkill")
-    print(w.worker_id, w.skill)
-for i, belief in enumerate(ae.beliefs):
-    print("各workerMu")
-    print(i, belief.mu)
-print("選ばれた回数,matrix[choicetask][index]")
-print(matrix)
+if __name__ == "__main__":
+    # ここから下は AI.py 単体で回す検証用シミュレーション。
+    # app.py からは ai_stub.py が上のクラスだけを import する。
+    sim=Simulator()
+    matrix = [[0 for _ in range(5)] for _ in range(5)]
+    r=RewardConverter()
+    ae=AssignmentEngine()
+    #elo=elorating(n_workers=5,n_task_type=3)
+    feedbacked=["easy","normal","hard"]
+    for i in range(10000):
+        choicetask=random.randrange(0,5)
+        j=0
+        index=0
+        max_predict=float('-inf')
+        for workers in sim.workers:
+            predict= ae.choice_worker(workers.get_context(sim.task_difficulty[choicetask],choicetask),ae.beliefs[j].sample_theta(),j)
+            if max_predict<predict:
+                max_predict=predict
+                index=j
+            j=j+1
+        matrix[choicetask][index]=matrix[choicetask][index]+1
+        timetaken,feedback=sim.workers[index].simulate_output(choicetask)
+        reward=r.to_reward(feedback,timetaken,choicetask)
+        ae.beliefs[index].update(sim.workers[index].get_context(sim.task_difficulty[choicetask],choicetask),reward)
+        print(f"選択タスク{choicetask}")
+        print(f"選択された人{index}")
+
+
+
+
+    for w in sim.workers:
+        print("各workerSkill")
+        print(w.worker_id, w.skill)
+    for i, belief in enumerate(ae.beliefs):
+        print("各workerMu")
+        print(i, belief.mu)
+    print("選ばれた回数,matrix[choicetask][index]")
+    print(matrix)
 

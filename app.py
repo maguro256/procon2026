@@ -40,6 +40,21 @@ PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low":
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
 EQ_STATUS_LABELS = {"idle": "空き", "working": "稼働中", "stopped": "停止", "maintenance": "メンテ中"}
 
+# WariAthena の文脈ベクトルには work_logs だけでは足りない（難易度と勤続年数が要る）ので
+# tasks / workers を結合して渡す。作業者やタスクが消されたログも報酬計算には使えるよう LEFT JOIN。
+AI_LOG_SQL = """
+    SELECT l.*, t.difficulty AS difficulty, w.years_of_service AS years_of_service
+    FROM work_logs l
+    LEFT JOIN tasks   t ON t.id = l.task_id
+    LEFT JOIN workers w ON w.id = l.worker_id
+    ORDER BY l.completed_at, l.id
+"""
+
+
+def _ai_logs(conn):
+    """ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す"""
+    return [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()]
+
 
 @app.context_processor
 def inject_labels():
@@ -225,16 +240,19 @@ def update_task(task_id):
 
 @app.route("/tasks/<int:task_id>/auto_assign", methods=["POST"])
 def auto_assign(task_id):
-    """AI割り当て（現状は ai_stub のダミーを呼ぶ）"""
+    """AI割り当て（WariAthena = ai_stub。work_logs から学習した事後分布で選ぶ）"""
     conn = db.get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
-    logs = conn.execute("SELECT * FROM work_logs").fetchall()
-    wid = ai_stub.assign_task(dict(task), [dict(w) for w in workers_], [dict(l) for l in logs])
+    logs = _ai_logs(conn)
+    wid = ai_stub.assign_task(dict(task), [dict(w) for w in workers_], logs)
     if wid:
         conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned' WHERE id = ?", (wid, task_id))
         conn.commit()
-        flash("AIがタスクを割り当てました（現状はダミーロジック）", "ok")
+        if ai_stub.is_ready():
+            flash(f"AIがタスクを割り当てました（実績 {len(logs)} 件から学習）", "ok")
+        else:
+            flash("AI本体を読み込めなかったため、勤続年数で暫定割り当てしました", "error")
     else:
         flash("割り当て候補がいません", "error")
     conn.close()
@@ -474,17 +492,20 @@ def api_next_task(nfc_tag_id):
     if not w:
         conn.close()
         return jsonify({"error": "unknown tag"}), 404
-    # デモの割当方針: 登録が古いものから順に出す。優先度や難易度は見ない。
-    # 本実装（TODO.md の D-1 / WariAthena）ではここが文脈ベクトルによる選択に変わる。
-    rows = conn.execute("""
+    # 割当方針: WariAthena(ai_stub) が「この人が速く終わらせられそうな順」に並べ替える。
+    # 着手済み(in_progress)のものだけは投げ出させないよう先頭に固定する。
+    rows = [dict(r) for r in conn.execute("""
         SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
         ORDER BY created_at, id
-        LIMIT 5
-    """, (w["id"],)).fetchall()
+    """, (w["id"],)).fetchall()]
+    logs = _ai_logs(conn)
     conn.close()
-    return jsonify({"worker": {"id": w["id"], "name": w["name"]}, "tasks": [dict(r) for r in rows]})
+    in_progress = [t for t in rows if t["status"] == "in_progress"]
+    rest = [t for t in rows if t["status"] != "in_progress"]
+    ordered = in_progress + ai_stub.rank_tasks(dict(w), rest, logs)
+    return jsonify({"worker": {"id": w["id"], "name": w["name"]}, "tasks": ordered[:5]})
 
 
 @app.route("/api/tasks/<int:task_id>/start", methods=["POST"])
@@ -570,8 +591,7 @@ def api_complete_task(task_id):
                VALUES (?, ?, ?, ?, ?, ?)""",
             (task_id, task["assigned_worker_id"], task["equipment_id"], task["started_at"], now, duration),
         )
-        logs = [dict(l) for l in conn.execute("SELECT * FROM work_logs").fetchall()]
-        ai_stub.update_model(dict(task), task["assigned_worker_id"], duration or 0, logs)
+        ai_stub.update_model(dict(task), task["assigned_worker_id"], duration or 0, _ai_logs(conn))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "duration_sec": duration})
