@@ -38,6 +38,9 @@ _pending_modules: dict = {}
 _module_sessions: dict = {}
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
+# 完了直後に現場で答えてもらう体感難易度。順番がそのままモジュールの選択肢の並びになる
+FELT_CODES = ["easy", "normal", "hard"]
+FELT_LABELS = {"easy": "簡単", "normal": "普通", "hard": "難しい"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
 EQ_STATUS_LABELS = {"idle": "空き", "working": "稼働中", "stopped": "停止", "maintenance": "メンテ中"}
 
@@ -60,7 +63,7 @@ def _ai_logs(conn):
 @app.context_processor
 def inject_labels():
     # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
-    return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS,
+    return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS, F=FELT_LABELS,
                 PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms)
 
 
@@ -180,10 +183,17 @@ def delete_worker(worker_id):
 def tasks():
     conn = db.get_db()
     rows = conn.execute("""
-        SELECT t.*, w.name AS worker_name, e.name AS equipment_name
+        SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
+               l.felt_difficulty AS felt_difficulty
         FROM tasks t
         LEFT JOIN workers w   ON w.id = t.assigned_worker_id
         LEFT JOIN equipment e ON e.id = t.equipment_id
+        -- 完了後に現場で答えてもらった体感難易度。同じタスクを繰り返し実績に
+        -- 残すことがあるので、答えのある一番新しい1件だけを引く
+        LEFT JOIN work_logs l ON l.id = (
+            SELECT id FROM work_logs
+            WHERE task_id = t.id AND felt_difficulty IS NOT NULL
+            ORDER BY id DESC LIMIT 1)
         ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
                  t.deadline IS NULL, t.deadline
     """).fetchall()
@@ -468,7 +478,8 @@ def api_pending():
     with _replies_lock:
         confirms = [
             {"request_id": rid, "device_id": s["device_id"], "text": s["text"],
-             "lines": s["lines"], "equipment_name": s["equipment_name"],
+             "lines": s["lines"], "options": s.get("options"),
+             "equipment_name": s["equipment_name"],
              "worker_name": s["worker_name"]}
             for rid, s in _pending_replies.items()
             if s.get("text") is not None and not s["event"].is_set()
@@ -484,7 +495,10 @@ def api_pending():
 @app.route("/api/confirm/<request_id>", methods=["POST"])
 def api_answer_confirm(request_id):
     """
-    モジュールの代わりに管理画面から Yes/No を返す。
+    モジュールの代わりに管理画面から答える。Yes/No と選択肢の両方を受ける。
+
+        {"answer": true}   … Yes/No の問い合わせ
+        {"index": 2}       … 選択肢の問い合わせ（難易度フィードバックなど）
 
     モジュールに物理ボタン（TODO.md の B-2）が付くまでの操作手段。実運用では
     現場の作業者が機材の前で答えるのが本来の流れで、これはデモ用の抜け道。
@@ -494,7 +508,17 @@ def api_answer_confirm(request_id):
         slot = _pending_replies.get(request_id)
         if slot is None or slot["event"].is_set():
             return jsonify({"error": "その問い合わせは既に終わっています"}), 404
-        slot["answer"] = bool(data.get("answer"))
+        options = slot.get("options")
+        if options:
+            try:
+                index = int(data.get("index"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "index required"}), 400
+            if not 0 <= index < len(options):
+                return jsonify({"error": "index out of range"}), 400
+            slot["answer"] = index
+        else:
+            slot["answer"] = bool(data.get("answer"))
         slot["event"].set()
     return jsonify({"ok": True})
 
@@ -658,16 +682,43 @@ def api_complete_task(task_id):
              - datetime.strptime(task["started_at"], "%Y-%m-%d %H:%M:%S")).total_seconds()
         )
     conn.execute("UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?", (now, task_id))
+    work_log_id = None
     if task["assigned_worker_id"]:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO work_logs (task_id, worker_id, equipment_id, started_at, completed_at, duration_sec)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (task_id, task["assigned_worker_id"], task["equipment_id"], task["started_at"], now, duration),
         )
+        work_log_id = cur.lastrowid
         ai_stub.update_model(dict(task), task["assigned_worker_id"], duration or 0, _ai_logs(conn))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "duration_sec": duration})
+    # work_log_id は、この直後に現場で答えてもらう難易度フィードバックの宛先。
+    # 先に完了させるのは、所要時間に「答えるのを待った時間」を混ぜないため。
+    return jsonify({"ok": True, "duration_sec": duration, "work_log_id": work_log_id,
+                    "title": task["title"]})
+
+
+@app.route("/api/work_logs/<int:log_id>/feedback", methods=["POST"])
+def api_work_log_feedback(log_id):
+    """
+    完了直後に本人が答えた体感難易度を実績に書く（easy / normal / hard）。
+
+    tasks.difficulty は触らない。ai_stub は work_logs を再生するとき現在の
+    tasks.difficulty を JOIN して文脈ベクトルを組むので、ここで書き換えると
+    過去のログの文脈まで遡って変わってしまう。
+    """
+    data = request.get_json(silent=True) or {}
+    felt = data.get("felt_difficulty")
+    if felt not in FELT_CODES:
+        return jsonify({"error": f"felt_difficulty must be one of {FELT_CODES}"}), 400
+    conn = db.get_db()
+    cur = conn.execute("UPDATE work_logs SET felt_difficulty = ? WHERE id = ?", (felt, log_id))
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True, "felt_difficulty": felt})
 
 
 @app.route("/api/unknown_tag", methods=["POST"])
@@ -789,6 +840,21 @@ def request_confirm(device_id, text, timeout=CMD_TIMEOUT_SEC, **fields):
     モジュールに Yes/No を尋ねて答えを待つ。C-1（承認フロー）の土台。
     戻り値: True=Yes / False=No / None=送れなかった or 時間切れ
     """
+    answer = _request_answer(device_id, "confirm", text, timeout, **fields)
+    return None if answer is None else bool(answer)
+
+
+def request_choice(device_id, text, options, timeout=CMD_TIMEOUT_SEC, **fields):
+    """
+    モジュールに選択肢を出して1つ選んでもらう。左右ボタンで選び、決定で確定する。
+    戻り値: 選ばれた添字 / None=送れなかった or 時間切れ
+    """
+    return _request_answer(device_id, "choice", text, timeout,
+                           options=list(options), **fields)
+
+
+def _request_answer(device_id, cmd, text, timeout, **fields):
+    """confirm / choice の共通部分。答えが返るまで待つ"""
     request_id = uuid4().hex[:8]
     # 待っている内容も持たせておく。モジュールに物理ボタンが付くまでは、
     # 管理画面がこれを読んで代わりに答えられるようにするため（/api/pending）。
@@ -796,13 +862,15 @@ def request_confirm(device_id, text, timeout=CMD_TIMEOUT_SEC, **fields):
         "event": threading.Event(), "answer": None,
         "device_id": device_id, "text": text,
         "lines": fields.get("lines") or [],
+        # None なら Yes/No。管理画面が代替ポップアップを出し分けるのに使う
+        "options": fields.get("options"),
         "equipment_name": fields.get("equipment_name"),
         "worker_name": fields.get("worker_name"),
     }
     with _replies_lock:
         _pending_replies[request_id] = slot
     try:
-        if not send_cmd(device_id, "confirm", request_id=request_id, text=text,
+        if not send_cmd(device_id, cmd, request_id=request_id, text=text,
                         timeout=timeout, **fields):
             return None
         # モジュール側のタイムアウトより少しだけ長く待つ。先に諦めると、
@@ -1069,12 +1137,17 @@ PRIORITY_RANK = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 GUIDE_PRIORITIES = ("urgent", "high")
 
 
-def _task_lines(task, index, total):
-    """選択画面の本文。表示は4行までで、この後に質問文と操作ヒントが付く"""
+def _task_lines(task):
+    """
+    選択画面の本文。1行目が大きく出るので、タスク名だけを置く。
+
+    候補の何件目かは本文に混ぜず、画面右上のバッジ（badge）で出す。頭に
+    「(1/3) 」を付けるとその分だけタスク名が押し出されて末尾が切れる。
+    """
     detail = f"{task.get('quantity') or 1}個"
     if task.get("deadline"):
         detail += f" / 期限 {task['deadline']}"
-    return [f"({index}/{total}) {task['title']}", detail]
+    return [task["title"], detail]
 
 
 def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
@@ -1097,7 +1170,8 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
     for i, task in enumerate(candidates, 1):
         answer = request_confirm(
             device_id, "このタスクに着手しますか？",
-            lines=_task_lines(task, i, total),
+            lines=_task_lines(task),
+            badge=f"{i}/{total}",
             timeout=CHOICE_TIMEOUT,
             equipment_name=equipment.get("name"), worker_name=worker["name"],
         )
@@ -1122,7 +1196,7 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
             print(f"[{module_id}] {worker['name']} started task: {task['title']}")
             _notify(device_id,
                     [f"{worker['name']} さん", task["title"],
-                     _task_lines(task, i, total)[1], "終了時にもう一度タッチ"], "working")
+                     _task_lines(task)[1], "終了時にもう一度タッチ"], "working")
             return
         print(f"[{module_id}] {worker['name']}: スキップ（{task['title']}）")
 
@@ -1213,16 +1287,55 @@ def _guide_to_other_equipment(device_id, module_id, worker, equipment, tasks, ha
 def _end_session(device_id, module_id, worker, equipment):
     """使用中の本人が再タッチ = 終了。タスク中なら完了記録、フリー利用ならロック解除のみ"""
     task_id = equipment.get("current_task_id")
+    work_log_id = None
+    task_title = None
     if task_id:
-        requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
+        res = requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
+        if res.ok:
+            work_log_id = res.json().get("work_log_id")
+            task_title = res.json().get("title")
         print(f"[{module_id}] {worker['name']} completed task #{task_id}")
     else:
         print(f"[{module_id}] {worker['name']} ended free-use")
+    # 先に機材を解放する。難易度を答えている間ずっと塞がっていると、
+    # 次の人が待たされるうえ、答えなかった場合に解放が漏れる
     requests.post(
         f"{SELF_URL}/api/equipment/{module_id}/status",
         json={"status": "idle"}, timeout=HTTP_TIMEOUT,
     )
+    if work_log_id:
+        _ask_felt_difficulty(device_id, module_id, worker, equipment, work_log_id, task_title)
     _notify(device_id, ["お疲れさまでした", "社員証をタッチしてください"], "idle")
+
+
+FEEDBACK_TIMEOUT = 20   # 難易度フィードバックの応答待ち。答えないまま立ち去られてもよい
+FEEDBACK_DEFAULT = 1    # 最初に選ばれている選択肢＝「普通」。決定を1回押すだけで終わる
+
+
+def _ask_felt_difficulty(device_id, module_id, worker, equipment, work_log_id, task_title):
+    """
+    完了直後に体感難易度を尋ねて実績に書く。答えなくても完了は済んでいるので、
+    時間切れなら何も書かずに次へ進む（現場を待たせない）。
+    """
+    index = request_choice(
+        device_id, "この作業の難易度は？",
+        [FELT_LABELS[c] for c in FELT_CODES],
+        timeout=FEEDBACK_TIMEOUT,
+        lines=[task_title or "作業を完了しました", "お疲れさまでした"],
+        default=FEEDBACK_DEFAULT,
+        equipment_name=equipment.get("name"), worker_name=worker["name"],
+    )
+    if index is None:
+        print(f"[{module_id}] {worker['name']}: 難易度フィードバックは無回答")
+        return
+    felt = FELT_CODES[index]
+    try:
+        requests.post(f"{SELF_URL}/api/work_logs/{work_log_id}/feedback",
+                      json={"felt_difficulty": felt}, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"[{module_id}] 難易度フィードバックの記録に失敗: {e}")
+        return
+    print(f"[{module_id}] {worker['name']}: 難易度フィードバック = {FELT_LABELS[felt]}")
 
 
 # --------------------------------------------------- ブローカー自動探索（UDP）

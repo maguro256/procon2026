@@ -51,6 +51,8 @@
   </div>
   <div class="task-meta">
     難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
+    {# 完了直後に機材の画面で本人が答えた体感。設定値の難易度とは別物 #}
+    {% if t.felt_difficulty %}　・　<span class="felt" title="完了後に作業者が答えた体感難易度">体感「{{ F[t.felt_difficulty] }}」</span>{% endif %}
     {% if t.description %}　・　{{ t.description }}{% endif %}
   </div>
   {% if perms.parse(t.required_permissions) %}

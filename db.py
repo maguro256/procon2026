@@ -60,7 +60,12 @@ CREATE TABLE IF NOT EXISTS work_logs (
     equipment_id INTEGER REFERENCES equipment(id),
     started_at TEXT,
     completed_at TEXT,
-    duration_sec INTEGER                        -- 実所要時間（報酬 r の計算に使用）
+    duration_sec INTEGER,                       -- 実所要時間（報酬 r の計算に使用）
+    -- 完了直後にモジュールの画面で本人が答えた体感難易度: easy / normal / hard。
+    -- 答えなかった（時間切れ）場合は NULL。tasks.difficulty とは別物で、
+    -- こちらは「その人がどう感じたか」。AIの文脈ベクトルには入れていない
+    -- （入れると過去ログの再生結果が変わる。TODO.md の D-1 / D-2 を参照）。
+    felt_difficulty TEXT
 );
 """
 
@@ -75,6 +80,10 @@ MIGRATIONS = {
     },
     "tasks": {
         "required_permissions": "TEXT NOT NULL DEFAULT ''",
+    },
+    "work_logs": {
+        # 完了後の難易度フィードバック。既存の実績は答えていないので NULL のまま
+        "felt_difficulty": "TEXT",
     },
     "equipment": {
         "ip": "TEXT",

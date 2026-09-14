@@ -46,8 +46,10 @@ LOG_REPEAT_EVERY = 60
 TOUCH_RELEASE_SEC = float(os.environ.get("GEMMBA_TOUCH_RELEASE", "1.0"))
 TOUCH_POLL_SEC = float(os.environ.get("GEMMBA_TOUCH_POLL", "0.1"))
 
-# Yes/No の入力元。物理ボタン(B-2)が付くまでの代替手段。
-#   console(既定/キーボード) | yes | no | timeout
+# 選択の入力元。既定はキーボードで、物理ボタン(B-2)が付いたら buttons にする。
+#   buttons … 左/右/決定 の3ボタン。開けなければ console に落ちる
+#   console … キーボード（既定）。番号、2択なら y / n
+#   yes / no / timeout … 自動応答。試験用
 INPUT_MODE = os.environ.get("GEMMBA_INPUT", "console")
 
 
@@ -207,12 +209,14 @@ def on_message(client, userdata, msg):
 
     cmd = payload.get("cmd")
     if cmd == "display":
-        render_display(payload.get("lines") or [])
+        render_display(payload.get("lines") or [], payload.get("badge"))
     elif cmd == "led":
         set_led(payload.get("state", "idle"))
     elif cmd == "confirm":
         # 答えを待つ間このスレッドを止めると後続の指示を取りこぼすので、別スレッドへ
         threading.Thread(target=_handle_confirm, args=(payload,), daemon=True).start()
+    elif cmd == "choice":
+        threading.Thread(target=_handle_choice, args=(payload,), daemon=True).start()
     elif cmd == "ping":
         publish_reply({"request_id": payload.get("request_id"), "answer": "pong"})
     else:
@@ -250,8 +254,21 @@ LED_COLORS = {
 }
 
 BG_COLOR = (0x12, 0x12, 0x14)
-FG_COLOR = (0xF0, 0xF0, 0xF0)
-SUB_COLOR = (0x9A, 0x9A, 0xA0)
+CARD_COLOR = (0x1D, 0x1D, 0x22)   # 選択肢チップの下地
+LINE_COLOR = (0x32, 0x32, 0x3C)   # 区切り線・チップの枠
+FG_COLOR = (0xF2, 0xF2, 0xF4)
+SUB_COLOR = (0x9E, 0x9E, 0xA8)
+DIM_COLOR = (0x6A, 0x6A, 0x74)
+
+# 画面の骨組み。320x240（rotation=90）を基準にした固定値で、240x320 でも
+# 破綻しないよう本文の高さだけが伸び縮みする。
+BAND_H = 40      # 上部の状態帯
+BAR_H = 34       # 下部のボタン列
+PAD = 12
+
+# 物理ボタン(B-2)と画面下部のラベルの対応。**左右を入れ替えないこと。**
+# 現場で画面の「◀」と実際に押すボタンがずれると必ず迷う。
+BTN_LABELS = ("◀ 前へ", "● 決定", "次へ ▶")
 
 # フォントは1つでは足りない。Raspberry Pi OS 標準の DroidSansFallbackFull は
 # 日本語を持つ代わりに ASCII のグリフが無く、'A' や '0' が豆腐(□)になる。逆に
@@ -264,9 +281,11 @@ FONT_PATHS = [p for p in (
 ) if p]
 DISPLAY_MODE = os.environ.get("GEMMBA_DISPLAY", "auto")  # auto | off
 
-_led_state = "idle"
-_last_lines = []
-_last_pushed = None  # 直前に描いた (lines, state)。同じなら描き直さない
+# 今どういう画面を出しているか。描画関数はここだけを見て絵を作る。
+#   choice = None                                   … 通常表示（下部は接続先）
+#   choice = {"text":…, "options":[…], "selected":n} … 選択中（下部はボタン列）
+_screen = {"lines": [], "state": "idle", "choice": None, "badge": None}
+_last_pushed = None  # 直前に描いた内容。同じなら描き直さない
 _lcd = None
 _fonts = {}          # role -> [ImageFont, ...] 前から順に、その字を持つ方を使う
 _ascent = {}         # role -> ベースライン位置（フォントを混ぜても行が揃うように）
@@ -282,7 +301,9 @@ def _load_fonts():
 
     if _fonts:
         return
-    for role, size in (("title", 26), ("body", 21), ("small", 15)):
+    # big は選択肢チップ用。title は本文1行目（タスク名など）で、離れた場所から
+    # 読めるように一番大きくしてある。
+    for role, size in (("big", 28), ("title", 25), ("body", 20), ("small", 14)):
         loaded = []
         for path in FONT_PATHS:
             try:
@@ -360,29 +381,137 @@ def init_display():
     return lcd
 
 
-def _compose(lines, state, size=None):
-    """1画面ぶんの絵を作る。上部が状態の色帯、その下に本文、最下部に接続先"""
+def _rounded(d, box, radius, **kw):
+    """角丸。古い Pillow には rounded_rectangle が無いので、無ければ角ばらせる"""
+    try:
+        d.rounded_rectangle(box, radius=radius, **kw)
+    except AttributeError:
+        d.rectangle(box, **kw)
+
+
+def _draw_band(d, W, state, badge=None):
+    """
+    上部の状態帯。状態の色をそのまま面で見せるので、離れていても状態が分かる。
+
+    右肩は既定では機材の識別子。badge（「1/3」など）が来たらそちらを出す。
+    候補の件数を本文の頭に入れると、その分タスク名が押し出されて切れるため。
+    """
+    color = LED_COLORS.get(state, LED_COLORS["offline"])
+    d.rectangle([0, 0, W, BAND_H], fill=color)
+    _draw_text(d, PAD, 9, LED_LABELS.get(state, state), "body", (255, 255, 255))
+    if badge:
+        _draw_text(d, W - _text_width(str(badge), "body") - PAD, 9, str(badge), "body",
+                   (255, 255, 255))
+    else:
+        _draw_text(d, W - _text_width(DEVICE_ID, "small") - PAD, 14, DEVICE_ID, "small",
+                   (0xF0, 0xF0, 0xF0))
+
+
+def _draw_button_bar(d, W, H, labels=BTN_LABELS):
+    """
+    下部のボタン列。**物理ボタンの左右と画面上の左右を一致させるための帯。**
+    押すものが無い画面では呼ばない（押せると誤解させないため）。
+    """
+    top = H - BAR_H
+    d.rectangle([0, top, W, H], fill=CARD_COLOR)
+    d.line([0, top, W, top], fill=LINE_COLOR)
+    left, ok, right = labels
+    y = top + (BAR_H - 20) // 2
+    _draw_text(d, PAD, y, left, "small", SUB_COLOR)
+    _draw_text(d, (W - _text_width(ok, "small")) // 2, y, ok, "small", FG_COLOR)
+    _draw_text(d, W - _text_width(right, "small") - PAD, y, right, "small", SUB_COLOR)
+
+
+def _draw_footer(d, W, H):
+    """ボタン列を出さない画面の下部。接続先を小さく置いておく（現場の切り分け用）"""
+    foot = f"broker {_broker['host']}" if _broker["host"] else "ブローカー未接続"
+    _draw_text(d, PAD, H - 22, foot, "small", DIM_COLOR)
+
+
+def _draw_body(d, W, top, bottom, lines, center=False):
+    """
+    本文。1行目だけ大きく、残りは補足として小さく積む。
+
+    center=True で上下中央に置く。行数が1〜4行と振れるので、上詰めにすると
+    短い画面（「お疲れさまでした」等）だけ下半分がぽっかり空いて据わりが悪い。
+    """
+    steps = [34 if i == 0 else 28 for i in range(len(lines))]
+    total = 0
+    shown = 0
+    for step in steps:
+        if top + total + step > bottom:
+            break
+        total += step
+        shown += 1
+    y = top + max(0, (bottom - top - total) // 2) if center else top
+    for i, line in enumerate(lines[:shown]):
+        role = "title" if i == 0 else "body"
+        _draw_text(d, PAD, y, _fit(str(line), role, W - PAD * 2), role,
+                   FG_COLOR if i == 0 else SUB_COLOR)
+        y += steps[i]
+    return y
+
+
+def _draw_choices(d, W, top, bottom, choice, state):
+    """
+    選択肢を横並びのチップで描く。選択中は状態色で塗り、他は枠だけにする。
+    2択（はい/いいえ）も3択（簡単/普通/難しい）も同じ見た目になる。
+    """
+    options = choice["options"]
+    selected = choice["selected"]
+    accent = LED_COLORS.get(state, LED_COLORS["offline"])
+
+    if choice.get("text"):
+        _draw_text(d, PAD, top, _fit(choice["text"], "body", W - PAD * 2), "body", FG_COLOR)
+        top += 30
+
+    gap = 8
+    avail = W - PAD * 2 - gap * (len(options) - 1)
+    chip_w = avail // len(options)
+    chip_h = min(52, max(40, bottom - top - 6))
+    y = top + max(0, (bottom - top - chip_h) // 2)
+
+    for i, label in enumerate(options):
+        x = PAD + i * (chip_w + gap)
+        box = [x, y, x + chip_w, y + chip_h]
+        if i == selected:
+            _rounded(d, box, 8, fill=accent)
+            fg = (0x10, 0x10, 0x12)
+        else:
+            _rounded(d, box, 8, fill=CARD_COLOR, outline=LINE_COLOR, width=1)
+            fg = SUB_COLOR
+        # チップ幅に収まる一番大きい役割を選ぶ。「難しい」と「はい」で字数が違う
+        role = "big" if _text_width(label, "big") <= chip_w - 12 else "body"
+        text = _fit(str(label), role, chip_w - 12)
+        tx = x + (chip_w - _text_width(text, role)) // 2
+        ty = y + (chip_h - (28 if role == "big" else 20)) // 2 - 2
+        _draw_text(d, tx, ty, text, role, fg)
+
+
+def _compose(lines, state, size=None, choice=None, badge=None):
+    """
+    1画面ぶんの絵を作る。上が状態の色帯、真ん中が本文、下はボタン列（選択中のみ）。
+
+    choice を渡すと選択画面になり、下部が物理ボタンに対応したラベル列になる。
+    """
     from PIL import Image, ImageDraw
 
     W, H = size or (_lcd.width, _lcd.height)
     img = Image.new("RGB", (W, H), BG_COLOR)
     d = ImageDraw.Draw(img)
 
-    bar = 40
-    d.rectangle([0, 0, W, bar], fill=LED_COLORS.get(state, (0x5A, 0x5A, 0x5A)))
-    _draw_text(d, 10, 9, LED_LABELS.get(state, state), "body", (255, 255, 255))
-    _draw_text(d, W - _text_width(DEVICE_ID, "small") - 10, 14, DEVICE_ID, "small",
-               (255, 255, 255))
+    _draw_band(d, W, state, badge)
+    top = BAND_H + 14
 
-    y = bar + 16
-    for i, line in enumerate(lines[:4]):
-        role = "title" if i == 0 else "body"
-        _draw_text(d, 12, y, _fit(str(line), role, W - 24), role,
-                   FG_COLOR if i == 0 else SUB_COLOR)
-        y += 36 if i == 0 else 29
-
-    foot = f"broker {_broker['host']}" if _broker["host"] else "ブローカー未接続"
-    _draw_text(d, 12, H - 22, foot, "small", (0x6E, 0x6E, 0x74))
+    if choice:
+        bottom = H - BAR_H - 8
+        # 選択中は本文を2行までに抑える。チップの高さを確保する方を優先する
+        y = _draw_body(d, W, top, bottom - 46, list(lines)[:2])
+        _draw_choices(d, W, y + 6, bottom, choice, state)
+        _draw_button_bar(d, W, H)
+    else:
+        _draw_body(d, W, top, H - 28, list(lines)[:4], center=True)
+        _draw_footer(d, W, H)
     return img
 
 
@@ -395,38 +524,52 @@ def _fit(text, role, max_width):
     return text + "…"
 
 
-def _push(lines, state):
+def _push():
     """内容が変わっていなければ描かない。SPIの全面書き換えは200ms近くかかる"""
     global _last_pushed
     if _lcd is None:
         return
-    key = (tuple(str(x) for x in lines), state)
+    key = repr(_screen)
     if key == _last_pushed:
         return
     try:
         with _display_lock:
-            _lcd.display(_compose(lines, state))
+            _lcd.display(_compose(_screen["lines"], _screen["state"],
+                                  choice=_screen["choice"], badge=_screen["badge"]))
         _last_pushed = key
     except Exception as e:
         print(f"[LCD] 描画に失敗: {e}")
 
 
-def render_display(lines):
-    global _last_lines
-    _last_lines = list(lines)
+def _print_screen():
+    """LCDが無い環境用の代替出力。選択中はどれを選んでいるかも出す"""
     width = 34
     print("┌" + "─" * width)
-    for line in lines:
+    for line in _screen["lines"]:
         print("│ " + str(line))
+    choice = _screen["choice"]
+    if choice:
+        if choice.get("text"):
+            print("│ " + choice["text"])
+        marks = ["[" + str(o) + "]" if i == choice["selected"] else " " + str(o) + " "
+                 for i, o in enumerate(choice["options"])]
+        print("│ " + "  ".join(marks))
     print("└" + "─" * width)
-    _push(_last_lines, _led_state)
+
+
+def render_display(lines, badge=None):
+    _screen["lines"] = [str(x) for x in lines]
+    _screen["choice"] = None      # 新しい表示が来たら選択画面は畳む
+    _screen["badge"] = badge
+    _print_screen()
+    _push()
 
 
 def set_led(state):
-    global _led_state
-    _led_state = state
+    _screen["state"] = state
     print(f"[LED] {LED_LABELS.get(state, state)}")
-    _push(_last_lines, state)
+    _apply_leds(state)     # 実物のLED（B-3）。無ければ何もしない
+    _push()
 
 
 def _compose_selftest(size, rotation):
@@ -638,6 +781,88 @@ def touch_calibrate():
     return 0
 
 
+def buttontest(duration=30.0):
+    """
+    ボタン(B-2)の配線確認。押すたびに、どのボタンとして認識されたかを出す。
+
+        python3 raspi.py --btntest [秒数]
+
+    「左」を押して 左 と出れば向きが合っている。左右が逆に出るなら、配線を
+    入れ替えるか `GEMMBA_BTN_LEFT` と `GEMMBA_BTN_RIGHT` を入れ替える。
+    """
+    if not init_buttons():
+        print("ボタンを開けませんでした。配線と gpiozero を確認してください。")
+        return 1
+    labels = {"left": "左（前へ）", "ok": "決定", "right": "右（次へ）"}
+    for name in ("left", "ok", "right"):
+        print(f"  {labels[name]:<10} GPIO{BUTTON_PINS[name]}")
+
+    # 押していないのに押下状態なら、まず配線を疑う。タクトスイッチは4本足のうち
+    # 2本ずつが内部で繋がっているので、同じ組を選ぶと常に導通したままになる。
+    stuck = [labels[n] for n in ("left", "ok", "right") if _buttons[n].is_pressed]
+    if stuck:
+        print("！ 押していないのに押下状態: " + " / ".join(stuck))
+        print("  タクトスイッチの4本足のうち、**内部で最初から繋がっている組**を")
+        print("  選んでいる可能性があります。隣り合う足ではなく対角の足を使ってください。")
+
+    print(f"\n{duration:.0f}秒間、押されたボタンを表示します（Ctrl-C で終了）。")
+    while not _button_events.empty():
+        _button_events.get_nowait()
+    deadline = time.time() + duration
+    seen = set()
+    try:
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                name = _button_events.get(timeout=remaining)
+            except queue.Empty:
+                break
+            seen.add(name)
+            print(f"  押された → {labels[name]}  (GPIO{BUTTON_PINS[name]})")
+    except KeyboardInterrupt:
+        pass
+
+    missing = [labels[n] for n in ("left", "ok", "right") if n not in seen]
+    if missing:
+        print("\n一度も反応しなかった: " + " / ".join(missing))
+        return 1
+    print("\n3つとも反応しました")
+    return 0
+
+
+def ledtest(hold_sec=2.0):
+    """
+    ステータスLED(B-3)の配線確認。
+
+        python3 raspi.py --ledtest [秒数]
+
+    まず赤だけ・青だけを点けて**色と極性**を確かめ、そのあと実際の状態遷移を
+    なぞる。光らない場合は、足の向き（長い足がアノード＝GPIO側）と抵抗を疑う。
+    """
+    if not init_leds():
+        print("LEDを開けませんでした。配線と gpiozero を確認してください。")
+        return 1
+    try:
+        for name in ("red", "blue"):
+            print(f"[{name}] だけ点灯 … GPIO{LED_PINS[name]}")
+            for other, led in _leds.items():
+                led.value = (other == name)
+            time.sleep(hold_sec)
+        print("--- 状態をなぞります ---")
+        for state in ("idle", "working", "free", "guide", "error", "offline"):
+            color = "赤" if state in LED_RED_STATES else "青"
+            print(f"{LED_LABELS[state]:<12} → {color}")
+            _apply_leds(state)
+            time.sleep(hold_sec)
+    finally:
+        for led in _leds.values():
+            led.off()
+    print("完了（消灯しました）")
+    return 0
+
+
 def preview(path):
     """
     ハード無しで主要な画面を1枚のPNGに書き出す。SPIが通る前や開発PCで、
@@ -651,19 +876,151 @@ def preview(path):
     size = (320, 240) if rot in (90, 270) else (240, 320)
     _load_fonts()
 
+    def choice(text, options, selected):
+        return {"text": text, "options": options, "selected": selected}
+
     screens = [
         _compose_selftest(size, rot),
         _compose(["test1", "社員証をタッチしてください"], "idle", size),
-        _compose(["山田 花子 さん", "製品A 組立", "数量 30 / 期限 2026-08-30"], "working", size),
-        _compose(["レーザー加工機 #1 の長い機材名テスト", "着手しますか？",
-                  "[y] はい  [n] いいえ"], "free", size),
+        _compose(["山田 花子 さん", "製品A ロット12 組立", "30個 / 期限 2026-09-30",
+                  "終了時にもう一度タッチ"], "working", size),
+        # C-1 の承認。長い機材名がはみ出さないかもここで見る
+        _compose(["レーザー加工機 #1 の長いタスク名テスト", "20個 / 期限 2026-09-20"],
+                 "idle", size, choice("このタスクに着手しますか？", ["はい", "いいえ"], 0),
+                 badge="1/3"),
+        # 完了後の難易度フィードバック
+        _compose(["製品A ロット12 組立", "お疲れさまでした"], "idle", size,
+                 choice("この作業の難易度は？", ["簡単", "普通", "難しい"], 1)),
+        _compose(["旋盤 #2 へ移動してください", "製品C 外形加工（至急）"], "guide", size),
+        _compose(["未登録のICカードです", "管理画面から登録してください"], "error", size),
     ]
-    sheet = Image.new("RGB", (size[0] * 2 + 12, size[1] * 2 + 12), (60, 60, 66))
+    cols = 2
+    rows = (len(screens) + cols - 1) // cols
+    sheet = Image.new("RGB", (size[0] * cols + 12 * (cols + 1),
+                              size[1] * rows + 12 * (rows + 1)), (60, 60, 66))
     for i, img in enumerate(screens):
-        sheet.paste(img, ((i % 2) * (size[0] + 12), (i // 2) * (size[1] + 12)))
+        x = 12 + (i % cols) * (size[0] + 12)
+        y = 12 + (i // cols) * (size[1] + 12)
+        sheet.paste(img, (x, y))
     sheet.save(path)
     print(f"[preview] {path} に {len(screens)} 画面を書き出しました ({size[0]}x{size[1]})")
     return 0
+
+
+# ------------------------------------------------------------ 物理ボタン（B-2）
+# 左 / 決定 / 右 の3つ。抵抗は要らない（内部プルアップを使う）。押すと Low。
+#
+#   左   GPIO5  (29番ピン)  … 選択を左へ
+#   決定 GPIO6  (31番ピン)  … 確定
+#   右   GPIO13 (33番ピン)  … 選択を右へ
+#   GND は 30/34/39番ピンが近い
+#
+# SPI(7〜11)・LCD(24/25)・I2Sマイク(18/19/20) を避けた空きピンで、並び順が
+# そのまま画面下部の 左/決定/右 に対応するよう昇順に割り当ててある。
+BUTTON_PINS = {
+    "left":  int(os.environ.get("GEMMBA_BTN_LEFT", "5")),
+    "ok":    int(os.environ.get("GEMMBA_BTN_OK", "6")),
+    "right": int(os.environ.get("GEMMBA_BTN_RIGHT", "13")),
+}
+_button_events = queue.Queue()
+_buttons = {}
+
+
+def _on_press(name):
+    return lambda: _button_events.put(name)
+
+
+def init_buttons():
+    """
+    ボタンを開く。開けなければ False を返し、呼び出し側はキーボード入力に落ちる。
+    どちらが先に押されたかを待つ必要があるので、押下をキューに積む方式にしてある。
+    """
+    if _buttons:
+        return True
+    try:
+        from gpiozero import Button
+    except ImportError as e:
+        print(f"[BTN] gpiozero がありません（{e}）。キーボード入力に落とします。")
+        return False
+    try:
+        for name, pin in BUTTON_PINS.items():
+            # bounce_time でチャタリング除去まで済む
+            button = Button(pin, pull_up=True, bounce_time=0.05)
+            button.when_pressed = _on_press(name)
+            _buttons[name] = button
+    except Exception as e:
+        print(f"[BTN] 開けません（{e}）。キーボード入力に落とします。")
+        for button in _buttons.values():
+            button.close()
+        _buttons.clear()
+        return False
+    print(f"[BTN] 左=GPIO{BUTTON_PINS['left']} 決定=GPIO{BUTTON_PINS['ok']} "
+          f"右=GPIO{BUTTON_PINS['right']}")
+    return True
+
+
+# ------------------------------------------------------------ ステータスLED（B-3）
+# 単色LED 2個。**作業中は赤、それ以外は青。** 電流制限抵抗が各1本要る（220〜1kΩ）。
+#
+#   赤 GPIO17（11番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
+#   青 GPIO27（13番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
+#
+# 9/11/13番が隣り合っているので、GND・赤・青を並べて挿せる。
+#
+# **GPIO16 は使えない。** I2Sマイクの `dtoverlay=googlevoicehat-soundcard`（E-2）が
+# アンプの sdmode として掴んでいて、開こうとすると 'GPIO busy' になる。同じ理由で
+# GPIO18/19/20 もマイクが使っている。
+#
+# 画面上部の色帯（LED_COLORS）は6状態を色で出し分けるが、こちらは2色しかないので
+# 「その機材が今ふさがっているか」だけを離れた場所から見せる役割に割り切っている。
+LED_PINS = {
+    "red": int(os.environ.get("GEMMBA_LED_RED", "17")),
+    "blue": int(os.environ.get("GEMMBA_LED_BLUE", "27")),
+}
+# 赤を点ける状態。フリー利用も「ふさがっている」に含めるなら "free" を足す
+LED_RED_STATES = {"working"}
+_leds = {}
+
+
+def init_leds():
+    """ステータスLEDを開く。無ければ何もしない（画面の色帯だけで動き続ける）"""
+    if _leds:
+        return True
+    if os.environ.get("GEMMBA_LED", "auto") == "off":
+        print("[LED] GEMMBA_LED=off のため使いません")
+        return False
+    try:
+        from gpiozero import LED
+    except ImportError as e:
+        print(f"[LED] gpiozero がありません（{e}）。画面の色帯だけで動きます。")
+        return False
+    try:
+        for name, pin in LED_PINS.items():
+            _leds[name] = LED(pin)
+    except Exception as e:
+        print(f"[LED] 開けません（{e}）。画面の色帯だけで動きます。")
+        for led in _leds.values():
+            led.close()
+        _leds.clear()
+        return False
+    print(f"[LED] 赤=GPIO{LED_PINS['red']} 青=GPIO{LED_PINS['blue']}")
+    _apply_leds(_screen["state"])
+    return True
+
+
+def _apply_leds(state):
+    """
+    常にどちらか片方だけ点ける。両方消えた状態を作らないのは、消灯と
+    「モジュールが死んでいる」が現場で見分けられなくなるため。
+    """
+    if not _leds:
+        return
+    red = state in LED_RED_STATES
+    try:
+        _leds["red"].value = red
+        _leds["blue"].value = not red
+    except Exception as e:
+        print(f"[LED] 点灯に失敗: {e}")
 
 
 # console モードの入力。行を1本のスレッドで読んでキューに積む。都度 input() する
@@ -676,39 +1033,104 @@ def _stdin_reader():
         _stdin_lines.put(line.strip())
 
 
-def _console_ask(timeout):
+def _console_choice(options, timeout):
+    """キーボードで選ぶ。番号のほか、2択のときは y / n も受ける（従来の操作のまま）"""
     while not _stdin_lines.empty():  # 問い合わせ前に打たれた行は捨てる
         _stdin_lines.get_nowait()
+    hint = " / ".join(f"{i + 1}={o}" for i, o in enumerate(options))
+    print(f"[入力] {hint}")
     deadline = time.time() + timeout
     while True:
         remaining = deadline - time.time()
         if remaining <= 0:
             return None
         try:
-            line = _stdin_lines.get(timeout=remaining).lower()
+            line = _stdin_lines.get(timeout=remaining).strip().lower()
         except queue.Empty:
             return None
-        if line in ("y", "yes"):
-            return True
-        if line in ("n", "no"):
-            return False
-        print("y か n を入力してください")
+        if len(options) == 2 and line in ("y", "yes"):
+            return 0
+        if len(options) == 2 and line in ("n", "no"):
+            return 1
+        if line.isdigit() and 1 <= int(line) <= len(options):
+            return int(line) - 1
+        print(f"[入力] {hint}")
 
 
-def ask_yes_no(text, lines, timeout):
+def _move_selection(step):
+    """選択を動かして描き直す。端では止める（押し続けて一周すると現場で迷う）"""
+    choice = _screen["choice"]
+    if not choice:
+        return
+    n = len(choice["options"])
+    choice["selected"] = min(max(choice["selected"] + step, 0), n - 1)
+    _print_screen()
+    _push()
+
+
+def _buttons_choice(options, timeout):
+    """物理ボタンで選ぶ。左右でカーソルを動かし、決定で確定する"""
+    while not _button_events.empty():   # 問い合わせ前の押下は捨てる
+        _button_events.get_nowait()
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        try:
+            name = _button_events.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if name == "ok":
+            return _screen["choice"]["selected"]
+        _move_selection(-1 if name == "left" else 1)
+
+
+def ask_choice(text, lines, options, timeout, default=0, badge=None):
     """
-    Yes/No を取得する。B-2 で物理ボタンに差し替える箇所。
+    選択肢から1つ選んでもらう。物理ボタン(左/右/決定)で操作する（B-2）。
+    戻り値: 選んだ添字 / None=時間切れ
+
+    Yes/No も難易度フィードバックもこれ1つで賄う。入力元を差し替えるときは
+    ここだけを見ればよく、on_message も app.py も変更は要らない。
+    """
+    options = [str(o) for o in options]
+    if not options:
+        return None
+    _screen["lines"] = [str(x) for x in lines]
+    _screen["badge"] = badge
+    _screen["choice"] = {
+        "text": text,
+        "options": options,
+        "selected": min(max(default, 0), len(options) - 1),
+    }
+    _print_screen()
+    _push()
+    try:
+        if INPUT_MODE == "yes":
+            return 0                      # 2択なら「はい」。自動応答の試験用
+        if INPUT_MODE == "no":
+            return len(options) - 1       # 2択なら「いいえ」
+        if INPUT_MODE == "timeout":
+            time.sleep(timeout)
+            return None
+        if INPUT_MODE == "buttons" and init_buttons():
+            return _buttons_choice(options, timeout)
+        return _console_choice(options, timeout)
+    finally:
+        # 答えた後・時間切れの後にチップを残さない。次の display が来るまでの間、
+        # 押せないものが押せるように見えてしまう。
+        _screen["choice"] = None
+        _push()
+
+
+def ask_yes_no(text, lines, timeout, badge=None):
+    """
+    Yes/No を取得する。中身は2択の ask_choice。
     戻り値: True=はい / False=いいえ / None=時間切れ
     """
-    render_display(list(lines) + [text, "[y] はい  [n] いいえ"])
-    if INPUT_MODE == "yes":
-        return True
-    if INPUT_MODE == "no":
-        return False
-    if INPUT_MODE == "timeout":
-        time.sleep(timeout)
-        return None
-    return _console_ask(timeout)
+    index = ask_choice(text, lines, ["はい", "いいえ"], timeout, badge=badge)
+    return None if index is None else index == 0
 
 
 def _handle_confirm(payload):
@@ -716,10 +1138,31 @@ def _handle_confirm(payload):
         payload.get("text", ""),
         payload.get("lines") or [],
         float(payload.get("timeout", 30)),
+        badge=payload.get("badge"),
     )
     if answer is None:
         print("[cmd] 応答なしで時間切れ")
     publish_reply({"request_id": payload.get("request_id"), "answer": answer})
+
+
+def _handle_choice(payload):
+    """3択以上を尋ねる指示。答えは選んだ添字で返す（ラベルは送り主が決めている）"""
+    options = payload.get("options") or []
+    if not options:
+        print("[cmd] choice に options がありません")
+        publish_reply({"request_id": payload.get("request_id"), "answer": None})
+        return
+    index = ask_choice(
+        payload.get("text", ""),
+        payload.get("lines") or [],
+        options,
+        float(payload.get("timeout", 30)),
+        default=int(payload.get("default", 0)),
+        badge=payload.get("badge"),
+    )
+    if index is None:
+        print("[cmd] 応答なしで時間切れ")
+    publish_reply({"request_id": payload.get("request_id"), "answer": index})
 
 
 def connect_forever():
@@ -829,12 +1272,15 @@ def send_to_host_tag_id(tag_id):
 
 def main():
     init_display()
+    init_leds()
     set_led("offline")
     render_display([f"Gemmba {DEVICE_ID}", "ブローカーを探しています…"])
     connect_forever()
     client.loop_start()
     threading.Thread(target=supervisor, daemon=True).start()
     threading.Thread(target=heartbeat, daemon=True).start()
+    if INPUT_MODE == "buttons":
+        init_buttons()   # 起動時に開いておく。失敗してもここでは落とさない
     if INPUT_MODE == "console":
         threading.Thread(target=_stdin_reader, daemon=True).start()
 
@@ -846,6 +1292,14 @@ if __name__ == "__main__":
         i = sys.argv.index("--selftest")
         arg = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
         sys.exit(selftest(int(arg) if arg.isdigit() else 180))
+    if "--btntest" in sys.argv:
+        i = sys.argv.index("--btntest")
+        arg = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
+        sys.exit(buttontest(float(arg) if arg.replace(".", "", 1).isdigit() else 30.0))
+    if "--ledtest" in sys.argv:
+        i = sys.argv.index("--ledtest")
+        arg = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
+        sys.exit(ledtest(float(arg) if arg.replace(".", "", 1).isdigit() else 2.0))
     if "--calibrate" in sys.argv:
         sys.exit(touch_calibrate())
     if "--preview" in sys.argv:

@@ -325,6 +325,8 @@ code { font-family: var(--font-mono); background: var(--color-surface); padding:
 
 .perm-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .task-perms { font-size: 12px; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+/* 完了後に現場で答えてもらった体感難易度。設定値の難易度と見分けが付くよう色を変える */
+.felt { color: var(--color-text); font-weight: 600; }
 
 /* 一覧の下にぶら下がる編集フォーム。開くまでは1行しか占めない */
 .edit-row td { padding-top: 0; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }

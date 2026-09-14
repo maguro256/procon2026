@@ -53,7 +53,8 @@
   <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
     <div class="modal-head">
       <span class="modal-badge badge-wait">応答待ち</span>
-      <h4 id="confirmModalTitle">タスクの選択</h4>
+      {# タスクの選択・誘導・完了後の難易度など、モジュールが答えを待っている場面すべてで出る #}
+      <h4 id="confirmModalTitle">モジュールの確認</h4>
     </div>
     <dl class="modal-facts">
       <dt>機材</dt><dd id="confirmWhere"></dd>
@@ -61,10 +62,8 @@
     </dl>
     <div class="confirm-body" id="confirmLines"></div>
     <p class="confirm-question" id="confirmText"></p>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-secondary" id="confirmNo">いいえ</button>
-      <button type="button" class="btn btn-primary" id="confirmYes">はい</button>
-    </div>
+    {# 中身は openConfirm() が組み立てる。Yes/No のときと、選択肢（難易度など）のときがある #}
+    <div class="modal-actions" id="confirmActions"></div>
     <p class="text-muted modal-note">
       モジュールに物理ボタンが付くまでの代替操作です。機材の画面にも同じ内容が出ています。
     </p>
@@ -145,7 +144,17 @@
   const cWho = document.getElementById("confirmWho");
   const cLines = document.getElementById("confirmLines");
   const cText = document.getElementById("confirmText");
+  const cActions = document.getElementById("confirmActions");
   let pendingId = null;
+
+  function addButton(label, primary, body) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn " + (primary ? "btn-primary" : "btn-secondary");
+    b.textContent = label;
+    b.addEventListener("click", () => answer(body));
+    cActions.appendChild(b);
+  }
 
   function openConfirm(c) {
     pendingId = c.request_id;
@@ -158,10 +167,19 @@
       cLines.appendChild(p);
     });
     cText.textContent = c.text || "";
+    // options があれば選択肢（難易度フィードバックなど）、無ければ従来の Yes/No
+    cActions.innerHTML = "";
+    const options = c.options;
+    if (options && options.length) {
+      options.forEach((label, i) => addButton(label, false, { index: i }));
+    } else {
+      addButton("いいえ", false, { answer: false });
+      addButton("はい", true, { answer: true });
+    }
     cModal.hidden = false;
   }
 
-  async function answer(value) {
+  async function answer(body) {
     if (!pendingId) return;
     const id = pendingId;
     pendingId = null;
@@ -170,14 +188,11 @@
       await fetch("/api/confirm/" + id, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer: value }),
+        body: JSON.stringify(body),
       });
     } catch (e) { /* 応答待ちが時間切れになっただけ。次の周期で整合する */ }
     poll();
   }
-
-  document.getElementById("confirmYes").addEventListener("click", () => answer(true));
-  document.getElementById("confirmNo").addEventListener("click", () => answer(false));
 
   async function poll() {
     let data;
