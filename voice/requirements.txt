@@ -1,0 +1,17 @@
+# voice/ 専用。app.py の requirements.txt とは別環境で入れる。
+#
+#   py -3.11 -m venv .venv-voice
+#   .venv-voice/Scripts/python -m pip install -r voice/requirements.txt
+#
+# app.py は Python 3.8 固定だが faster-whisper は 3.9 以降しか入らない。
+# 繋がりは POST /api/tasks (HTTP) だけなので、環境を分けても困らない。
+
+# 文字起こし本体。ctranslate2 / PyAV / onnxruntime(VAD用) を連れてくる。
+# ffmpeg の外部インストールは不要（PyAV が同梱されている）。
+faster-whisper>=1.1
+
+# GPU(CUDA 12)で動かす場合のみ。CPUだけで動かすなら入れなくてよい。
+# ctranslate2 4.5 以降は cuDNN 9 を要求する。Windows では site-packages 下の
+# DLL が探索パスに入らないので、stt.py が add_dll_directory で足している。
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

@@ -22,3 +22,8 @@ raspi/.broker_cache.json
 
 # タッチパネルのキャリブレーション結果（個体ごとに異なる）
 raspi/.touch_calibration.json
+
+# 文字起こし用の venv（Python 3.11 + faster-whisper）。数GBあるので追跡しない。
+#   py -3.11 -m venv .venv-voice
+#   .venv-voice/Scripts/python -m pip install -r voice/requirements.txt
+.venv-voice/
