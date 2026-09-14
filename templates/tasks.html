@@ -7,7 +7,7 @@
   <p class="page-sub">例外的なタスクの追加や、内容・優先度の変更、手動での割り当てをここで行います。</p>
 </header>
 
-<section class="card elev-sm form-panel">
+<section class="form-panel">
   <h4>タスクを登録</h4>
   <form method="post" action="{{ url_for('add_task') }}" class="task-form-grid">
     <div class="field"><label>タスク名 *</label>
@@ -30,6 +30,14 @@
     <div class="field"><label>期限</label>
       <input class="input" type="date" name="deadline">
     </div>
+    <div class="field"><label>機材（任意）</label>
+      <select class="input" name="equipment_id">
+        <option value="">機材なし</option>
+        {% for e in equipment_list %}
+        <option value="{{ e.id }}">{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div class="field span-all"><label>補足（任意）</label>
       <input class="input" type="text" name="description" placeholder="顧客案件・注意点など">
     </div>
@@ -41,9 +49,9 @@
 </section>
 
 <h3 class="section-title">タスク一覧（優先度順）</h3>
-<div class="task-list">
+<div class="sheet task-list">
 {% for t in tasks %}
-<article class="card elev-sm task-card {{ 'task-done' if t.status == 'done' }}">
+<article class="sheet-row task-row {{ 'task-done' if t.status == 'done' }}">
   <div class="task-head">
     <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
     <h3>{{ t.title }}</h3>
@@ -67,6 +75,19 @@
         {% endfor %}
       </select>
     </div>
+    <div class="field"><label>優先度</label>
+      <select class="input" name="priority" title="優先度">
+        {% for key, label in P.items() %}
+        <option value="{{ key }}" {{ 'selected' if t.priority == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>数量</label>
+      <input class="input" type="number" name="quantity" title="数量" min="1" value="{{ t.quantity }}">
+    </div>
+    <div class="field"><label>期限</label>
+      <input class="input" type="date" name="deadline" title="期限" value="{{ t.deadline or '' }}">
+    </div>
     <div class="field"><label>機材</label>
       <select class="input" name="equipment_id" title="機材">
         <option value="">機材なし</option>
@@ -75,16 +96,9 @@
         {% endfor %}
       </select>
     </div>
-    <div class="field"><label>状態</label>
-      <select class="input" name="status" title="状態">
-        {% for key, label in S.items() %}
-        <option value="{{ key }}" {{ 'selected' if t.status == key }}>{{ label }}</option>
-        {% endfor %}
-      </select>
-    </div>
     <button type="submit" class="btn btn-secondary">更新</button>
     <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
-    <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除">
+    <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
     </button>
     {# チェックボックスは未チェックだと送信されないので、このフォーム経由だと分かる目印を付ける #}
@@ -94,9 +108,9 @@
       {{ perm_checks('required_permissions', perms.parse(t.required_permissions)) }}
     </details>
   </form>
-  <form id="ai-assign-{{ t.id }}" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}" style="display:none;"></form>
-  <form id="delete-task-{{ t.id }}" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
-        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')" style="display:none;"></form>
+  <form id="ai-assign-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}"></form>
+  <form id="delete-task-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
+        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')"></form>
 </article>
 {% else %}
 <p class="empty">タスクはまだありません。上のフォームから登録してください。</p>

@@ -1,68 +1,61 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}使用状況 | Gemmba 管理{% endblock %}
 {% block content %}
 <header class="page-head">
   <h1>使用状況ダッシュボード</h1>
-  <p class="page-sub">各機材の稼働状況とタスクの流れをひと目で確認できます。モジュールからの状態報告で自動更新されます（API連携は未接続）。</p>
+  <p class="page-sub">各機材が「空き」か「使用中」かをひと目で確認できます。モジュールからの状態報告で自動更新されます（API連携は未接続）。</p>
 </header>
 
-<section class="stat-grid">
-  <div class="card elev-sm">
-    <div class="card-kicker">稼働中の機材</div>
-    <div class="stat-num">{{ counts.working_eq }}</div>
+{% set idle_n = equipment|selectattr('status', 'equalto', 'idle')|list|length %}
+{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+
+<h3 class="section-title">機材の状況</h3>
+<section class="signage-strip" aria-label="機材の状態サマリー">
+  <div class="signage-tile t-idle">
+    <div class="tile-label">{{ icons.status_icon('idle') }}空き</div>
+    <div class="tile-num">{{ idle_n }}</div>
   </div>
-  <div class="card elev-sm">
-    <div class="card-kicker">作業中のタスク</div>
-    <div class="stat-num">{{ counts.active_tasks }}</div>
-  </div>
-  <div class="card elev-sm">
-    <div class="card-kicker">未完了タスク</div>
-    <div class="stat-num">{{ counts.open_tasks }}</div>
-  </div>
-  <div class="card elev-sm">
-    <div class="card-kicker">登録作業者</div>
-    <div class="stat-num">{{ counts.workers }}</div>
+  <div class="signage-tile t-inuse">
+    <div class="tile-label">{{ icons.status_icon('working') }}使用中</div>
+    <div class="tile-num">{{ inuse_n }}</div>
   </div>
 </section>
 
-<h3 class="section-title">機材の状況</h3>
-<section class="eq-grid">
+<div class="sheet eq-list">
   {% for e in equipment %}
-  <article class="card elev-sm eq-card status-{{ e.status }}">
-    <span class="app-led"></span>
-    <div class="eq-card-head">
-      <div class="card-title">{{ e.name }}</div>
-      <span class="badge badge-{{ e.status }}">{{ E[e.status] }}</span>
+  <div class="sheet-row eq-row {{ 'status-idle' if e.status == 'idle' else 'status-inuse' }}">
+    <span class="status-lamp" title="{{ icons.status_label(e.status) }}">{{ icons.status_icon(e.status) }}</span>
+    <div class="eq-row-body">
+      <div class="eq-row-head">
+        <span class="card-title">{{ e.name }}</span>
+        <span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span>
+      </div>
+      <dl class="eq-meta">
+        <div><span class="k">担当者：</span>{{ e.worker_name or '—' }}</div>
+        <div><span class="k">実行中：</span>{{ e.task_title or '—' }}{% if e.task_title %}　<span class="text-muted">×{{ e.task_quantity or '—' }} ／ 期限 {{ e.task_deadline or '—' }}</span>{% endif %}</div>
+      </dl>
     </div>
-    <div class="mono">{{ e.module_id or '未接続' }}</div>
-    <dl class="eq-meta">
-      <div><span class="k">担当者：</span>{{ e.worker_name or '—' }}</div>
-      <div><span class="k">実行中：</span>{{ e.task_title or '—' }}{% if e.task_title %}　<span class="text-muted">×{{ e.task_quantity or '—' }} ／ 期限 {{ e.task_deadline or '—' }}</span>{% endif %}</div>
-    </dl>
-    <div class="card-meta eq-updated">最終更新：{{ e.updated_at }}</div>
-  </article>
+    <details class="eq-tech">
+      <summary>詳しい設定</summary>
+      <div class="mono">モジュールID：{{ e.module_id or '未接続' }}</div>
+      <div class="card-meta">最終更新：{{ e.updated_at }}</div>
+    </details>
+  </div>
   {% else %}
   <p class="empty">機材が登録されていません。「機材・モジュール管理」から追加してください。</p>
   {% endfor %}
-</section>
-
-<h3 class="section-title">最近のタスク</h3>
-<div class="card table-wrap">
-  <table class="table">
-    <thead><tr><th>優先度</th><th>タスク名</th><th>状態</th><th>担当</th><th>期限</th></tr></thead>
-    <tbody>
-    {% for t in recent %}
-      <tr>
-        <td><span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span></td>
-        <td>{{ t.title }}</td>
-        <td>{{ S[t.status] }}</td>
-        <td>{{ t.worker_name or '未割当' }}</td>
-        <td>{{ t.deadline or '—' }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="5" class="empty">タスクはまだありません。</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
 </div>
+
+<h3 class="section-title">タスクの状況</h3>
+<section class="signage-strip" aria-label="タスクのサマリー">
+  <div class="signage-tile t-inuse">
+    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M9 6.5v11l9-5.5z"/></svg>作業中のタスク</div>
+    <div class="tile-num">{{ counts.active_tasks }}</div>
+  </div>
+  <div class="signage-tile">
+    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3.5h6v2H9z"/></svg>未完了タスク</div>
+    <div class="tile-num">{{ counts.open_tasks }}</div>
+  </div>
+</section>
 {% endblock %}
