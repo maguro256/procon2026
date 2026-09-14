@@ -7,12 +7,12 @@
 </header>
 
 {% if pending_tags %}
-<section class="card elev-sm form-panel" style="border-left: 4px solid #e67e22;">
+<section class="callout form-panel">
   <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
-  <p class="text-muted" style="margin-bottom:1rem;">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。</p>
+  <p class="callout-lead">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。</p>
   {% for tag_id, module_id in pending_tags.items() %}
-  <div style="padding:.75rem 0; border-top:1px solid #eee;">
-    <p style="margin-bottom:.5rem;">タグID: <strong class="mono">{{ tag_id }}</strong>{% if module_id %} <span class="text-muted">（検出モジュール: {{ module_id }}）</span>{% endif %}</p>
+  <div class="callout-row">
+    <p>タグID: <strong class="mono">{{ tag_id }}</strong>{% if module_id %} <span class="text-muted">（検出モジュール: {{ module_id }}）</span>{% endif %}</p>
     <form method="post" action="{{ url_for('add_worker') }}" class="worker-form-grid">
       <input type="hidden" name="nfc_tag_id" value="{{ tag_id }}">
       <div class="field"><label>名前 *</label>
@@ -28,7 +28,7 @@
 </section>
 {% endif %}
 
-<section class="card elev-sm form-panel narrow">
+<section class="form-panel narrow">
   <h4>作業者を登録</h4>
   <form method="post" action="{{ url_for('add_worker') }}" class="worker-form-grid">
     <div class="field"><label>名前 *</label>
@@ -45,7 +45,8 @@
 </section>
 
 <h3 class="section-title">登録済み作業者（{{ workers|length }}名）</h3>
-<div class="card table-wrap">
+<p class="table-hint"><svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>横にスクロールできます</p>
+<div class="sheet table-wrap">
   <table class="table">
     <thead><tr><th>ID</th><th>名前</th><th>勤続年数</th><th>ICタグ</th><th>担当中タスク</th><th>登録日</th><th></th></tr></thead>
     <tbody>
@@ -60,7 +61,7 @@
         <td class="num">
           <form method="post" action="{{ url_for('delete_worker', worker_id=w.id) }}"
                 onsubmit="return confirm('{{ w.name }} さんを削除しますか？担当中のタスクは未割当に戻ります。')">
-            <button type="submit" class="btn btn-icon btn-secondary" title="削除">
+            <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ w.name }} さんを削除">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
             </button>
           </form>

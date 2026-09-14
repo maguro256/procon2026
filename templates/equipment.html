@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}機材管理 | Gemmba 管理{% endblock %}
 {% block content %}
 <header class="page-head">
@@ -7,12 +8,12 @@
 </header>
 
 {% if pending_modules %}
-<section class="card elev-sm form-panel" style="border-left: 4px solid #e67e22;">
+<section class="callout form-panel">
   <h4>未登録モジュールを検出（{{ pending_modules|length }}件）</h4>
-  <p class="text-muted" style="margin-bottom:1rem;">ネットワーク上にモジュールが見つかりましたが、どの機材にも紐付いていません。設置先の機材を選んで紐付けてください。</p>
+  <p class="callout-lead">ネットワーク上にモジュールが見つかりましたが、どの機材にも紐付いていません。設置先の機材を選んで紐付けてください。</p>
   {% for device_id, info in pending_modules.items() %}
-  <div style="padding:.75rem 0; border-top:1px solid #eee;">
-    <p style="margin-bottom:.5rem;">デバイスID: <strong class="mono">{{ device_id }}</strong>
+  <div class="callout-row">
+    <p>デバイスID: <strong class="mono">{{ device_id }}</strong>
       <span class="text-muted">（IP: {{ info.ip or '不明' }} ／ 検出 {{ info.seen_at }}）</span></p>
     <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
       <input type="hidden" name="hostname" value="{{ device_id }}">
@@ -29,7 +30,7 @@
 </section>
 {% endif %}
 
-<section class="card elev-sm form-panel narrow">
+<section class="form-panel narrow">
   <h4>機材を登録</h4>
   <form method="post" action="{{ url_for('add_equipment') }}" class="equipment-form-grid">
     <div class="field"><label>機材名 *</label>
@@ -46,15 +47,19 @@
 </section>
 
 <h3 class="section-title">登録済み機材（{{ equipment|length }}台）</h3>
-<div class="card table-wrap" style="margin-bottom: var(--space-8);">
+<details class="tech-toggle">
+  <summary>詳しい設定（モジュールID・最終通信を表示）</summary>
+</details>
+<p class="table-hint"><svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>横にスクロールできます</p>
+<div class="sheet table-wrap">
   <table class="table">
-    <thead><tr><th>ID</th><th>機材名</th><th>モジュールID</th><th>デバイスID（MQTT）</th><th>接続</th><th>最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>機材名</th><th class="tech-col">モジュールID</th><th>デバイスID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
     <tbody>
     {% for e in equipment %}
       <tr>
         <td class="mono text-muted">{{ e.id }}</td>
         <td class="strong">{{ e.name }}</td>
-        <td class="mono">{{ e.module_id or '未接続' }}</td>
+        <td class="mono tech-col">{{ e.module_id or '未接続' }}</td>
         <td>
           <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
             <input type="hidden" name="equipment_id" value="{{ e.id }}">
@@ -65,19 +70,19 @@
         </td>
         <td>
           {% if e.online %}
-            <span class="badge badge-online" title="IP: {{ e.ip or '不明' }}">オンライン</span>
+            <span class="badge badge-online" title="IP: {{ e.ip or '不明' }}"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="5"/></svg>オンライン</span>
           {% else %}
-            <span class="badge badge-offline">オフライン</span>
+            <span class="badge badge-offline"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/></svg>オフライン</span>
           {% endif %}
         </td>
-        <td class="mono text-muted">{{ e.last_seen or '—' }}</td>
-        <td><span class="badge badge-{{ e.status }}">{{ E[e.status] }}</span></td>
+        <td class="mono text-muted tech-col">{{ e.last_seen or '—' }}</td>
+        <td><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></td>
         <td>{{ e.worker_name or '—' }}</td>
         <td>{{ e.task_title or '—' }}</td>
         <td class="num">
           <form method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
                 onsubmit="return confirm('機材「{{ e.name }}」を削除しますか？')">
-            <button type="submit" class="btn btn-icon btn-secondary" title="削除">
+            <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ e.name }} を削除">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
             </button>
           </form>
@@ -91,23 +96,23 @@
 </div>
 
 <h3 class="section-title">モジュール連携API（実装済みの受け口）</h3>
-<div class="api-list">
-  <div class="card api-row">
+<div class="sheet api-list">
+  <div class="sheet-row api-row">
     <span class="tag tag-accent">POST</span>
     <code>/api/equipment/&lt;module_id&gt;/status</code>
     <span class="desc">モジュールからの状態報告（status / nfc_tag_id / task_id）</span>
   </div>
-  <div class="card api-row">
+  <div class="sheet-row api-row">
     <span class="tag tag-outline">GET</span>
     <code>/api/workers/&lt;nfc_tag_id&gt;/next_task</code>
     <span class="desc">NFCタッチ時、次のタスクを優先度順に返す</span>
   </div>
-  <div class="card api-row">
+  <div class="sheet-row api-row">
     <span class="tag tag-accent">POST</span>
     <code>/api/tasks</code>
     <span class="desc">音声入力からのタスク登録（Whisper → Gemma の出力を想定）</span>
   </div>
-  <div class="card api-row">
+  <div class="sheet-row api-row">
     <span class="tag tag-accent">POST</span>
     <code>/api/tasks/&lt;task_id&gt;/complete</code>
     <span class="desc">完了タッチ。所要時間を記録しAIの学習フックを呼ぶ</span>

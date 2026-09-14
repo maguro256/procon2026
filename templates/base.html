@@ -9,21 +9,26 @@
 <body>
 <div class="app">
   <aside class="sidebar">
-    <div>
-      <div class="brand-name">Gemmba</div>
+    <div class="brand">
+      <div class="brand-plate">
+        <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Gemmba">
+      </div>
       <div class="brand-sub">管理者コンソール</div>
     </div>
     <nav class="sidebar-nav">
       <a href="{{ url_for('dashboard') }}" class="navlink {{ 'active' if request.endpoint == 'dashboard' }}">
-        <span class="navdot"></span>使用状況ダッシュボード</a>
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        使用状況</a>
       <a href="{{ url_for('tasks') }}" class="navlink {{ 'active' if request.endpoint == 'tasks' }}">
-        <span class="navdot"></span>タスク管理</a>
+        <svg class="icon" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3.5h6v2H9z"/><path d="M8.5 12.5l2 2 4-4.5"/></svg>
+        仕事</a>
       <a href="{{ url_for('workers') }}" class="navlink {{ 'active' if request.endpoint == 'workers' }}">
-        <span class="navdot"></span>作業者管理</a>
+        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.4-4 4-6 7.5-6s6.1 2 7.5 6"/></svg>
+        従業員</a>
       <a href="{{ url_for('equipment') }}" class="navlink {{ 'active' if request.endpoint == 'equipment' }}">
-        <span class="navdot"></span>機材・モジュール管理</a>
-    </nav>
-    <div class="sidebar-foot">現場が自律的に動く仕組みを、<br>低コストで。</div>
+        <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 3.3l2 2-2.4 2.4 2 2 2.4-2.4 2 2c.5 1.7.1 3.6-1.2 4.9-1.5 1.5-3.7 1.8-5.5 1l-6.4 6.4a1.8 1.8 0 0 1-2.5-2.5l6.4-6.4c-.8-1.8-.5-4 1-5.5 1.3-1.3 3.2-1.7 4.9-1.2z"/></svg>
+        機械</a>
+    
   </aside>
 
   <main class="main">
@@ -33,9 +38,9 @@
         {% for category, msg in messages %}
           <div class="flash flash-{{ 'ok' if category == 'ok' else 'error' }}">
             {% if category == 'ok' %}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>
             {% else %}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>
             {% endif %}
             <div>{{ msg }}</div>
           </div>
@@ -212,6 +217,46 @@
 
   poll();
   setInterval(poll, 2000);
+
+  // ---- フォーム送信をその場で処理し、ページ全体のリロードをなくす ----
+  // 登録・更新・削除・AI割当はどれも同じ画面へ戻ってくるだけなので、
+  // 送信結果のHTMLから <main> の中身だけを取り出して差し替える（サイドバーや
+  // モーダル・ポーリングはそのまま維持される）。取得に失敗した場合だけ、
+  // 通常のフォーム送信（ページ遷移）にフォールバックする。
+  async function ajaxSubmit(form) {
+    const method = (form.getAttribute("method") || "get").toUpperCase();
+    const action = form.getAttribute("action") || (location.pathname + location.search);
+    const isTagForm = !!form.closest("#tagModal");
+    const res = await fetch(action, {
+      method: method,
+      body: method === "GET" ? undefined : new FormData(form),
+      credentials: "same-origin",
+    });
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const newMain = doc.querySelector("main.main");
+    const curMain = document.querySelector("main.main");
+    if (!newMain || !curMain) { location.href = res.url || action; return; }
+    curMain.replaceWith(document.importNode(newMain, true));
+    if (doc.title) document.title = doc.title;
+    if (res.url && res.url !== location.href) history.pushState({}, "", res.url);
+    if (isTagForm) close();
+  }
+
+  document.addEventListener("submit", function (e) {
+    if (e.defaultPrevented) return; // 削除確認などでキャンセルされた場合はここで止まる
+    const form = e.target;
+    document.querySelectorAll('button[type="submit"]').forEach(function (btn) {
+      if (btn.form === form && !btn.disabled) {
+        btn.classList.add("is-loading");
+        btn.disabled = true;
+      }
+    });
+    e.preventDefault();
+    ajaxSubmit(form).catch(function () {
+      form.submit(); // 通信に失敗した場合だけ、素の送信にフォールバックする
+    });
+  });
 })();
 </script>
 </body>

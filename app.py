@@ -161,8 +161,8 @@ def add_task():
         return redirect(url_for("tasks"))
     conn = db.get_db()
     conn.execute(
-        """INSERT INTO tasks (title, description, difficulty, priority, quantity, deadline)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO tasks (title, description, difficulty, priority, quantity, deadline, equipment_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             title,
             f.get("description", "").strip(),
@@ -170,6 +170,7 @@ def add_task():
             f.get("priority", "normal"),
             int(f.get("quantity", 1) or 1),
             f.get("deadline") or None,
+            f.get("equipment_id") or None,
         ),
     )
     conn.commit()
@@ -180,7 +181,7 @@ def add_task():
 
 @app.route("/tasks/<int:task_id>/update", methods=["POST"])
 def update_task(task_id):
-    """状態変更・手動割り当て（担当者/機材）"""
+    """手動編集（担当者・優先度・数量・期限・機材）。状態はNFCタッチ側でのみ変わる"""
     f = request.form
     conn = db.get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -189,33 +190,16 @@ def update_task(task_id):
         flash("タスクが見つかりません", "error")
         return redirect(url_for("tasks"))
 
-    status = f.get("status", task["status"])
     worker_id = f.get("assigned_worker_id") or None
     equipment_id = f.get("equipment_id") or None
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    started_at = task["started_at"]
-    completed_at = task["completed_at"]
-    if status == "in_progress" and not started_at:
-        started_at = now
-    if status == "done" and not completed_at:
-        completed_at = now
-        # 実績ログを残す（WariAthena の学習データになる）
-        if task["assigned_worker_id"] and started_at:
-            dur = int(
-                (datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-                 - datetime.strptime(started_at, "%Y-%m-%d %H:%M:%S")).total_seconds()
-            )
-            conn.execute(
-                """INSERT INTO work_logs (task_id, worker_id, equipment_id, started_at, completed_at, duration_sec)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (task_id, task["assigned_worker_id"], task["equipment_id"], started_at, now, dur),
-            )
+    priority = f.get("priority", task["priority"])
+    quantity = int(f.get("quantity") or task["quantity"] or 1)
+    deadline = f.get("deadline") or None
 
     conn.execute(
-        """UPDATE tasks SET status = ?, assigned_worker_id = ?, equipment_id = ?,
-           started_at = ?, completed_at = ? WHERE id = ?""",
-        (status, worker_id, equipment_id, started_at, completed_at, task_id),
+        """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?,
+           priority = ?, quantity = ?, deadline = ? WHERE id = ?""",
+        (worker_id, equipment_id, priority, quantity, deadline, task_id),
     )
     conn.commit()
     conn.close()

@@ -1,0 +1,305 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-14T00:00:00.000Z",
+  "title": "Design System: Gemmba",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Bulletin Paper",
+        "canonical": "#F6F3EA",
+        "tonalRamp": [
+          "#3a3830",
+          "#5c5950",
+          "#8f8b7d",
+          "#c2beac",
+          "#e6e2d3",
+          "#f6f3ea",
+          "#faf8f2",
+          "#fffef9"
+        ]
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Nameplate White",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#1a1a1a",
+          "#333333",
+          "#4d4d4d",
+          "#808080",
+          "#b3b3b3",
+          "#e6e6e6",
+          "#f5f5f5",
+          "#ffffff"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Nameplate Ink",
+        "canonical": "#232323",
+        "tonalRamp": [
+          "#0d0d0d",
+          "#1a1a1a",
+          "#232323",
+          "#3a3a3a",
+          "#5c5c5c",
+          "#7d7d7d",
+          "#a6a6a6",
+          "#d9d9d9"
+        ]
+      },
+      "ink-soft": {
+        "role": "neutral",
+        "displayName": "Soft Ink",
+        "canonical": "#6B6558",
+        "tonalRamp": [
+          "#2a2721",
+          "#403c33",
+          "#565045",
+          "#6b6558",
+          "#847d6c",
+          "#a29b88",
+          "#c2bcac",
+          "#e2ded4"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Faint Ink",
+        "canonical": "#6D6757",
+        "tonalRamp": [
+          "#2b2822",
+          "#413c33",
+          "#575046",
+          "#6d6757",
+          "#867f6c",
+          "#a49d88",
+          "#c3bdac",
+          "#e3dfd3"
+        ]
+      },
+      "blue": {
+        "role": "primary",
+        "displayName": "Andon Blue",
+        "canonical": "#00BFFF",
+        "tonalRamp": [
+          "#00374a",
+          "#004f6b",
+          "#00688c",
+          "#0081ad",
+          "#009ac9",
+          "#00bfff",
+          "#5cd6ff",
+          "#b3ecff"
+        ]
+      },
+      "yellow": {
+        "role": "secondary",
+        "displayName": "Hazard Amber",
+        "canonical": "#FFDB4F",
+        "tonalRamp": [
+          "#4d3b00",
+          "#806300",
+          "#b38b00",
+          "#e0b400",
+          "#ffce1a",
+          "#ffdb4f",
+          "#ffe57a",
+          "#fff2b8"
+        ]
+      },
+      "good": {
+        "role": "status",
+        "displayName": "Available Green",
+        "canonical": "#1C7A45",
+        "tonalRamp": [
+          "#0a2e1a",
+          "#123f24",
+          "#1a5030",
+          "#22613c",
+          "#1c7a45",
+          "#2e9a5c",
+          "#5cb782",
+          "#a3d9bb"
+        ]
+      },
+      "bad": {
+        "role": "status",
+        "displayName": "Stopped Red",
+        "canonical": "#B3261E",
+        "tonalRamp": [
+          "#3d0b08",
+          "#5c110c",
+          "#7d1710",
+          "#9c1d15",
+          "#b3261e",
+          "#c85148",
+          "#dc8079",
+          "#f0bab5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "ページ見出し（h1）のみ。"
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "セクション見出し（h3.section-title）。"
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "本文全般。"
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "フォームラベル・タイル見出し・バッジ文字。"
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "モジュールID・デバイスID・タイムスタンプなど実データのみ。装飾目的では使わない。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "card",
+        "value": "0 2px 6px color-mix(in srgb, var(--ink) 14%, transparent)",
+        "purpose": "すべてのカード・銘板に共通の、柔らかくぼかした落ち影。"
+      },
+      {
+        "name": "modal",
+        "value": "0 16px 40px color-mix(in srgb, var(--ink) 24%, transparent)",
+        "purpose": "ポップアップダイアログのみ、より強い柔らかい影。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(.3, 0, .2, 1)",
+        "purpose": "既定のイージング（ボタン・入力欄の状態遷移）。"
+      },
+      {
+        "name": "rise-in",
+        "value": "rise-in .5s var(--ease) both",
+        "purpose": "画面を開いたときに一度だけ再生される、掲示板全体が持ち上がる唯一の演出。"
+      },
+      {
+        "name": "lamp-pulse",
+        "value": "lamp-pulse 2.4s ease-in-out infinite",
+        "purpose": "使用中の機材の状態灯にのみ使う、ゆっくりとした点滅。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "stack",
+        "value": "900px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "主要な送信操作（登録・紐付けなど）。",
+      "html": "<button class=\"ds-btn-primary\">登録</button>",
+      "css": ".ds-btn-primary { background: var(--blue, #00BFFF); color: var(--ink, #232323); border: 2px solid var(--ink, #232323); border-radius: 4px; padding: 10px 18px; font-family: 'Noto Sans JP', sans-serif; font-weight: 700; font-size: 14px; cursor: pointer; transition: background-color .15s cubic-bezier(.3,0,.2,1), transform .1s cubic-bezier(.3,0,.2,1); } .ds-btn-primary:hover { background: var(--blue-deep, #0093C4); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:focus-visible { outline: 2px solid var(--ink, #232323); outline-offset: 2px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue, #00BFFF) 45%, transparent); }"
+    },
+    {
+      "name": "AI Suggestion Button",
+      "kind": "button",
+      "refersTo": "button-ai",
+      "description": "AIによる自動割り当てなど、注意を向けさせたい提案操作。黄色は枠線としてのみ使い、縞模様のバッジは付けない（ユーザー指示により廃止）。",
+      "html": "<button class=\"ds-btn-ai\">AI割当（WariAthena）</button>",
+      "css": ".ds-btn-ai { background: #FFFFFF; color: var(--ink, #232323); border: 2px solid var(--yellow-deep, #E0BD28); border-radius: 4px; padding: 10px 18px; font-family: 'Noto Sans JP', sans-serif; font-weight: 700; font-size: 14px; cursor: pointer; } .ds-btn-ai:hover { background: var(--yellow-tint, #FFF6DA); }"
+    },
+    {
+      "name": "Equipment Sheet Row",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "機材一覧の1行。個々をカード化せず、外枠(sheet)を共有した「一枚の掲示板」の中で罫線だけで区切る。リベットドットは外枠(.sheet)側にひと組だけ持たせる。",
+      "html": "<div class=\"ds-sheet\"><div class=\"ds-sheet-row\"><span class=\"ds-status-lamp\">▶</span><div class=\"ds-row-body\"><div class=\"ds-row-head\"><span class=\"ds-row-title\">レーザー加工機 #1</span><span class=\"ds-badge ds-badge-inuse\">使用中</span></div></div></div></div>",
+      "css": ".ds-sheet { position: relative; background-color: #FFFFFF; border: 2px solid var(--ink, #232323); border-radius: 4px; overflow: hidden; box-shadow: 0 2px 6px rgba(35,35,35,0.14); background-image: radial-gradient(circle 2.5px at 11px 11px, rgba(35,35,35,0.3) 99%, transparent 100%), radial-gradient(circle 2.5px at calc(100% - 11px) 11px, rgba(35,35,35,0.3) 99%, transparent 100%), radial-gradient(circle 2.5px at 11px calc(100% - 11px), rgba(35,35,35,0.3) 99%, transparent 100%), radial-gradient(circle 2.5px at calc(100% - 11px) calc(100% - 11px), rgba(35,35,35,0.3) 99%, transparent 100%); } .ds-sheet-row { display: flex; align-items: flex-start; gap: 16px; padding: 16px 20px; } .ds-row-body { flex: 1; min-width: 0; } .ds-row-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .ds-row-title { font-family: 'Noto Sans JP', sans-serif; font-weight: 700; font-size: 16px; } .ds-status-lamp { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--ink, #232323); background: var(--blue, #00BFFF); color: var(--ink, #232323); font-size: 12px; flex: none; } .ds-badge { display: inline-flex; align-items: center; gap: 6px; font-family: 'Noto Sans JP', sans-serif; font-weight: 700; font-size: 12px; padding: 4px 11px; border-radius: 999px; border: 1.5px solid transparent; } .ds-badge-inuse { background: var(--blue-tint, #E3F7FF); color: var(--blue-deep, #0093C4); border-color: var(--blue, #00BFFF); } .ds-badge-idle { background: var(--good-tint, #E3F4E9); color: var(--good, #1C7A45); border-color: var(--good, #1C7A45); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-idle",
+      "description": "空き／使用中の2状態バッジ。色だけでなくアイコンの形（輪郭の丸／塗りつぶした再生形）でも区別する。",
+      "html": "<span class=\"ds-badge ds-badge-idle\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"><circle cx=\"12\" cy=\"12\" r=\"7.5\"/></svg>空き</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 6px; font-family: 'Noto Sans JP', sans-serif; font-weight: 700; font-size: 12px; padding: 4px 11px; border-radius: 999px; border: 1.5px solid transparent; } .ds-badge-idle { background: var(--good-tint, #E3F4E9); color: var(--good, #1C7A45); border-color: var(--good, #1C7A45); }"
+    },
+    {
+      "name": "Input Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "テキスト・数値入力欄。フォーカス時にAndon Blueの外側リングが付く。",
+      "html": "<div class=\"ds-field\"><label class=\"ds-label\">名前 *</label><input class=\"ds-input\" type=\"text\" placeholder=\"例：山田 太郎\"></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; } .ds-label { font-family: 'Noto Sans JP', sans-serif; font-size: 12.5px; font-weight: 700; color: var(--ink-soft, #6B6558); } .ds-input { min-height: 42px; padding: 8px 12px; font-family: 'Noto Sans JP', sans-serif; font-size: 14px; color: var(--ink, #232323); background: #FFFFFF; border: 2px solid rgba(35,35,35,0.18); border-radius: 4px; } .ds-input:focus-visible { outline: 2px solid var(--ink, #232323); outline-offset: 2px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue, #00BFFF) 45%, transparent); border-color: var(--ink, #232323); }"
+    },
+    {
+      "name": "Sidebar Nav Link",
+      "kind": "nav",
+      "refersTo": "navlink",
+      "description": "サイドバーの案内パネル項目。アクティブな項目だけ Andon Blue の塗りつぶしになる。",
+      "html": "<a class=\"ds-navlink ds-navlink-active\" href=\"#\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"><rect x=\"3\" y=\"3\" width=\"7\" height=\"9\" rx=\"1\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"5\" rx=\"1\"/><rect x=\"14\" y=\"12\" width=\"7\" height=\"9\" rx=\"1\"/><rect x=\"3\" y=\"16\" width=\"7\" height=\"5\" rx=\"1\"/></svg>使用状況</a>",
+      "css": ".ds-navlink { display: flex; align-items: center; gap: 12px; padding: 11px 12px; font-family: 'Noto Sans JP', sans-serif; font-size: 14.5px; font-weight: 500; text-decoration: none; color: rgba(246,243,234,0.78); border-radius: 4px; white-space: nowrap; } .ds-navlink-active { background: var(--blue, #00BFFF); color: var(--ink, #232323); font-weight: 700; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Factory Nameplate Board",
+    "overview": "Gemmba の管理コンソールは、工場の壁に留められた安全掲示板・機材銘板そのものとしてUIを組み立てる。ソフトウェアらしい柔らかいSaaSカード（大きな角丸＋ドロップシャドウ）の擬態はしない。太い炭黒の枠線、四隅のリベット（留め具）ドット、局所的なハザードストライプという、現場に実在する掲示物の文法をそのままコンポーネントに翻訳している。\n背景は温白の掲示板下地（paper）で、その上に白い銘板（plate）が炭黒の2px枠とリベットドットを伴って載る。キーカラーは2色のみ：#00BFFF（稼働・情報を示す信号色）と#FFDB4F（注意・要対応を示す信号色）。黄色は面を塗るための色ではなく、隅のハザードストライプやAI提案バッジなど、局所的な「注意を向けさせる印」としてのみ使う。状態は色だけに頼らず、色＋アイコン形状の二重で示す（空き＝輪郭の丸、使用中＝塗りつぶした再生形）。\n主要ユーザーは、専任のIT担当者がいない中小工場の管理者と、NFCタッチのみで機材を操作する現場作業者。画面名・状態名は平易な言葉にとどめ、モジュールIDやデバイスIDのような専門情報は「詳しい設定」の折りたたみに隔離する。",
+    "keyCharacteristics": [
+      "一覧・フォームは個々をカード化せず、「一枚の掜示板」として外枠を1つだけ持ち、中の行は罫線だけで区切る（.sheet / .sheet-row）",
+      "キーカラーは稼働／注意の2色に限定し、黄色は局所的なストライプ・バッジでのみ使う",
+      "状態は色＋アイコン形状の二重表示（色弱でも区別できるように）",
+      "専門用語・技術情報は既定で隠し、<details>の折りたたみでのみ開示する",
+      "影は柔らかいオフセット＋ぼかしのみ。ゼロブラーの硬い影は使わない"
+    ],
+    "rules": [
+      {
+        "name": "The Ink-On-Signal Rule",
+        "body": "Andon Blue・Hazard Amber・Available Green の上に乗る文字とアイコンは、常に Nameplate Ink（炭黒）にする。白文字はこれらの信号色の上では読みにくく、使わない。",
+        "section": "colors"
+      },
+      {
+        "name": "The Local Amber Rule",
+        "body": "Hazard Amber は枠線以外で面を塗らない。ボタン全体や背景全体を黄色で塗ることは、「注意」という意味を薄めるため禁止する。縞模様（ハザードストライプ）はユーザー指示により廃止済みで、復活させない。",
+        "section": "colors"
+      },
+      {
+        "name": "The No-Caps Rule",
+        "body": "日本語ラベルは全角の大文字化ができないため、状態の強調は太字・枠付きバッジで行う。",
+        "section": "typography"
+      },
+      {
+        "name": "The No Hard Shadow Rule",
+        "body": "box-shadow はオフセットとぼかしの両方を持つ柔らかい影のみを使う。ゼロブラーの硬い影は、この世界では装飾の借用になるため使わない。",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Sheet Rule",
+        "body": "一覧は個々を独立したカードにしない。外枠（2px枠、四隔リベット、柔らかい影）はシート全体に1つだけ持たせ、中の項目は1pxの罫線だけで区切る。個々の铣板のフルセット（角丸+枚+影+リベット）はモーダルダイアログにだけ残す。",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do 状態を色だけで伝えず、必ずアイコンの形（輪郭の丸 vs 塗りつぶした再生形）を併用する。",
+      "Do モジュールID・デバイスID・タイムスタンプなど専門的な情報は詳しい設定の折りたたみに隔離し、既定では隠す。",
+      "Do カードの角は4px程度に抑え、四隅のリベットドットで「銘板」であることを示す。",
+      "Do 影は必ずオフセットとぼかしの両方を持たせる。",
+      "Do 一覧は .sheet / .sheet-row で「一枚の掜示板」として続け、外枠と四隔のリベットはシート全体に1組だけ持たせる。"
+    ],
+    "donts": [
+      "Don't Andon Blue・Hazard Amber・Available Green の上に白文字を置かない。",
+      "Don't Hazard Amber でボタンや背景全体を塗りつぶさない。",
+      "Don't ゼロブラーの硬いオフセット影を使わない。",
+      "Don't 日本語ラベルを模した全角caps表現や装飾的なグラデーションを使わない。",
+      "Don't 機材の状態区分を増やさない（空き／使用中の2種類に固定する）。",
+      "Don't 一覧やフォームを個々の独立したカード（角丸+枠+影+リベットのフルセット）に戻さない。",
+      "Don't 黒×黄の縞模様（ハザードストライプ）を復活させない。注意を要する状態は色とアイコン形状だけで示す。"
+    ]
+  }
+}
