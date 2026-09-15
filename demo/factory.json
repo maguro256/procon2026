@@ -1,0 +1,33 @@
+{
+  "_comment": "架空の工場データ。実機(ESP32/ラズパイ)やMQTTブローカーが無くても、seed_demo.py で読み込んで DB に流し込めば管理画面とAPIだけでデモができる。equipment の module_id / hostname は実在しない値でよい（MQTT bridge がデモモードでは起動しないため、誰も宛先として使わない）。",
+
+  "workers": [
+    { "name": "村上 健一", "years_of_service": 14.0, "role": "supervisor", "permissions": ["forklift", "crane"], "nfc_tag_id": "TAG-DEMO-01" },
+    { "name": "小林 美咲", "years_of_service": 7.5,  "role": "leader",     "permissions": ["welding"],           "nfc_tag_id": "TAG-DEMO-02" },
+    { "name": "橋本 大輔", "years_of_service": 4.0,  "role": "member",     "permissions": ["welding", "electric"], "nfc_tag_id": "TAG-DEMO-03" },
+    { "name": "渡辺 さくら", "years_of_service": 2.0,  "role": "member",     "permissions": ["inspection"],        "nfc_tag_id": "TAG-DEMO-04" },
+    { "name": "加藤 翼",   "years_of_service": 0.5,  "role": "member",     "permissions": [],                    "nfc_tag_id": "TAG-DEMO-05" },
+    { "name": "山口 理恵", "years_of_service": 9.0,  "role": "manager",    "permissions": [],                    "nfc_tag_id": "TAG-DEMO-06" }
+  ],
+
+  "equipment": [
+    { "name": "レーザー加工機 #1", "module_id": "MOD-D-01", "hostname": "demo-pi-01", "status": "idle" },
+    { "name": "旋盤 #1",          "module_id": "MOD-D-02", "hostname": "demo-pi-02", "status": "idle" },
+    { "name": "プレス機 #1",      "module_id": "MOD-D-03", "hostname": "demo-pi-03", "status": "idle" },
+    { "name": "溶接ブース #1",    "module_id": "MOD-D-04", "hostname": "demo-pi-04", "status": "idle" },
+    { "name": "検査台 #1",        "module_id": "MOD-D-05", "hostname": "demo-pi-05", "status": "idle" }
+  ],
+
+  "tasks": [
+    { "title": "製品A ロット21 組立",   "description": "治具Aを使用。1個あたり約3分",         "difficulty": 2, "priority": "normal", "quantity": 30, "deadline_in_days": 5, "equipment_name": null,               "required_permissions": [] },
+    { "title": "旋盤 #1 段取り替え",     "description": "次ロット用に治具を交換",              "difficulty": 2, "priority": "high",   "quantity": 1,  "deadline_in_days": 1, "equipment_name": "旋盤 #1",          "required_permissions": [] },
+    { "title": "製品C 外形加工",         "description": "図面 C-204 rev.3。公差 ±0.05",        "difficulty": 4, "priority": "urgent", "quantity": 20, "deadline_in_days": 1, "equipment_name": "レーザー加工機 #1", "required_permissions": ["welding"] },
+    { "title": "プレス機 #1 定期メンテ", "description": "潤滑・切粉清掃・各部点検",            "difficulty": 1, "priority": "low",    "quantity": 1,  "deadline_in_days": 7, "equipment_name": "プレス機 #1",      "required_permissions": ["electric"] },
+    { "title": "製品D 面取り仕上げ",     "description": "バリ取り後、外観検査まで",            "difficulty": 3, "priority": "normal", "quantity": 45, "deadline_in_days": 3, "equipment_name": null,               "required_permissions": [] },
+    { "title": "試作E 初品確認",         "description": "寸法測定して記録票に記入",            "difficulty": 5, "priority": "high",   "quantity": 2,  "deadline_in_days": 1, "equipment_name": "検査台 #1",        "required_permissions": ["inspection"] },
+    { "title": "フレーム溶接",           "description": "治具Fに固定して4辺を溶接",            "difficulty": 4, "priority": "high",   "quantity": 12, "deadline_in_days": 2, "equipment_name": "溶接ブース #1",    "required_permissions": ["welding"] },
+    { "title": "資材置場からの搬入",     "description": "パレット3枚。所定位置へ",             "difficulty": 1, "priority": "high",   "quantity": 3,  "deadline_in_days": 0, "equipment_name": null,               "required_permissions": ["forklift"] },
+    { "title": "製品B 小ロット加工",     "description": "急ぎの追加注文分",                    "difficulty": 3, "priority": "urgent", "quantity": 8,  "deadline_in_days": 0, "equipment_name": "旋盤 #1",          "required_permissions": [] },
+    { "title": "月次 棚卸し補助",        "description": "検査台まわりの在庫を数える",          "difficulty": 1, "priority": "low",    "quantity": 1,  "deadline_in_days": 10, "equipment_name": null,              "required_permissions": [] }
+  ]
+}

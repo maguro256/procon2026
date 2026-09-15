@@ -20,8 +20,16 @@ from datetime import datetime
 from uuid import uuid4
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
-import paho.mqtt.client as mqtt
 import requests
+
+try:
+    # 実機（ESP32/ラズパイ）やブローカーが無い環境（デモ環境など）でも
+    # 管理画面とAPIだけは動かしたいので、無ければ import で落とさず諦める。
+    import paho.mqtt.client as mqtt
+    _MQTT_LIB_AVAILABLE = True
+except ImportError:
+    mqtt = None
+    _MQTT_LIB_AVAILABLE = False
 
 import db
 import ai_stub
@@ -36,6 +44,8 @@ _pending_tags: dict = {}
 _pending_modules: dict = {}
 # モジュールの起動セッション: {device_id: session}。再起動の検出に使う
 _module_sessions: dict = {}
+# 上の3つは Flask のリクエストスレッドと MQTT 受信スレッドの両方から読み書きされる
+_pending_lock = threading.Lock()
 
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 # 完了直後に現場で答えてもらう体感難易度。順番がそのままモジュールの選択肢の並びになる
@@ -58,6 +68,26 @@ AI_LOG_SQL = """
 def _ai_logs(conn):
     """ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す"""
     return [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()]
+
+
+def _like_escape(text):
+    """
+    LIKE の % / _ をワイルドカードとして解釈させない。検索欄に "50%" のような
+    文字列を打たれても、そのまま部分一致の対象として扱うため。
+    """
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _safe_int(value, default):
+    """
+    フォームやJSONの数値項目を int にする。空文字や null が来ると
+    int() がそのまま例外を投げて500になるので、その場合は default を返す。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @app.context_processor
@@ -106,7 +136,9 @@ def workers():
         FROM workers w ORDER BY w.id
     """).fetchall()
     conn.close()
-    return render_template("workers.html", workers=rows, pending_tags=_pending_tags)
+    with _pending_lock:
+        pending_tags = dict(_pending_tags)
+    return render_template("workers.html", workers=rows, pending_tags=pending_tags)
 
 
 def _back_to(default_endpoint):
@@ -137,7 +169,8 @@ def add_worker():
             (name, float(years or 0), role, held, nfc),
         )
         conn.commit()
-        _pending_tags.pop(nfc, None)
+        with _pending_lock:
+            _pending_tags.pop(nfc, None)
         flash(f"{name} さんを登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に使われています", "error")
@@ -148,22 +181,32 @@ def add_worker():
 
 @app.route("/workers/<int:worker_id>/update", methods=["POST"])
 def update_worker(worker_id):
-    """役職・保有権限・勤続年数の変更（D-2）。資格は後から取るものなので編集口が要る"""
+    """
+    役職・保有権限・勤続年数・腕輪ICタグIDの変更（D-2）。資格は後から取るものなので
+    編集口が要る。ICタグは紛失・再発行があるので、登録後でも付け替えられるようにする。
+    """
     f = request.form
+    nfc = f.get("nfc_tag_id", "").strip() or None
     conn = db.get_db()
     row = conn.execute("SELECT name FROM workers WHERE id = ?", (worker_id,)).fetchone()
     if not row:
         conn.close()
         flash("作業者が見つかりません", "error")
         return redirect(url_for("workers"))
-    conn.execute(
-        "UPDATE workers SET years_of_service = ?, role = ?, permissions = ? WHERE id = ?",
-        (float(f.get("years_of_service") or 0), f.get("role") or perms.DEFAULT_ROLE,
-         perms.dump(f.getlist("permissions")), worker_id),
-    )
-    conn.commit()
-    conn.close()
-    flash(f"{row['name']} さんの役職・権限を更新しました", "ok")
+    try:
+        conn.execute(
+            "UPDATE workers SET years_of_service = ?, role = ?, permissions = ?, nfc_tag_id = ? WHERE id = ?",
+            (float(f.get("years_of_service") or 0), f.get("role") or perms.DEFAULT_ROLE,
+             perms.dump(f.getlist("permissions")), nfc, worker_id),
+        )
+        conn.commit()
+        with _pending_lock:
+            _pending_tags.pop(nfc, None)
+        flash(f"{row['name']} さんの役職・権限・ICタグを更新しました", "ok")
+    except db.sqlite3.IntegrityError:
+        flash("そのICタグIDは既に別の作業者が使っています", "error")
+    finally:
+        conn.close()
     return redirect(url_for("workers"))
 
 
@@ -181,8 +224,23 @@ def delete_worker(worker_id):
 
 @app.route("/tasks")
 def tasks():
+    # タスク一覧・完了済みタスクの両方に効く検索（タスク名・担当者名の部分一致）。
+    # GETのクエリ文字列なので、検索結果のURLをそのまま共有・ブックマークできる。
+    q_title = request.args.get("q_title", "").strip()
+    q_worker = request.args.get("q_worker", "").strip()
+
+    conditions = []
+    params = []
+    if q_title:
+        conditions.append("t.title LIKE ? ESCAPE '\\'")
+        params.append(_like_escape(q_title))
+    if q_worker:
+        conditions.append("w.name LIKE ? ESCAPE '\\'")
+        params.append(_like_escape(q_worker))
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
     conn = db.get_db()
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
                l.felt_difficulty AS felt_difficulty
         FROM tasks t
@@ -194,13 +252,23 @@ def tasks():
             SELECT id FROM work_logs
             WHERE task_id = t.id AND felt_difficulty IS NOT NULL
             ORDER BY id DESC LIMIT 1)
+        {where_sql}
         ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
                  t.deadline IS NULL, t.deadline
-    """).fetchall()
+    """, params).fetchall()
+
+    # 完了済みは別欄に出す。優先度順のままだと未着手の列に紛れて探しにくいので、
+    # 完了が新しい順に並べ替える。
+    active_tasks = [t for t in rows if t["status"] != "done"]
+    done_tasks = sorted((t for t in rows if t["status"] == "done"),
+                        key=lambda t: t["completed_at"] or "", reverse=True)
+
     worker_list = conn.execute("SELECT id, name FROM workers ORDER BY name").fetchall()
     equipment_list = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
     conn.close()
-    return render_template("tasks.html", tasks=rows, worker_list=worker_list, equipment_list=equipment_list)
+    return render_template("tasks.html", active_tasks=active_tasks, done_tasks=done_tasks,
+                           worker_list=worker_list, equipment_list=equipment_list,
+                           q_title=q_title, q_worker=q_worker)
 
 
 @app.route("/tasks/add", methods=["POST"])
@@ -218,10 +286,10 @@ def add_task():
         (
             title,
             f.get("description", "").strip(),
-            int(f.get("difficulty", 3)),
+            _safe_int(f.get("difficulty"), 3),
             f.get("priority", "normal"),
             perms.dump(f.getlist("required_permissions")),
-            int(f.get("quantity", 1) or 1),
+            _safe_int(f.get("quantity"), 1) or 1,
             f.get("deadline") or None,
             f.get("equipment_id") or None,
         ),
@@ -241,12 +309,12 @@ def update_task(task_id):
     if not task:
         conn.close()
         flash("タスクが見つかりません", "error")
-        return redirect(url_for("tasks"))
+        return _back_to("tasks")
 
     worker_id = f.get("assigned_worker_id") or None
     equipment_id = f.get("equipment_id") or None
     priority = f.get("priority", task["priority"])
-    quantity = int(f.get("quantity") or task["quantity"] or 1)
+    quantity = _safe_int(f.get("quantity") or task["quantity"], 1) or 1
     deadline = f.get("deadline") or None
 
     # 必要権限（D-2）。チェックボックスは未チェックだと POST に現れないので、
@@ -266,7 +334,7 @@ def update_task(task_id):
             conn.close()
             flash(f"{cand['name']} さんは権限が足りないため割り当てできません"
                   f"（不足: {'・'.join(perms.labels(lacking))}）", "error")
-            return redirect(url_for("tasks"))
+            return _back_to("tasks")
 
     # status はここでは触らない。着手・完了はNFCタッチ側でしか起きない設計にしてある
     # （画面から done にできると、所要時間の入っていない実績が混ざる）。
@@ -278,7 +346,7 @@ def update_task(task_id):
     conn.commit()
     conn.close()
     flash("タスクを更新しました", "ok")
-    return redirect(url_for("tasks"))
+    return _back_to("tasks")
 
 
 @app.route("/tasks/<int:task_id>/auto_assign", methods=["POST"])
@@ -286,6 +354,10 @@ def auto_assign(task_id):
     """AI割り当て（WariAthena = ai_stub。work_logs から学習した事後分布で選ぶ）"""
     conn = db.get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        flash("タスクが見つかりません", "error")
+        return _back_to("tasks")
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)
     # 権限（D-2）はハード制約なので、学習器に渡す前に候補から落とす。
@@ -308,7 +380,7 @@ def auto_assign(task_id):
     else:
         flash("割り当て候補がいません", "error")
     conn.close()
-    return redirect(url_for("tasks"))
+    return _back_to("tasks")
 
 
 @app.route("/tasks/<int:task_id>/delete", methods=["POST"])
@@ -319,7 +391,7 @@ def delete_task(task_id):
     conn.commit()
     conn.close()
     flash("タスクを削除しました", "ok")
-    return redirect(url_for("tasks"))
+    return _back_to("tasks")
 
 
 @app.route("/equipment")
@@ -333,7 +405,9 @@ def equipment():
         ORDER BY e.id
     """).fetchall()
     conn.close()
-    return render_template("equipment.html", equipment=rows, pending_modules=_pending_modules)
+    with _pending_lock:
+        pending_modules = dict(_pending_modules)
+    return render_template("equipment.html", equipment=rows, pending_modules=pending_modules)
 
 
 @app.route("/equipment/add", methods=["POST"])
@@ -383,7 +457,8 @@ def bind_equipment():
 
     # 紐付け前に受信していた死活情報を引き継ぐ。次のハートビートを待たずに
     # 「オンライン」と表示できる。
-    pending = _pending_modules.pop(hostname, None) if hostname else None
+    with _pending_lock:
+        pending = _pending_modules.pop(hostname, None) if hostname else None
     if pending:
         conn.execute(
             """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
@@ -471,10 +546,13 @@ def api_pending():
             for rid, s in _pending_replies.items()
             if s.get("text") is not None and not s["event"].is_set()
         ]
+    with _pending_lock:
+        tags = list(_pending_tags.items())
+        modules = list(_pending_modules.items())
     return jsonify({
         "tags": [{"tag_id": tag, "module_id": mod, "equipment_name": names.get(mod)}
-                 for tag, mod in _pending_tags.items()],
-        "modules": [dict(info, device_id=dev) for dev, info in _pending_modules.items()],
+                 for tag, mod in tags],
+        "modules": [dict(info, device_id=dev) for dev, info in modules],
         "confirms": confirms,
     })
 
@@ -640,10 +718,10 @@ def api_create_task():
         (
             data["title"],
             data.get("description", ""),
-            int(data.get("difficulty", 3)),
+            _safe_int(data.get("difficulty"), 3),
             data.get("priority", "normal"),
             perms.dump(data.get("required_permissions")),
-            int(data.get("quantity", 1)),
+            _safe_int(data.get("quantity"), 1) or 1,
             data.get("deadline"),
         ),
     )
@@ -721,8 +799,10 @@ def api_unknown_tag():
     conn.close()
     if already:
         return jsonify({"ok": True, "note": "already registered"})
-    _pending_tags[tag_id] = module_id
-    return jsonify({"ok": True, "pending": len(_pending_tags)})
+    with _pending_lock:
+        _pending_tags[tag_id] = module_id
+        pending = len(_pending_tags)
+    return jsonify({"ok": True, "pending": pending})
 
 
 # ------------------------------------------------ MQTT ブリッジ（旧 hard/main.py を統合）
@@ -1025,22 +1105,25 @@ def _handle_presence(device_id, payload):
 
     if not row:
         # 未登録モジュール。機材管理画面に出して紐付けを促す（未登録タグと同じ流れ）
+        with _pending_lock:
+            if online:
+                _pending_modules[device_id] = {"ip": ip, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            else:
+                _pending_modules.pop(device_id, None)
         if online:
-            _pending_modules[device_id] = {"ip": ip, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             print(f"[{device_id}] 未登録モジュールを検出 (ip={ip}) → 機材管理画面に表示")
-        else:
-            _pending_modules.pop(device_id, None)
         conn.close()
         return
 
-    _pending_modules.pop(device_id, None)
-    # モジュールが再起動すると session が変わる。DB上は online のままなので
-    # 「変化なし」に見えるが、向こうの画面は起動時の汎用表示に戻っているため
-    # 送り直す必要がある。
-    session = payload.get("session")
-    restarted = bool(session) and _module_sessions.get(device_id) != session
-    if session:
-        _module_sessions[device_id] = session
+    with _pending_lock:
+        _pending_modules.pop(device_id, None)
+        # モジュールが再起動すると session が変わる。DB上は online のままなので
+        # 「変化なし」に見えるが、向こうの画面は起動時の汎用表示に戻っているため
+        # 送り直す必要がある。
+        session = payload.get("session")
+        restarted = bool(session) and _module_sessions.get(device_id) != session
+        if session:
+            _module_sessions[device_id] = session
     was_online = bool(row["online"]) and not restarted
     if online:
         conn.execute(
@@ -1395,6 +1478,11 @@ def start_discovery_responder():
 def start_mqtt_bridge():
     """MQTT クライアントをバックグラウンドスレッドで起動する"""
     global _mqtt_client
+    if not _MQTT_LIB_AVAILABLE:
+        print("[MQTT] paho-mqtt が入っていないため bridge は起動しません（デモモード）。")
+        print("       → Web/APIは動きます。NFCタッチの代わりに /api を直接叩くか、"
+              "simulate_shift.py で仮想タッチを流してください。")
+        return
     # 前回終了時の online が残っていると誤表示になる。購読時に retained な
     # status が流れてくるので、いったん全部落としてから真の状態を受け直す。
     conn = db.get_db()

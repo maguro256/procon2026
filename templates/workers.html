@@ -4,8 +4,7 @@
 {% block content %}
 <header class="page-head">
   <h1>作業者管理</h1>
-  <p class="page-sub">事前登録は名前・勤続年数・役職・保有権限のみ。得意・不得意は実績データからAIが学習します。
-    権限は学習の対象ではなく、必要権限を満たさない人にはそのタスクを出さないための条件です。</p>
+  <p class="page-sub"style="font-size: 20px;">従業員の登録、情報の更新をします</p>
 </header>
 
 {% if pending_tags %}
@@ -59,7 +58,7 @@
     <tbody>
     {% for w in workers %}
       {% set granted = perms.granted_by_role(w.role) %}
-      <tr>
+      <tr class="worker-row">
         <td class="mono text-muted">{{ w.id }}</td>
         <td class="strong">{{ w.name }}</td>
         <td>{{ perms.role_label(w.role) }}</td>
@@ -79,13 +78,17 @@
       <tr class="edit-row">
         <td colspan="8">
           <details>
-            <summary>役職・権限を編集</summary>
+            <summary>役職・権限・ICタグを編集</summary>
             <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="worker-edit-grid">
               <div class="field"><label>勤続年数</label>
                 <input class="input input-sm" type="number" name="years_of_service" step="0.5" min="0"
                        value="{{ w.years_of_service }}">
               </div>
               <div class="field"><label>役職</label>{{ role_select(w.role) }}</div>
+              <div class="field"><label>腕輪ICタグID</label>
+                <input class="input input-sm" type="text" name="nfc_tag_id" placeholder="未紐付け"
+                       value="{{ w.nfc_tag_id or '' }}">
+              </div>
               <div class="field span-all"><label>保有権限（個別付与）</label>
                 {{ perm_checks('permissions', perms.parse(w.permissions), granted) }}
               </div>

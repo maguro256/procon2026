@@ -103,6 +103,10 @@ a:hover { color: var(--ink); }
   background: var(--plate); border: 2px solid var(--line-strong);
   padding: 10px 18px; border-radius: var(--radius);
   transition: background-color .15s var(--ease), transform .1s var(--ease), opacity .15s var(--ease);
+  /* 日本語は文字と文字の間でも折り返せてしまうため、flex/grid内で幅が
+     足りなくなると「保存」のような短いラベルが1文字ずつ縦に積まれてしまう。
+     ボタンラベルは常に1行のままにする。 */
+  white-space: nowrap; flex-shrink: 0;
 }
 .btn .icon { width: 15px; height: 15px; }
 .btn:hover { background: var(--paper); }
@@ -294,7 +298,11 @@ select.input {
 .signage-tile .tile-label .icon { width: 15px; height: 15px; }
 .signage-tile .tile-num { font-weight: 900; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
 .signage-tile.t-idle .tile-num { color: var(--good); }
-.signage-tile.t-inuse .tile-num { color: var(--blue-deep); }
+.signage-tile.t-inuse .tile-num { color: #ec6800; }
+/* 機材の稼働状況（使用状況タブ）だけ配色を変える。t-idle/t-inuse は
+   タスクの状況サマリーでも使い回しているので、上の既定は変えずここで上書きする */
+.eq-status-strip .t-idle .tile-num { color: var(--good); }
+.eq-status-strip .t-inuse .tile-num { color: #ec6800; }
 
 /* ---------------- 機材の状況：一枚の掲示板に並ぶ行として続ける ---------------- */
 .eq-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -347,6 +355,7 @@ select.input {
 .form-panel.narrow { max-width: 680px; }
 .task-form-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1.4fr; gap: var(--space-3); align-items: end; }
 .task-form-grid .span-all { grid-column: 1 / -1; }
+.task-search-grid { display: grid; grid-template-columns: 1.4fr 1.4fr auto auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid .span-all, .worker-edit-grid .span-all { grid-column: 1 / -1; }
 .equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
@@ -394,7 +403,10 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 /* 完了後に現場で答えてもらった体感難易度。設定値の難易度と見分けが付くよう色を変える */
 .felt { color: var(--ink); font-weight: 600; }
 
-/* 一覧の下にぶら下がる編集フォーム。開くまでは1行しか占めない */
+/* 一覧の下にぶら下がる編集フォーム。開くまでは1行しか占めない。
+   本体行とセットで1人分の区切りなので、線は本体行の下ではなく
+   編集行（開閉トグルの下）に引く。 */
+.worker-row td { border-bottom: none; }
 .edit-row td { padding-top: 0; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); }
 .edit-row summary,
 .perm-edit summary {
@@ -404,7 +416,7 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .edit-row summary:hover, .perm-edit summary:hover { color: var(--blue-deep); }
 .edit-row details[open] summary, .perm-edit[open] summary { margin-bottom: var(--space-3); }
 .worker-edit-grid {
-  display: grid; grid-template-columns: 140px 160px auto; gap: var(--space-3);
+  display: grid; grid-template-columns: 140px 160px 180px auto; gap: var(--space-3);
   align-items: end; padding-bottom: var(--space-3);
 }
 .task-actions .span-all { grid-column: 1 / -1; }
@@ -413,7 +425,7 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 @media (max-width: 900px) {
   .app { grid-template-columns: minmax(0, 1fr) !important; }
   .sidebar { position: static !important; height: auto; }
-  .task-form-grid, .worker-form-grid, .equipment-form-grid { grid-template-columns: 1fr; }
+  .task-form-grid, .worker-form-grid, .equipment-form-grid, .task-search-grid { grid-template-columns: 1fr; }
   .worker-edit-grid { grid-template-columns: 1fr; }
   .task-actions { grid-template-columns: 1fr 1fr; }
   .main { padding: var(--space-5); }

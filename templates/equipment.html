@@ -4,7 +4,7 @@
 {% block content %}
 <header class="page-head">
   <h1>機材・モジュール管理</h1>
-  <p class="page-sub">モジュールIDはAPI（HTTP）の宛先、デバイスIDはラズパイがMQTTで名乗る名前（<span class="mono">DEVICE_ID</span>）です。デバイスIDを紐付けると、そのラズパイのNFCタッチがこの機材の操作として扱われます。</p>
+  <p class="page-sub"style="font-size: 20px;">機材の登録、確認を行えます</p>
 </header>
 
 {% if pending_modules %}
@@ -95,27 +95,6 @@
   </table>
 </div>
 
-<h3 class="section-title">モジュール連携API（実装済みの受け口）</h3>
-<div class="sheet api-list">
-  <div class="sheet-row api-row">
-    <span class="tag tag-accent">POST</span>
-    <code>/api/equipment/&lt;module_id&gt;/status</code>
-    <span class="desc">モジュールからの状態報告（status / nfc_tag_id / task_id）</span>
-  </div>
-  <div class="sheet-row api-row">
-    <span class="tag tag-outline">GET</span>
-    <code>/api/workers/&lt;nfc_tag_id&gt;/next_task</code>
-    <span class="desc">NFCタッチ時、次のタスクを優先度順に返す</span>
-  </div>
-  <div class="sheet-row api-row">
-    <span class="tag tag-accent">POST</span>
-    <code>/api/tasks</code>
-    <span class="desc">音声入力からのタスク登録（Whisper → Gemma の出力を想定）</span>
-  </div>
-  <div class="sheet-row api-row">
-    <span class="tag tag-accent">POST</span>
-    <code>/api/tasks/&lt;task_id&gt;/complete</code>
-    <span class="desc">完了タッチ。所要時間を記録しAIの学習フックを呼ぶ</span>
-  </div>
+
 </div>
 {% endblock %}

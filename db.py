@@ -98,6 +98,11 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 複数プロセス/複数スレッドが同時に書き込むと sqlite3 は即座に
+    # "database is locked" を投げる。Flaskのリクエストスレッドが複数同時に
+    # 書き込む場合や、simulate_shift.py がサーバーと並行してDBに触る場合に
+    # 起きるので、短時間はリトライさせて凌ぐ。
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

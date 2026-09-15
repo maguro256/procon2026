@@ -4,21 +4,31 @@
 {% block content %}
 <header class="page-head">
   <h1>使用状況ダッシュボード</h1>
-  <p class="page-sub">各機材が「空き」か「使用中」かをひと目で確認できます。モジュールからの状態報告で自動更新されます（API連携は未接続）。</p>
+  <p class="page-sub"style="font-size: 20px;">機材の稼働状況等を確認できます</p>
 </header>
 
 {% set idle_n = equipment|selectattr('status', 'equalto', 'idle')|list|length %}
 {% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
-
-<h3 class="section-title">機材の状況</h3>
-<section class="signage-strip" aria-label="機材の状態サマリー">
-  <div class="signage-tile t-idle">
-    <div class="tile-label">{{ icons.status_icon('idle') }}空き</div>
-    <div class="tile-num">{{ idle_n }}</div>
-  </div>
+<h3 class="section-title">タスクの状況</h3>
+<section class="signage-strip" aria-label="タスクのサマリー">
   <div class="signage-tile t-inuse">
-    <div class="tile-label">{{ icons.status_icon('working') }}使用中</div>
+    <div class="tile-label" style="font-size: 20px;"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M9 6.5v11l9-5.5z"/></svg>作業中のタスク</div>
+    <div class="tile-num">{{ counts.active_tasks }}</div>
+  </div>
+  <div class="signage-tile">
+    <div class="tile-label"style="font-size: 20px;"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3.5h6v2H9z"/></svg>未完了タスク</div>
+    <div class="tile-num">{{ counts.open_tasks }}</div>
+  </div>
+</section>
+<h3 class="section-title">機材の稼働状況</h3>
+<section class="signage-strip eq-status-strip" aria-label="機材の状態サマリー">
+  <div class="signage-tile t-inuse">
+    <div class="tile-label"style="font-size: 20px;">{{ icons.status_icon('working') }}使用中</div>
     <div class="tile-num">{{ inuse_n }}</div>
+  </div>
+  <div class="signage-tile t-idle">
+    <div class="tile-label"style="font-size: 20px;">{{ icons.status_icon('idle') }}空き</div>
+    <div class="tile-num">{{ idle_n }}</div>
   </div>
 </section>
 
@@ -47,15 +57,5 @@
   {% endfor %}
 </div>
 
-<h3 class="section-title">タスクの状況</h3>
-<section class="signage-strip" aria-label="タスクのサマリー">
-  <div class="signage-tile t-inuse">
-    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M9 6.5v11l9-5.5z"/></svg>作業中のタスク</div>
-    <div class="tile-num">{{ counts.active_tasks }}</div>
-  </div>
-  <div class="signage-tile">
-    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3.5h6v2H9z"/></svg>未完了タスク</div>
-    <div class="tile-num">{{ counts.open_tasks }}</div>
-  </div>
-</section>
+
 {% endblock %}

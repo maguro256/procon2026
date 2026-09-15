@@ -40,6 +40,12 @@ except Exception as exc:  # numpy 未インストールなど。管理画面自�
 DIFFICULTY_SCALE = [0.15, 0.3, 0.45, 0.6, 0.85]
 MAX_YEARS = 30.0
 
+# work_logs.felt_difficulty (D-6) → RewardConverter.to_reward() の feedback 引数。
+# 本人が答えていれば時間からの推定より優先する。tasks.difficulty や文脈ベクトルには
+# 触らない方針は変えない（TODO.md D-6 参照）。答えていないログは None のままにして
+# AI.py 側の時間ベース推定に任せる。
+FELT_TO_FEEDBACK = {"easy": 0, "normal": 1, "hard": 2}
+
 _lock = threading.Lock()
 _cache_key = None
 _beliefs: dict = {}
@@ -84,7 +90,8 @@ def _fit(work_logs: list) -> dict:
         wid = int(log["worker_id"])
         t = _task_type(log.get("difficulty"))
         x = _context(log.get("years_of_service"), log.get("difficulty"))
-        reward = converter.to_reward(1, float(log["duration_sec"]), t)
+        feedback = FELT_TO_FEEDBACK.get(log.get("felt_difficulty"))  # 未回答なら None
+        reward = converter.to_reward(feedback, float(log["duration_sec"]), t)
         belief = beliefs.get(wid)
         if belief is None:
             belief = beliefs[wid] = workerBelief()
