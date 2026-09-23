@@ -32,35 +32,47 @@ class RewardConverter:
         self.task_avgtime_list=np.zeros(TASK_COUNT)
         self.tasked_count=np.zeros(TASK_COUNT)
         self.learningdata=[0]*TASK_COUNT
+
     def to_reward(self,feedback,time_taken,task_type):
-        timeavg=self.return_task_avg(task_type,time_taken)[task_type]
-        time_score=timeavg/time_taken
-        if timeavg*0.9>time_taken:
-            feedback=0
-        elif timeavg*1.1<time_taken:        #ここでfeedbackを設定
-            feedback=2
-        else :
-            feedback=1
+        """
+        feedback: 0=easy/1=normal/2=hard が分かっていれば渡す（本人の体感申告など）。
+        None なら過去平均との比較から自動推定する。
+        以前は feedback を渡しても必ず時間から再計算されて握りつぶされていたが、
+        それだと呼び出し側が feedback を渡す意味が無いので、渡された値を優先する。
+
+        比較対象の平均は「今回のサンプルを含める前」の値を使う。先に平均へ
+        混ぜてしまうと、今回が外れ値でも基準自体がその場で引きずられて
+        必ず"normal"寄りに判定されてしまうため。
+        """
+        baseline=self.task_avgtime_list[task_type] if self.tasked_count[task_type]>0 else time_taken
+        time_score=baseline/time_taken
+        if feedback is None:
+            if baseline*0.9>time_taken:
+                feedback=0
+            elif baseline*1.1<time_taken:
+                feedback=2
+            else:
+                feedback=1
         reward=self.feedback_reward[feedback]*time_score
+        self.update_avg(task_type,time_taken)  # 平均は評価に使った後で更新する
         self.recordReward(task_type,reward)
         return reward
 
-    def return_task_avg(self,task_type,taken_time):
-        avg_time=self.update_avg(task_type,taken_time)
-        
-        self.task_avgtime_list[task_type]=avg_time
-        return self.task_avgtime_list
-    
     def update_avg(self,task_type,taken_time):
         self.tasked_count[task_type]+=1
         current_count=self.tasked_count[task_type]
-        
         current_avg=self.task_avgtime_list[task_type]
         avg=(current_avg*(current_count-1)+taken_time)/current_count
+        self.task_avgtime_list[task_type]=avg
         return avg
-    
+
     def recordReward(self,choicetask,reward):
-        self.learningdata[choicetask]=(self.learningdata[choicetask]*self.tasked_count[choicetask]+reward)/self.tasked_count[choicetask]
+        # update_avg が先にカウントを進めているので、ここでの current_count は
+        # 「今回を含めた件数」。重みは update_avg と同じく current_count-1 にする
+        # （そうしないと過去の平均が二重に効いて発散する）。
+        current_count=self.tasked_count[choicetask]
+        prev_avg=self.learningdata[choicetask]
+        self.learningdata[choicetask]=(prev_avg*(current_count-1)+reward)/current_count
 
 class workerBelief:
     def __init__(self):
@@ -72,7 +84,7 @@ class workerBelief:
         return np.random.multivariate_normal(self.mu,self.sigma)
         
     def predict(self,x,theta):
-        return theta[0]*x[0]+theta[1]*x[1]+theta[2]*x[2]+theta[3]*x[3]+theta[4]*x[4]+theta[5]*x[5]+theta[6]*x[6]+theta[7]*x[7]
+        return float(np.dot(theta,x))  #x,thetaは3+TASK_COUNT次元。TASK_COUNTが変わっても動くようにベタ書きをやめた
     
     def update(self,x,reward):
         x=np.array(x)
@@ -84,16 +96,18 @@ class workerBelief:
         
 
 class AssignmentEngine:
-    def __init__(self):
-        self.beliefs=[workerBelief(),workerBelief(),workerBelief(),workerBelief(),workerBelief()]
-        
+    def __init__(self,n_workers=5):
+        # 以前は5人分をベタ書きしていたため、n_workers を変えると
+        # choice_worker() が IndexError になっていた。worker数に合わせて作る。
+        self.beliefs=[workerBelief() for _ in range(n_workers)]
+
     def choice_worker(self,x,theta,i):
         return self.beliefs[i].predict(x,theta)
-    
-    
+
+
 
 class Simulator:
-    def __init__(self,n_workers=5,n_task_type=3):
+    def __init__(self,n_workers=5):
         self.workers=[worker(i) for i in range(n_workers)]
         self.task_difficulty=[0.15,0.3,0.45,0.6,0.85]       #タスク難易度1~5#タスク数５に固定
         self.step_count=0
@@ -114,7 +128,7 @@ if __name__ == "__main__":
     sim=Simulator()
     matrix = [[0 for _ in range(5)] for _ in range(5)]
     r=RewardConverter()
-    ae=AssignmentEngine()
+    ae=AssignmentEngine(n_workers=len(sim.workers))
     #elo=elorating(n_workers=5,n_task_type=3)
     feedbacked=["easy","normal","hard"]
     for i in range(10000):
@@ -132,6 +146,7 @@ if __name__ == "__main__":
         timetaken,feedback=sim.workers[index].simulate_output(choicetask)
         reward=r.to_reward(feedback,timetaken,choicetask)
         ae.beliefs[index].update(sim.workers[index].get_context(sim.task_difficulty[choicetask],choicetask),reward)
+        sim.workers[index].update_skill(choicetask)  # 選ばれて作業したので熟練度を上げる
         print(f"選択タスク{choicetask}")
         print(f"選択された人{index}")
 

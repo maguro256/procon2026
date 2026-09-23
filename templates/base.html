@@ -13,7 +13,7 @@
       <div class="brand-plate">
         <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Gemmba">
       </div>
-      <div class="brand-sub">管理者コンソール</div>
+      <div class="brand-sub"style="font-size: 20px;">管理者画面</div>
     </div>
     <nav class="sidebar-nav">
       <a href="{{ url_for('dashboard') }}" class="navlink {{ 'active' if request.endpoint == 'dashboard' }}">
@@ -240,11 +240,22 @@
   // 通常のフォーム送信（ページ遷移）にフォールバックする。
   async function ajaxSubmit(form) {
     const method = (form.getAttribute("method") || "get").toUpperCase();
-    const action = form.getAttribute("action") || (location.pathname + location.search);
+    let action = form.getAttribute("action") || (location.pathname + location.search);
     const isTagForm = !!form.closest("#tagModal");
+    // GET はブラウザ標準の送信ならクエリ文字列を自動で組み立ててくれるが、
+    // fetch() は何もしてくれない。ここで組み立てないと検索フォームなどの
+    // GETが常に空のクエリで送られてしまう（POSTは従来どおり body に積む）。
+    let body;
+    if (method === "GET") {
+      const params = new URLSearchParams(new FormData(form));
+      const qs = params.toString();
+      action = action.split("?")[0] + (qs ? `?${qs}` : "");
+    } else {
+      body = new FormData(form);
+    }
     const res = await fetch(action, {
       method: method,
-      body: method === "GET" ? undefined : new FormData(form),
+      body: body,
       credentials: "same-origin",
     });
     const html = await res.text();

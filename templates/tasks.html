@@ -4,7 +4,7 @@
 {% block content %}
 <header class="page-head">
   <h1>タスク管理</h1>
-  <p class="page-sub">例外的なタスクの追加や、内容・優先度の変更、手動での割り当てをここで行います。</p>
+  <p class="page-sub"style="font-size: 20px;">タスクの追加や、内容・優先度の変更、手動での割り当てを行います。</p>
 </header>
 
 <section class="form-panel">
@@ -48,9 +48,23 @@
   </form>
 </section>
 
-<h3 class="section-title">タスク一覧（優先度順）</h3>
-<div class="sheet task-list">
-{% for t in tasks %}
+<section class="form-panel">
+  <h4>タスクを検索</h4>
+  <form method="get" action="{{ url_for('tasks') }}" class="task-search-grid">
+    <div class="field"><label>タスク名</label>
+      <input class="input" type="text" name="q_title" placeholder="タスク名で絞り込み" value="{{ q_title }}">
+    </div>
+    <div class="field"><label>担当者</label>
+      <input class="input" type="text" name="q_worker" placeholder="担当者名で絞り込み" value="{{ q_worker }}">
+    </div>
+    <button type="submit" class="btn btn-primary">検索</button>
+    {% if q_title or q_worker %}
+    <a href="{{ url_for('tasks') }}" class="btn btn-secondary">クリア</a>
+    {% endif %}
+  </form>
+</section>
+
+{% macro task_row(t) %}
 <article class="sheet-row task-row {{ 'task-done' if t.status == 'done' }}">
   <div class="task-head">
     <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
@@ -103,17 +117,50 @@
     </button>
     {# チェックボックスは未チェックだと送信されないので、このフォーム経由だと分かる目印を付ける #}
     <input type="hidden" name="req_perm_form" value="1">
+    {# 検索で絞り込んだ状態からの更新・AI割当・削除でも、絞り込みを外さずに戻す #}
+    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
     <details class="perm-edit span-all">
       <summary>必要権限を編集</summary>
       {{ perm_checks('required_permissions', perms.parse(t.required_permissions)) }}
     </details>
   </form>
-  <form id="ai-assign-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}"></form>
+  <form id="ai-assign-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}">
+    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+  </form>
   <form id="delete-task-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
-        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')"></form>
+        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')">
+    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+  </form>
 </article>
+{% endmacro %}
+
+<h3 class="section-title">タスク一覧（優先度順・{{ active_tasks|length }}件）</h3>
+<div class="sheet task-list">
+{% for t in active_tasks %}
+{{ task_row(t) }}
 {% else %}
-<p class="empty">タスクはまだありません。上のフォームから登録してください。</p>
+<p class="empty">
+  {%- if q_title or q_worker -%}
+  条件に一致する未完了タスクはありません。
+  {%- else -%}
+  タスクはまだありません。上のフォームから登録してください。
+  {%- endif -%}
+</p>
+{% endfor %}
+</div>
+
+<h3 class="section-title">完了済みタスク（{{ done_tasks|length }}件）</h3>
+<div class="sheet task-list">
+{% for t in done_tasks %}
+{{ task_row(t) }}
+{% else %}
+<p class="empty">
+  {%- if q_title or q_worker -%}
+  条件に一致する完了済みタスクはありません。
+  {%- else -%}
+  完了したタスクはまだありません。
+  {%- endif -%}
+</p>
 {% endfor %}
 </div>
 {% endblock %}
