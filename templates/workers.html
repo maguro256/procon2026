@@ -41,14 +41,21 @@
       <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
     </div>
     <div class="field"><label>役職</label>{{ role_select(None) }}</div>
+    {# 「後で紐付け可」と書いてあったが、あとから紐付ける画面は無い。実態に合わせた #}
     <div class="field"><label>腕輪ICタグID（任意）</label>
-      <input class="input" type="text" name="nfc_tag_id" placeholder="後で紐付け可">
+      <input class="input" type="text" name="nfc_tag_id" placeholder="空欄でも登録できます">
     </div>
     <div class="field span-all"><label>保有権限（役職で付くぶんは登録後に自動で加わります）</label>
       {{ perm_checks('permissions', []) }}
     </div>
     <button type="submit" class="btn btn-primary">登録</button>
   </form>
+  <p class="text-muted form-note">
+    <strong>ICカードは現場でタッチして登録してください。</strong>
+    未登録のカードがタッチされると、この画面に登録フォームが自動で出ます。IDを手で打つ必要はありません。
+    ここでICタグIDを空欄のまま登録した人は、<strong>あとからカードを紐付けられません</strong>。
+    カードを渡す予定があるなら、タッチから登録してください。
+  </p>
 </section>
 
 <h3 class="section-title">登録済み作業者（{{ workers|length }}名）</h3>

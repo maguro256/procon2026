@@ -14,7 +14,7 @@ import uuid
 # 注意: RC522 は ISO14443A(MIFARE) 専用で **FeliCa は読めない**。
 # FeliCa の社員証を使う必要が出たら、USBリーダー(nfcpy)を併用する構成に戻すこと。
 
-# 機材との対応付けに使う名前。管理画面の「デバイスID」と一致させること。
+# 機材との対応付けに使う名前。管理画面の「モジュールID」と一致させること。
 # モジュールの同一性はこのIDで決まるので、IPが変わっても影響しない。
 DEVICE_ID = os.environ.get("GEMMBA_DEVICE_ID", "pi01")
 
@@ -217,6 +217,8 @@ def on_message(client, userdata, msg):
         threading.Thread(target=_handle_confirm, args=(payload,), daemon=True).start()
     elif cmd == "choice":
         threading.Thread(target=_handle_choice, args=(payload,), daemon=True).start()
+    elif cmd == "record":
+        threading.Thread(target=_handle_record, args=(payload,), daemon=True).start()
     elif cmd == "ping":
         publish_reply({"request_id": payload.get("request_id"), "answer": "pong"})
     else:
@@ -241,7 +243,8 @@ client.on_message = on_message
 
 LED_LABELS = {
     "idle": "空き", "working": "作業中", "free": "フリー利用中",
-    "guide": "移動してください", "error": "使用不可", "offline": "オフライン",
+    "guide": "移動してください", "recording": "タスク登録中",
+    "error": "使用不可", "offline": "オフライン",
 }
 
 LED_COLORS = {
@@ -249,6 +252,9 @@ LED_COLORS = {
     "working": (0xE0, 0x8A, 0x1E),
     "free":    (0x2F, 0x6D, 0xCC),
     "guide":   (0x7E, 0x3F, 0xB8),   # C-3 の誘導中。他のどの状態とも見間違えない紫
+    # 音声でのタスク登録中(E-2)。機材を使う状態ではないので、空き(緑)・作業中(橙)・
+    # フリー利用(青)のどれとも重ならない色にしてある
+    "recording": (0xC2, 0x37, 0x9A),
     "error":   (0xC8, 0x32, 0x32),
     "offline": (0x5A, 0x5A, 0x5A),
 }
@@ -269,6 +275,11 @@ PAD = 12
 # 物理ボタン(B-2)と画面下部のラベルの対応。**左右を入れ替えないこと。**
 # 現場で画面の「◀」と実際に押すボタンがずれると必ず迷う。
 BTN_LABELS = ("◀ 前へ", "● 決定", "次へ ▶")
+
+# 文字の大きさ。選択肢チップは、この順に試して**収まる一番大きいもの**を使う。
+# 「はい/いいえ」なら big、「タスク実行」のような長い選択肢は自動で小さくなる。
+ROLE_PX = {"big": 28, "title": 25, "body": 20, "chip": 17, "small": 14}
+CHIP_ROLES = ("big", "body", "chip", "small")
 
 # フォントは1つでは足りない。Raspberry Pi OS 標準の DroidSansFallbackFull は
 # 日本語を持つ代わりに ASCII のグリフが無く、'A' や '0' が豆腐(□)になる。逆に
@@ -302,8 +313,8 @@ def _load_fonts():
     if _fonts:
         return
     # big は選択肢チップ用。title は本文1行目（タスク名など）で、離れた場所から
-    # 読めるように一番大きくしてある。
-    for role, size in (("big", 28), ("title", 25), ("body", 20), ("small", 14)):
+    # 読めるように一番大きくしてある。chip は選択肢が長いときの中間段。
+    for role, size in ROLE_PX.items():
         loaded = []
         for path in FONT_PATHS:
             try:
@@ -465,11 +476,20 @@ def _draw_choices(d, W, top, bottom, choice, state):
         _draw_text(d, PAD, top, _fit(choice["text"], "body", W - PAD * 2), "body", FG_COLOR)
         top += 30
 
-    gap = 8
+    gap = 6
+    inner = 8                      # チップ内の左右の余白
     avail = W - PAD * 2 - gap * (len(options) - 1)
     chip_w = avail // len(options)
     chip_h = min(52, max(40, bottom - top - 6))
     y = top + max(0, (bottom - top - chip_h) // 2)
+
+    # 全部のチップで同じ大きさにする。1つだけ小さいと不揃いに見えるので、
+    # **一番長い選択肢が収まる大きさ**に全体を合わせる。
+    role = CHIP_ROLES[-1]
+    for candidate in CHIP_ROLES:
+        if all(_text_width(str(o), candidate) <= chip_w - inner for o in options):
+            role = candidate
+            break
 
     for i, label in enumerate(options):
         x = PAD + i * (chip_w + gap)
@@ -480,11 +500,9 @@ def _draw_choices(d, W, top, bottom, choice, state):
         else:
             _rounded(d, box, 8, fill=CARD_COLOR, outline=LINE_COLOR, width=1)
             fg = SUB_COLOR
-        # チップ幅に収まる一番大きい役割を選ぶ。「難しい」と「はい」で字数が違う
-        role = "big" if _text_width(label, "big") <= chip_w - 12 else "body"
-        text = _fit(str(label), role, chip_w - 12)
+        text = _fit(str(label), role, chip_w - inner)
         tx = x + (chip_w - _text_width(text, role)) // 2
-        ty = y + (chip_h - (28 if role == "big" else 20)) // 2 - 2
+        ty = y + (chip_h - ROLE_PX[role]) // 2 - 2
         _draw_text(d, tx, ty, text, role, fg)
 
 
@@ -863,47 +881,162 @@ def ledtest(hold_sec=2.0):
     return 0
 
 
-def preview(path):
-    """
-    ハード無しで主要な画面を1枚のPNGに書き出す。SPIが通る前や開発PCで、
-    はみ出し・文字化け・配置を確認するため。
+def _choice(text, options, selected):
+    return {"text": text, "options": options, "selected": selected}
 
-        python3 raspi.py --preview /tmp/screens.png
+
+# モジュールが出しうる画面の一覧。**app.py が送る内容と対で維持すること。**
+# 画面デザインの確認はここを見れば全部そろうようにしてある（--preview）。
+#   (キー, 画面名, いつ出るか, lines, state, choice, badge)
+PREVIEW_SCREENS = [
+    # ---- 起動・待機 -------------------------------------------------------
+    ("boot", "起動中", "電源投入直後。ブローカーを探している間",
+     [f"Gemmba {DEVICE_ID}", "ブローカーを探しています…"], "offline", None, None),
+    ("idle", "待機", "空いている機材の通常表示。ここから全部が始まる",
+     ["旋盤 #2", "社員証をタッチしてください"], "idle", None, None),
+    ("restored", "使用中（復元）", "モジュール再起動後、DBの状態から復元したとき",
+     ["山田 花子 さん 使用中", "製品A ロット12 組立"], "working", None, None),
+    ("unavailable", "停止・メンテ中", "機材が stopped / maintenance のとき",
+     ["旋盤 #2", "メンテ中"], "error", None, None),
+
+    # ---- メニュー --------------------------------------------------------
+    ("menu_idle", "メニュー（空き）", "タッチすると必ずここに来る。空きなら「タスク実行」が選ばれた状態",
+     ["田中 太郎 さん", "旋盤 #2"], "idle",
+     _choice("どうしますか？", ["タスク実行", "タスク登録", "作業終了"], 0), None),
+    ("menu_working", "メニュー（作業中）", "作業中は「作業終了」が選ばれた状態で出る。決定1回で終わる",
+     ["田中 太郎 さん", "旋盤 #2"], "working",
+     _choice("どうしますか？", ["タスク実行", "タスク登録", "作業終了"], 2), None),
+    ("menu_busy", "すでに作業中", "作業中に「タスク実行」を選んだとき。メニューへ戻る",
+     ["すでに作業中です", "終わるときは「作業終了」"], "working", None, None),
+    ("menu_notask", "作業中のタスクが無い", "空きのときに「作業終了」を選んだとき。メニューへ戻る",
+     ["作業中のタスクがありません", "「タスク実行」から始めてください"], "idle", None, None),
+
+    # ---- 音声でのタスク登録（E-2）-----------------------------------------
+    ("rec_wait", "録音待ち", "「タスク登録」を選んだあと。決定を押している間だけ録音する",
+     ["田中 太郎 さん", "決定ボタンを押している間", "話してください"], "recording", None, None),
+    ("rec_done", "登録できた", "文字起こしの結果をそのままタスク名にして登録する",
+     ["タスクを登録しました", "旋盤の切粉清掃を至急お願いします"], "idle", None, None),
+    ("rec_fail", "録音できなかった", "押す時間が短すぎた・マイクが不調・PCへ送れなかった",
+     ["録音できませんでした", "もう一度お試しください"], "error", None, None),
+
+    # ---- 誘導（C-3）------------------------------------------------------
+    ("guide_ask", "移動しますか？", "他機材に優先タスクがあるとき。ロックより前に尋ねる",
+     ["プレス機 #1 に至急のタスク", "製品C 外形加工"], "idle",
+     _choice("プレス機 #1 へ移動しますか？", ["はい", "いいえ"], 0), None),
+    ("guide_go", "移動の案内", "「はい」のあと、移動元に15秒出る",
+     ["プレス機 #1 へ移動してください", "製品C 外形加工", "移動先で社員証をタッチ"],
+     "guide", None, None),
+    ("guide_arrive", "到着の予告", "移動先の機材に180秒出る。歩く時間ぶん長め",
+     ["山田 花子 さんが向かっています", "製品C 外形加工", "社員証をタッチしてください"],
+     "guide", None, None),
+
+    # ---- 着手（C-1 / C-2）------------------------------------------------
+    ("task_ask", "タスクの提示", "候補を古い順に最大3件、1件ずつ。右上が何件目か",
+     ["製品A ロット12 組立", "30個 / 期限 2026-09-30"], "idle",
+     _choice("このタスクに着手しますか？", ["はい", "いいえ"], 0), "1/3"),
+    ("task_ask_long", "タスクの提示（長い名前）", "タスク名が長いときの省略のされ方",
+     ["レーザー加工機 #1 の長いタスク名テスト", "20個 / 期限 2026-09-20"], "idle",
+     _choice("このタスクに着手しますか？", ["はい", "いいえ"], 0), "3/3"),
+    ("free_ask", "フリー利用の確認", "候補が無い／全部スキップしたとき",
+     ["すべてスキップしました"], "idle",
+     _choice("フリー利用で使いますか？", ["はい", "いいえ"], 0), None),
+    ("working", "作業中", "着手してロックした状態。終了タッチまでこれ",
+     ["山田 花子 さん", "製品A ロット12 組立", "30個 / 期限 2026-09-30",
+      "終了時にもう一度タッチ"], "working", None, None),
+    ("free", "フリー利用中", "タスク無しでロックした状態",
+     ["山田 花子 さん", "フリー利用中", "終了時にもう一度タッチ"], "free", None, None),
+    ("cancelled", "キャンセル", "フリー利用も断ったとき。3秒で待機へ戻る",
+     ["キャンセルしました"], "idle", None, None),
+    ("timeout", "無応答で中止", "25秒答えなかったとき。ロックせずに戻す（C-4）",
+     ["応答がありませんでした", "もう一度タッチしてください"], "idle", None, None),
+
+    # ---- 完了（D-6）------------------------------------------------------
+    ("felt", "難易度フィードバック", "完了・機材解放の直後。20秒で時間切れ",
+     ["製品A ロット12 組立", "お疲れさまでした"], "idle",
+     _choice("この作業の難易度は？", ["簡単", "普通", "難しい"], 1), None),
+    ("done", "完了", "フィードバックのあと。待機へ戻る",
+     ["お疲れさまでした", "社員証をタッチしてください"], "idle", None, None),
+
+    # ---- エラー -----------------------------------------------------------
+    ("unknown_tag", "未登録ICカード", "登録されていないカードがタッチされたとき",
+     ["未登録のICカードです", "管理画面から登録してください"], "error", None, None),
+    ("unknown_module", "未登録モジュール", "機材に紐付いていないモジュールでタッチしたとき",
+     ["未登録のモジュールです", "機材管理画面で紐付けてください"], "error", None, None),
+    ("busy", "他の人が使用中", "別の作業者がロックしている機材にタッチしたとき",
+     ["他の人が使用中です", "鈴木 一郎 さんは使用できません"], "working", None, None),
+    ("no_perm", "権限不足", "承認の間に権限や必要権限が変わって着手できなかったとき",
+     ["このタスクには権限が必要です", "アーク溶接"], "error", None, None),
+]
+
+
+# 画面の並び順と区分。現場フローの順にしてあるので、上から読めば遷移が追える。
+PREVIEW_GROUPS = [
+    ("起動・待機", ["boot", "idle", "restored", "unavailable"]),
+    ("メニュー", ["menu_idle", "menu_working", "menu_busy", "menu_notask"]),
+    ("タスク登録・音声 (E-2)", ["rec_wait", "rec_done", "rec_fail"]),
+    ("誘導 (C-3)", ["guide_ask", "guide_go", "guide_arrive"]),
+    ("着手 (C-1 / C-2)", ["task_ask", "task_ask_long", "free_ask",
+                          "working", "free", "cancelled", "timeout"]),
+    ("完了 (D-6)", ["felt", "done"]),
+    ("エラー", ["unknown_tag", "unknown_module", "busy", "no_perm"]),
+    ("診断", ["selftest"]),
+]
+
+
+def _group_of(key):
+    return next((name for name, keys in PREVIEW_GROUPS if key in keys), "その他")
+
+
+def preview(path="screens.png"):
     """
+    ハード無しで全画面をPNGに書き出す。SPIが通る前や開発PCで、はみ出し・
+    文字化け・配置を確認するため。
+
+        python3 raspi.py --preview /tmp/screens.png   # 1枚にまとめた一覧
+        python3 raspi.py --preview /tmp/screens/      # 1画面ずつ + index.json
+
+    ディレクトリを指定すると1画面ずつ書き出し、名前と「いつ出るか」を
+    index.json に添える。PC側でデザインを並べて見るときはこちら。
+    """
+    import json as _json
     from PIL import Image
 
     rot = int(os.environ.get("GEMMBA_LCD_ROTATION", "90"))
     size = (320, 240) if rot in (90, 270) else (240, 320)
     _load_fonts()
 
-    def choice(text, options, selected):
-        return {"text": text, "options": options, "selected": selected}
+    rendered = [(key, name, when, state,
+                 _compose(lines, state, size, choice, badge))
+                for key, name, when, lines, state, choice, badge in PREVIEW_SCREENS]
+    rendered.append(("selftest", "動作確認画面", "--selftest で出る診断用。配線・色順・日本語の確認",
+                     "idle", _compose_selftest(size, rot)))
 
-    screens = [
-        _compose_selftest(size, rot),
-        _compose(["test1", "社員証をタッチしてください"], "idle", size),
-        _compose(["山田 花子 さん", "製品A ロット12 組立", "30個 / 期限 2026-09-30",
-                  "終了時にもう一度タッチ"], "working", size),
-        # C-1 の承認。長い機材名がはみ出さないかもここで見る
-        _compose(["レーザー加工機 #1 の長いタスク名テスト", "20個 / 期限 2026-09-20"],
-                 "idle", size, choice("このタスクに着手しますか？", ["はい", "いいえ"], 0),
-                 badge="1/3"),
-        # 完了後の難易度フィードバック
-        _compose(["製品A ロット12 組立", "お疲れさまでした"], "idle", size,
-                 choice("この作業の難易度は？", ["簡単", "普通", "難しい"], 1)),
-        _compose(["旋盤 #2 へ移動してください", "製品C 外形加工（至急）"], "guide", size),
-        _compose(["未登録のICカードです", "管理画面から登録してください"], "error", size),
-    ]
-    cols = 2
-    rows = (len(screens) + cols - 1) // cols
-    sheet = Image.new("RGB", (size[0] * cols + 12 * (cols + 1),
-                              size[1] * rows + 12 * (rows + 1)), (60, 60, 66))
-    for i, img in enumerate(screens):
-        x = 12 + (i % cols) * (size[0] + 12)
-        y = 12 + (i // cols) * (size[1] + 12)
-        sheet.paste(img, (x, y))
-    sheet.save(path)
-    print(f"[preview] {path} に {len(screens)} 画面を書き出しました ({size[0]}x{size[1]})")
+    if path.lower().endswith(".png"):
+        cols = 3
+        rows = (len(rendered) + cols - 1) // cols
+        sheet = Image.new("RGB", (size[0] * cols + 12 * (cols + 1),
+                                  size[1] * rows + 12 * (rows + 1)), (60, 60, 66))
+        for i, (_, _, _, _, img) in enumerate(rendered):
+            sheet.paste(img, (12 + (i % cols) * (size[0] + 12),
+                              12 + (i // cols) * (size[1] + 12)))
+        sheet.save(path)
+        print(f"[preview] {path} に {len(rendered)} 画面を書き出しました ({size[0]}x{size[1]})")
+        return 0
+
+    os.makedirs(path, exist_ok=True)
+    index = []
+    for i, (key, name, when, state, img) in enumerate(rendered, 1):
+        filename = f"{i:02d}-{key}.png"
+        img.save(os.path.join(path, filename))
+        index.append({"file": filename, "key": key, "name": name,
+                      "when": when, "state": state,
+                      "state_label": LED_LABELS.get(state, state),
+                      "group": _group_of(key)})
+    with open(os.path.join(path, "index.json"), "w", encoding="utf-8") as fp:
+        _json.dump({"size": list(size), "rotation": rot, "screens": index},
+                   fp, ensure_ascii=False, indent=2)
+    print(f"[preview] {path} に {len(rendered)} 画面と index.json を書き出しました "
+          f"({size[0]}x{size[1]})")
     return 0
 
 
@@ -1021,6 +1154,109 @@ def _apply_leds(state):
         _leds["blue"].value = not red
     except Exception as e:
         print(f"[LED] 点灯に失敗: {e}")
+
+
+# ------------------------------------------------------------ 音声入力（E-2）
+# **決定ボタンを押している間だけ**録音して、PCへ送る。専用の録音ボタンは設けない
+# （ボタンを増やすより、メニューで「タスク登録」を選んでから決定を押す方が迷わない）。
+#
+# 録音形式は rec.sh と同じ S32_LE / ステレオ / 16kHz。左チャンネルにだけ声が出る。
+# 変換はしない。PC側の voice/stt.py がこの形をそのまま読める。
+MIC_DEVICE = os.environ.get("GEMMBA_MIC", "plughw:CARD=sndrpigooglevoi,DEV=0")
+REC_MAX_SEC = float(os.environ.get("GEMMBA_REC_MAX", "30"))
+REC_MIN_SEC = 0.6     # これより短い押下は押し間違いとみなして捨てる
+REC_PATH = "/tmp/gemmba_rec.wav"
+
+
+def record_while_held(max_sec=REC_MAX_SEC, wait_sec=30):
+    """
+    決定ボタンが押されるのを待ち、**押している間だけ**録音する。
+    戻り値: 録音したファイルのパス / None（押されなかった・短すぎた・失敗）
+    """
+    import subprocess
+
+    if not init_buttons():
+        print("[REC] ボタンが無いので録音できません")
+        return None
+    ok = _buttons["ok"]
+
+    if not ok.wait_for_press(timeout=wait_sec):
+        print("[REC] 決定ボタンが押されませんでした")
+        return None
+
+    cmd = ["arecord", "-D", MIC_DEVICE, "-c", "2", "-r", "16000",
+           "-f", "S32_LE", "-d", str(int(max_sec)), "-q", REC_PATH]
+    started = time.time()
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except OSError as e:
+        print(f"[REC] arecord を起動できません: {e}")
+        return None
+    print("[REC] 録音中…")
+
+    # 離すまで待つ。押しっぱなしでも max_sec で arecord 自身が止まる
+    ok.wait_for_release(timeout=max_sec)
+    held = time.time() - started
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    print(f"[REC] 録音終了 {held:.1f}秒")
+
+    if held < REC_MIN_SEC:
+        print("[REC] 短すぎるので捨てます")
+        return None
+    if not os.path.exists(REC_PATH) or os.path.getsize(REC_PATH) < 1000:
+        print("[REC] 録音できていません（マイクの配線を確認してください）")
+        return None
+    return REC_PATH
+
+
+def upload_recording(path, url, timeout=60):
+    """録音をPCへ送り、応答のJSONを返す。失敗したら None"""
+    import requests
+
+    try:
+        with open(path, "rb") as fp:
+            res = requests.post(url, data=fp.read(),
+                                headers={"Content-Type": "audio/wav"}, timeout=timeout)
+    except Exception as e:
+        print(f"[REC] 送信に失敗: {e}")
+        return None
+    if not res.ok:
+        print(f"[REC] サーバーがエラーを返しました: {res.status_code} {res.text[:120]}")
+        return None
+    try:
+        return res.json()
+    except ValueError:
+        print("[REC] 応答がJSONではありません")
+        return None
+
+
+def _handle_record(payload):
+    """
+    「録音して送れ」という指示。決定ボタンを押している間だけ録音して送り、
+    結果を応答で返す。画面は送り主（app.py）が出すので、ここでは触らない。
+    """
+    request_id = payload.get("request_id")
+    url = payload.get("url")
+    if not url:
+        publish_reply({"request_id": request_id, "answer": False, "error": "no url"})
+        return
+    path = record_while_held(float(payload.get("max_sec", REC_MAX_SEC)),
+                             float(payload.get("wait_sec", 30)))
+    if path is None:
+        publish_reply({"request_id": request_id, "answer": False, "error": "no audio"})
+        return
+    body = upload_recording(path, url, timeout=float(payload.get("upload_timeout", 90)))
+    if body is None:
+        publish_reply({"request_id": request_id, "answer": False, "error": "upload failed"})
+        return
+    publish_reply({"request_id": request_id, "answer": bool(body.get("ok")),
+                   "text": body.get("text"), "task_id": body.get("task_id"),
+                   "error": body.get("error")})
 
 
 # console モードの入力。行を1本のスレッドで読んでキューに積む。都度 input() する

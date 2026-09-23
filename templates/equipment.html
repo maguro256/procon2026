@@ -4,7 +4,7 @@
 {% block content %}
 <header class="page-head">
   <h1>機材・モジュール管理</h1>
-  <p class="page-sub">モジュールIDはAPI（HTTP）の宛先、デバイスIDはラズパイがMQTTで名乗る名前（<span class="mono">DEVICE_ID</span>）です。デバイスIDを紐付けると、そのラズパイのNFCタッチがこの機材の操作として扱われます。</p>
+  <p class="page-sub">機材コードは機材そのものの番号でAPI（HTTP）の宛先になります。モジュールIDは機材の横に置いたラズパイの名前（<span class="mono">GEMMBA_DEVICE_ID</span>）です。モジュールIDを紐付けると、そのラズパイでのNFCタッチがこの機材の操作として扱われます。</p>
 </header>
 
 {% if pending_modules %}
@@ -13,7 +13,7 @@
   <p class="callout-lead">ネットワーク上にモジュールが見つかりましたが、どの機材にも紐付いていません。設置先の機材を選んで紐付けてください。</p>
   {% for device_id, info in pending_modules.items() %}
   <div class="callout-row">
-    <p>デバイスID: <strong class="mono">{{ device_id }}</strong>
+    <p>モジュールID: <strong class="mono">{{ device_id }}</strong>
       <span class="text-muted">（IP: {{ info.ip or '不明' }} ／ 検出 {{ info.seen_at }}）</span></p>
     <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
       <input type="hidden" name="hostname" value="{{ device_id }}">
@@ -36,10 +36,11 @@
     <div class="field"><label>機材名 *</label>
       <input class="input" type="text" name="name" placeholder="例：レーザー加工機 #2" required>
     </div>
-    <div class="field"><label>モジュールID（任意）</label>
-      <input class="input" type="text" name="module_id" placeholder="後で紐付け可">
+    <div class="field"><label>機材コード（任意）</label>
+      {# 空なら _ensure_module_id() が MOD-001 形式で採番する。「後で紐付け可」は誤解を招くので直した #}
+      <input class="input" type="text" name="module_id" placeholder="空欄なら自動で採番">
     </div>
-    <div class="field"><label>デバイスID（任意）</label>
+    <div class="field"><label>モジュールID（任意）</label>
       <input class="input" type="text" name="hostname" placeholder="例：pi01">
     </div>
     <button type="submit" class="btn btn-primary">登録</button>
@@ -48,12 +49,12 @@
 
 <h3 class="section-title">登録済み機材（{{ equipment|length }}台）</h3>
 <details class="tech-toggle">
-  <summary>詳しい設定（モジュールID・最終通信を表示）</summary>
+  <summary>詳しい設定（機材コード・最終通信を表示）</summary>
 </details>
 <p class="table-hint"><svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>横にスクロールできます</p>
 <div class="sheet table-wrap">
   <table class="table">
-    <thead><tr><th>ID</th><th>機材名</th><th class="tech-col">モジュールID</th><th>デバイスID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>機材名</th><th class="tech-col">機材コード</th><th>モジュールID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
     <tbody>
     {% for e in equipment %}
       <tr>

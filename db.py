@@ -23,12 +23,15 @@ CREATE TABLE IF NOT EXISTS workers (
 CREATE TABLE IF NOT EXISTS equipment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    module_id TEXT UNIQUE,                      -- モジュール(ESP32)の識別子
+    -- 機材コード。**機材そのもの**の識別子で、APIの宛先になる（/api/equipment/<ここ>/…）。
+    -- モジュール側の識別子は下の hostname。名前が紛らわしいので画面では「機材コード」と呼ぶ
+    module_id TEXT UNIQUE,
     status TEXT NOT NULL DEFAULT 'idle',        -- idle / working / stopped / maintenance
     current_worker_id INTEGER REFERENCES workers(id),
     current_task_id INTEGER REFERENCES tasks(id),
     ip TEXT,
-    hostname TEXT,                               -- モジュール(ラズパイ)の DEVICE_ID。IPが変わっても不変
+    -- モジュールID。ラズパイの GEMMBA_DEVICE_ID がそのまま入る。IPが変わっても不変
+    hostname TEXT,
     last_seen TEXT,                              -- 最終通信時刻
     online INTEGER DEFAULT 0,                    -- 1=接続中。MQTTのLWT/ハートビートで自動更新
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
@@ -55,8 +58,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 -- 作業実績ログ: NFCタッチで収集する所要時間データ（WariAthena の学習用）
 CREATE TABLE IF NOT EXISTS work_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER NOT NULL REFERENCES tasks(id),
-    worker_id INTEGER NOT NULL REFERENCES workers(id),
+    -- NOT NULL を付けないこと。タスク・作業者・機材が削除されても実績は残す設計で、
+    -- app.py の AI_LOG_SQL はそれを前提に LEFT JOIN している。NOT NULL だと
+    -- 外部キー制約で「実績のある作業者は削除できない」状態になる（実際にそうなっていた）
+    task_id INTEGER REFERENCES tasks(id),
+    worker_id INTEGER REFERENCES workers(id),
     equipment_id INTEGER REFERENCES equipment(id),
     started_at TEXT,
     completed_at TEXT,
@@ -109,6 +115,51 @@ def migrate(conn):
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
                 print(f"[db] migrate: {table}.{column} を追加しました")
+    _relax_work_logs(conn)
+
+
+def _relax_work_logs(conn):
+    """
+    work_logs.task_id / worker_id の NOT NULL を外す（冪等）。
+
+    付いたままだと、実績のある作業者・タスク・機材を削除しようとした時点で
+    外部キー制約に弾かれて 500 になる。実績は消さずに残す設計なので、
+    参照先が消えたら NULL にできる必要がある。
+
+    SQLite は ALTER COLUMN で NOT NULL を外せないので、テーブルを作り直す。
+    1つのトランザクションで入れ替えるため、途中で落ちても中途半端にならない。
+    """
+    info = conn.execute("PRAGMA table_info(work_logs)").fetchall()
+    if not info:
+        return
+    # row = (cid, name, type, notnull, dflt_value, pk)
+    if not any(r[1] in ("task_id", "worker_id") and r[3] for r in info):
+        return
+
+    columns = [r[1] for r in info]
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript(f"""
+        BEGIN;
+        CREATE TABLE work_logs__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER REFERENCES tasks(id),
+            worker_id INTEGER REFERENCES workers(id),
+            equipment_id INTEGER REFERENCES equipment(id),
+            started_at TEXT,
+            completed_at TEXT,
+            duration_sec INTEGER,
+            felt_difficulty TEXT
+        );
+        INSERT INTO work_logs__new ({', '.join(columns)})
+            SELECT {', '.join(columns)} FROM work_logs;
+        DROP TABLE work_logs;
+        ALTER TABLE work_logs__new RENAME TO work_logs;
+        COMMIT;
+    """)
+    conn.execute("PRAGMA foreign_keys = ON")
+    n = conn.execute("SELECT COUNT(*) FROM work_logs").fetchone()[0]
+    print(f"[db] migrate: work_logs の task_id / worker_id を NULL 可にしました（{n}件そのまま）")
 
 
 def init_db(seed: bool = True):

@@ -304,14 +304,14 @@ select.input {
 .eq-meta .k { color: var(--ink-faint); }
 .eq-tech { flex: none; align-self: center; font-size: 12px; }
 
-/* モジュールID・最終更新時刻など、IT担当者不在の現場には不要な専門情報は折りたたみに隔離する */
+/* 機材コード・最終更新時刻など、IT担当者不在の現場には不要な専門情報は折りたたみに隔離する */
 .eq-tech summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; list-style: revert; white-space: nowrap; }
 .eq-tech summary:hover { color: var(--ink); }
 .eq-tech[open] summary { margin-bottom: 6px; }
 .eq-tech .mono { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 4px; }
 .eq-tech .card-meta { font-size: 11.5px; }
 
-/* 一覧表の専門的な列（モジュールID・最終通信）も同様に、開いたときだけ表示する */
+/* 一覧表の専門的な列（機材コード・最終通信）も同様に、開いたときだけ表示する */
 .tech-toggle { margin-bottom: var(--space-3); font-size: 13px; }
 .tech-toggle summary { cursor: pointer; font-weight: 700; color: var(--ink-soft); }
 .tech-toggle summary:hover { color: var(--ink); }
@@ -345,6 +345,8 @@ select.input {
 .form-panel { padding-bottom: var(--space-7); margin-bottom: var(--space-7); border-bottom: 2px solid var(--line-strong); }
 .form-panel h4 { font-size: 18px; margin-bottom: var(--space-3); display: flex; align-items: center; gap: 8px; }
 .form-panel.narrow { max-width: 680px; }
+/* フォームの下に置く補足。枠で囲わず、文字だけで静かに添える */
+.form-panel .form-note { font-size: 13px; line-height: 1.7; margin-top: var(--space-4); max-width: 68ch; }
 .task-form-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1.4fr; gap: var(--space-3); align-items: end; }
 .task-form-grid .span-all { grid-column: 1 / -1; }
 .worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }

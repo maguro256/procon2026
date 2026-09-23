@@ -10,7 +10,7 @@ __pycache__/
 # `python demo_data.py` で投入する。
 gemmba.db
 gemmba.db.bak
-gemmba.db.before-reset-*
+gemmba.db.before-*
 
 # SQLiteの一時ファイル（app.py 稼働中に出る）
 gemmba.db-journal

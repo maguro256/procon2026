@@ -8,12 +8,13 @@ app.py - Gemmba 管理者画面（雛形）
 
 構成:
     画面 (HTML)   : ダッシュボード / 作業者管理 / タスク管理 / 機材管理
-    API  (JSON)   : モジュール(ESP32)や割り当てAIが叩くエンドポイント
+    API  (JSON)   : モジュール(ラズパイ)や割り当てAIが叩くエンドポイント
 """
 import os
 import json
 import queue
 import socket
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -26,6 +27,7 @@ import requests
 import db
 import ai_stub
 import permissions as perms
+from voice import intent
 
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
@@ -172,10 +174,11 @@ def delete_worker(worker_id):
     conn = db.get_db()
     conn.execute("UPDATE tasks SET assigned_worker_id = NULL WHERE assigned_worker_id = ?", (worker_id,))
     conn.execute("UPDATE equipment SET current_worker_id = NULL WHERE current_worker_id = ?", (worker_id,))
+    logs = _detach_work_logs(conn, "worker_id", worker_id)
     conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
     conn.commit()
     conn.close()
-    flash("作業者を削除しました", "ok")
+    flash("作業者を削除しました" + (f"（実績 {logs} 件は残しています）" if logs else ""), "ok")
     return redirect(url_for("workers"))
 
 
@@ -315,10 +318,11 @@ def auto_assign(task_id):
 def delete_task(task_id):
     conn = db.get_db()
     conn.execute("UPDATE equipment SET current_task_id = NULL WHERE current_task_id = ?", (task_id,))
+    logs = _detach_work_logs(conn, "task_id", task_id)
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
-    flash("タスクを削除しました", "ok")
+    flash("タスクを削除しました" + (f"（実績 {logs} 件は残しています）" if logs else ""), "ok")
     return redirect(url_for("tasks"))
 
 
@@ -354,9 +358,9 @@ def add_equipment():
             row = conn.execute("SELECT id, name, module_id FROM equipment WHERE id = ?",
                                (cur.lastrowid,)).fetchone()
             module_id = _ensure_module_id(conn, row)
-        flash(f"機材「{name}」を登録しました（モジュールID: {module_id}）", "ok")
+        flash(f"機材「{name}」を登録しました（機材コード: {module_id}）", "ok")
     except db.sqlite3.IntegrityError:
-        flash("そのモジュールIDは既に使われています", "error")
+        flash("その機材コードは既に使われています", "error")
     finally:
         conn.close()
     return redirect(url_for("equipment"))
@@ -365,7 +369,7 @@ def add_equipment():
 @app.route("/equipment/bind", methods=["POST"])
 def bind_equipment():
     """
-    機材にモジュールのデバイスID(hostname)を紐付ける。MQTTの宛先解決に使う。
+    機材にモジュールID(hostname)を紐付ける。MQTTの宛先解決に使う。
     一覧のインライン編集と、未登録モジュールパネルの両方から呼ばれる。
     """
     eq_id = request.form.get("equipment_id", "").strip()
@@ -375,7 +379,7 @@ def bind_equipment():
         return redirect(url_for("equipment"))
 
     conn = db.get_db()
-    # 同じデバイスIDが複数機材に付くと宛先が一意に決まらないため、先に他を外す
+    # 同じモジュールIDが複数機材に付くと宛先が一意に決まらないため、先に他を外す
     if hostname:
         conn.execute("UPDATE equipment SET hostname = NULL, online = 0 WHERE hostname = ? AND id != ?",
                      (hostname, eq_id))
@@ -395,7 +399,7 @@ def bind_equipment():
     conn.commit()
     conn.close()
 
-    flash(f"デバイスID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
+    flash(f"モジュールID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
     return redirect(url_for("equipment"))
 
 
@@ -403,11 +407,28 @@ def bind_equipment():
 def delete_equipment(eq_id):
     conn = db.get_db()
     conn.execute("UPDATE tasks SET equipment_id = NULL WHERE equipment_id = ?", (eq_id,))
+    # 実績は消さない。どの機材だったかは分からなくなるが、所要時間と担当者は
+    # WariAthena の学習データなので残す（AI_LOG_SQL が LEFT JOIN しているのはこのため）
+    logs = _detach_work_logs(conn, "equipment_id", eq_id)
     conn.execute("DELETE FROM equipment WHERE id = ?", (eq_id,))
     conn.commit()
     conn.close()
-    flash("機材を削除しました", "ok")
+    flash("機材を削除しました" + (f"（実績 {logs} 件は残しています）" if logs else ""), "ok")
     return redirect(url_for("equipment"))
+
+
+def _detach_work_logs(conn, column, value):
+    """
+    削除される機材・作業者・タスクを参照している実績の参照だけを外す。
+
+    実績そのものは消さない。**外部キーが NOT NULL のままだと、実績のある行は
+    削除しようとした時点で 500 になる**（2026-09-15 に実際に起きた）。
+    スキーマ側は db._relax_work_logs() で NULL 可にしてある。
+    """
+    n = conn.execute(f"SELECT COUNT(*) FROM work_logs WHERE {column} = ?", (value,)).fetchone()[0]
+    if n:
+        conn.execute(f"UPDATE work_logs SET {column} = NULL WHERE {column} = ?", (value,))
+    return n
 
 
 # ------------------------------------------------ API（モジュール/AI連携用）
@@ -686,6 +707,99 @@ def api_complete_task(task_id):
                     "title": task["title"]})
 
 
+# 文字起こしは別のPythonで動かす。app.py は 3.8 固定だが faster-whisper は 3.9 以降
+# しか入らないため（voice/requirements.txt 参照）。呼ぶたびにモデルを読み直すので
+# 1回あたり4〜6秒かかる。常駐させたくなったら、ここをHTTP呼び出しに替えればよい。
+VOICE_PYTHON = os.environ.get(
+    "GEMMBA_STT_PYTHON",
+    os.path.join(".venv-voice", "Scripts" if os.name == "nt" else "bin",
+                 "python.exe" if os.name == "nt" else "python"))
+VOICE_TIMEOUT = 120
+# タスク名の長さは voice/intent.py が持っている（文字起こしの整形もあちらの仕事）
+
+
+def _transcribe(path):
+    """録音を文字にする。戻り値: テキスト / None（失敗）"""
+    import subprocess
+
+    if not os.path.exists(VOICE_PYTHON):
+        print(f"[voice] 文字起こし用のPythonがありません: {VOICE_PYTHON}")
+        return None
+    try:
+        res = subprocess.run([VOICE_PYTHON, os.path.join("voice", "stt.py"), "--json", path],
+                             capture_output=True, timeout=VOICE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print("[voice] 文字起こしが時間内に終わりませんでした")
+        return None
+    if res.returncode != 0:
+        print(f"[voice] 文字起こしに失敗: {res.stderr.decode('utf-8', 'replace')[-400:]}")
+        return None
+    try:
+        # stt.py はリダイレクト先には UTF-8 で出す
+        return (json.loads(res.stdout.decode("utf-8")).get("text") or "").strip()
+    except (ValueError, UnicodeDecodeError) as e:
+        print(f"[voice] 応答を読めません: {e}")
+        return None
+
+
+@app.route("/api/voice", methods=["POST"])
+def api_voice():
+    """
+    モジュールが録音した音声を受け取り、文字起こししてタスクにする（E-2）。
+
+    body は WAV そのもの。誰がどの機材で話したかはクエリで受ける。
+    文字起こし(voice/stt.py) → 意図分析(voice/intent.py) の順に同期で通してから
+    INSERT する。**どちらが失敗しても登録は成立させる**（意図分析が落ちたら
+    既定値のタスクが1件立つ）。現場で「何も残らない」のが一番困るため。
+    """
+    tag_id = request.args.get("tag_id")
+    audio = request.get_data()
+    if len(audio) < 1000:
+        return jsonify({"ok": False, "error": "音声が短すぎます"}), 400
+
+    tmp = os.path.join(tempfile.gettempdir(), f"gemmba_voice_{uuid4().hex[:8]}.wav")
+    try:
+        with open(tmp, "wb") as fp:
+            fp.write(audio)
+        text = _transcribe(tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+    if not text:
+        return jsonify({"ok": False, "error": "聞き取れませんでした"})
+
+    # 意図分析（E-2）。Ollama が落ちていても analyze() は既定値の入った dict を
+    # 返すので、ここに失敗の分岐は要らない。どちらを通ったかは source で分かる
+    parsed = intent.analyze(text)
+
+    conn = db.get_db()
+    worker = conn.execute("SELECT id FROM workers WHERE nfc_tag_id = ?", (tag_id,)).fetchone()
+    cur = conn.execute(
+        """INSERT INTO tasks (title, description, difficulty, priority,
+                              required_permissions, quantity, deadline)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (parsed["title"], parsed["description"], parsed["difficulty"], parsed["priority"],
+         perms.dump(parsed["required_permissions"]), parsed["quantity"], parsed["deadline"]),
+    )
+    conn.commit()
+    task_id = cur.lastrowid
+    conn.close()
+    print(f"[voice] タスク#{task_id} を登録しました（{tag_id} / "
+          f"worker={worker['id'] if worker else '?'} / {parsed['source']}）"
+          f"「{parsed['title']}」 優先度={parsed['priority']} 難易度={parsed['difficulty']} "
+          f"数量={parsed['quantity']} 期限={parsed['deadline'] or '-'} "
+          f"権限={','.join(parsed['required_permissions']) or '-'} 全文「{text}」")
+    return jsonify({"ok": True, "task_id": task_id, "text": parsed["title"],
+                    "full_text": text, "priority": parsed["priority"],
+                    "difficulty": parsed["difficulty"], "quantity": parsed["quantity"],
+                    "deadline": parsed["deadline"],
+                    "required_permissions": parsed["required_permissions"],
+                    "source": parsed["source"]})
+
+
 @app.route("/api/work_logs/<int:log_id>/feedback", methods=["POST"])
 def api_work_log_feedback(log_id):
     """
@@ -738,7 +852,7 @@ HTTP_TIMEOUT = 5
 
 def _find_equipment_by_device(conn, device_id):
     """
-    デバイスID(ラズパイの DEVICE_ID) から機材を引く。
+    モジュールID(ラズパイの DEVICE_ID) から機材を引く。
     モジュールの同一性はこの device_id で決まり、IPには依存しない。
     hostname への紐付けが本筋だが、module_id をそのままデバイス名に
     している構成でも動くよう両方を見る（hostname 一致を優先）。
@@ -752,7 +866,7 @@ def _find_equipment_by_device(conn, device_id):
 
 
 def _device_id_of(eq_row):
-    """機材レコードから MQTT の宛先となるデバイスIDを取り出す（_find_equipment_by_device の逆引き）"""
+    """機材レコードから MQTT の宛先となるモジュールIDを取り出す（_find_equipment_by_device の逆引き）"""
     return eq_row["hostname"] or eq_row["module_id"]
 
 
@@ -762,7 +876,7 @@ def _ensure_module_id(conn, row):
 
     タッチ処理の宛先解決は module_id を返す作りなので、ここが NULL のままだと
     「死活は映るのにタッチだけ黙って捨てられる」状態になる。機材登録フォームは
-    モジュールID欄を空にできるので、この状態は普通に作られてしまう。
+    機材コード欄を空にできるので、この状態は普通に作られてしまう。
     """
     if row["module_id"]:
         return row["module_id"]
@@ -773,7 +887,7 @@ def _ensure_module_id(conn, row):
         candidate = f"{base}-{n}"
     conn.execute("UPDATE equipment SET module_id = ? WHERE id = ?", (candidate, row["id"]))
     conn.commit()
-    print(f"[equipment] 「{row['name']}」にモジュールIDを採番しました: {candidate}")
+    print(f"[equipment] 「{row['name']}」に機材コードを採番しました: {candidate}")
     return candidate
 
 
@@ -840,13 +954,30 @@ def request_choice(device_id, text, options, timeout=CMD_TIMEOUT_SEC, **fields):
                            options=list(options), **fields)
 
 
-def _request_answer(device_id, cmd, text, timeout, **fields):
-    """confirm / choice の共通部分。答えが返るまで待つ"""
+RECORD_WAIT_SEC = 30      # 決定ボタンが押されるのを待つ秒数
+RECORD_MAX_SEC = 30       # 1回の録音の上限
+RECORD_TOTAL_SEC = 150    # 録音 + 送信 + 文字起こし を待つ上限
+
+
+def request_record(device_id, url, **fields):
+    """
+    モジュールに「決定ボタンを押している間だけ録音して送れ」と指示する（E-2）。
+    文字起こしとタスク登録は、送り先の /api/voice が同期でやる。
+    戻り値: モジュールからの応答そのもの（text / task_id を含む）/ None
+    """
+    return _request_answer(device_id, "record", None, RECORD_TOTAL_SEC,
+                           want_payload=True, url=url,
+                           max_sec=RECORD_MAX_SEC, wait_sec=RECORD_WAIT_SEC,
+                           upload_timeout=RECORD_TOTAL_SEC - 30, **fields)
+
+
+def _request_answer(device_id, cmd, text, timeout, want_payload=False, **fields):
+    """confirm / choice / record の共通部分。答えが返るまで待つ"""
     request_id = uuid4().hex[:8]
     # 待っている内容も持たせておく。モジュールに物理ボタンが付くまでは、
     # 管理画面がこれを読んで代わりに答えられるようにするため（/api/pending）。
     slot = {
-        "event": threading.Event(), "answer": None,
+        "event": threading.Event(), "answer": None, "payload": None,
         "device_id": device_id, "text": text,
         "lines": fields.get("lines") or [],
         # None なら Yes/No。管理画面が代替ポップアップを出し分けるのに使う
@@ -865,7 +996,7 @@ def _request_answer(device_id, cmd, text, timeout, **fields):
         if not slot["event"].wait(timeout + 2):
             print(f"[cmd] {device_id} から応答がありません (request_id={request_id})")
             return None
-        return slot["answer"]
+        return slot["payload"] if want_payload else slot["answer"]
     finally:
         with _replies_lock:
             _pending_replies.pop(request_id, None)
@@ -881,6 +1012,7 @@ def _handle_reply(device_id, payload):
         print(f"[{device_id}] 待ち受けの無い応答を無視しました: {payload}")
         return
     slot["answer"] = payload.get("answer")
+    slot["payload"] = payload    # record のように答え以外の情報も返ってくる場合に使う
     slot["event"].set()
 
 
@@ -1005,8 +1137,8 @@ def _mqtt_on_message(client, userdata, msg):
         return
     module_id = _resolve_module_id(device_id)  # pi01 → MOD-A-02
     if not module_id:
-        print(f"[{device_id}] このデバイスIDに対応する機材がありません。"
-              f"機材管理画面で「デバイスID」に '{device_id}' を設定してください。")
+        print(f"[{device_id}] このモジュールIDに対応する機材がありません。"
+              f"機材管理画面で「モジュールID」に '{device_id}' を設定してください。")
         _notify(device_id, ["未登録のモジュールです", "機材管理画面で紐付けてください"], "error")
         return
     _dispatch_touch(device_id, module_id, tag_id)
@@ -1100,16 +1232,77 @@ def _handle_touch(device_id, module_id, tag_id):
                          EQ_STATUS_LABELS.get(equipment["status"], equipment["status"])], "error")
         return
 
-    if equipment["status"] == "working":
-        if equipment["current_worker_id"] == worker["id"]:
-            _end_session(device_id, module_id, worker, equipment)
-        else:
-            print(f"[{module_id}] locked by another worker; rejecting {worker['name']}")
-            _notify_briefly(device_id, module_id,
-                            ["他の人が使用中です", f"{worker['name']} さんは使用できません"], "working")
+    # 排他制御。他人が使っている機材には、メニューを出す前に断る
+    if equipment["status"] == "working" and equipment["current_worker_id"] != worker["id"]:
+        print(f"[{module_id}] locked by another worker; rejecting {worker['name']}")
+        _notify_briefly(device_id, module_id,
+                        ["他の人が使用中です", f"{worker['name']} さんは使用できません"], "working")
         return
 
-    _start_session(device_id, module_id, tag_id, worker, equipment, tasks)
+    _show_menu(device_id, module_id, tag_id, worker, equipment, tasks)
+
+
+# タッチ後に必ず出るメニュー。**タッチだけでは何も起きない。**
+# 以前は「作業中の本人がタッチしたら即完了」だったが、意図しない完了が起きるうえ、
+# タスク登録の入口が無かった。操作は必ずここを通す。
+MENU_OPTIONS = ["タスク実行", "タスク登録", "作業終了"]
+MENU_TIMEOUT = 25
+
+
+def _notify_pause(device_id, lines, led, sec=2.5):
+    """短いメッセージを出してから次へ進む。タッチ処理スレッドなので待ってよい"""
+    _notify(device_id, lines, led)
+    time.sleep(sec)
+
+
+def _show_menu(device_id, module_id, tag_id, worker, equipment, tasks):
+    """
+    タッチ後のメニュー。タスク実行 / タスク登録 / 作業終了 に分岐する。
+
+    項目の並びは常に同じにして、指が位置を覚えられるようにする。そのうえで
+    作業中なら「作業終了」を選んだ状態で出すので、終わるときは決定を1回押すだけ。
+    選べない項目を選んだときは理由を出してメニューへ戻す。
+    """
+    while True:
+        # 状態はメニューを出すたびに取り直す。着手した直後に戻ってくる場合がある
+        working_here = (equipment.get("status") == "working"
+                        and equipment.get("current_worker_id") == worker["id"])
+        index = request_choice(
+            device_id, "どうしますか？", MENU_OPTIONS,
+            timeout=MENU_TIMEOUT,
+            lines=[f"{worker['name']} さん", equipment.get("name") or module_id],
+            default=2 if working_here else 0,
+            equipment_name=equipment.get("name"), worker_name=worker["name"],
+        )
+        if index is None:
+            print(f"[{module_id}] {worker['name']}: メニューで無応答のため中止")
+            _notify_briefly(device_id, module_id,
+                            ["応答がありませんでした", "もう一度タッチしてください"],
+                            "working" if working_here else "idle")
+            return
+
+        choice = MENU_OPTIONS[index]
+        print(f"[{module_id}] {worker['name']}: メニュー → {choice}")
+
+        if choice == "タスク実行":
+            if working_here:
+                _notify_pause(device_id, ["すでに作業中です",
+                                          "終わるときは「作業終了」"], "working")
+                continue
+            _start_session(device_id, module_id, tag_id, worker, equipment, tasks)
+            return
+
+        if choice == "タスク登録":
+            _register_by_voice(device_id, module_id, tag_id, worker, equipment, working_here)
+            return
+
+        if choice == "作業終了":
+            if not working_here:
+                _notify_pause(device_id, ["作業中のタスクがありません",
+                                          "「タスク実行」から始めてください"], "idle")
+                continue
+            _end_session(device_id, module_id, worker, equipment)
+            return
 
 
 MAX_CHOICES = 3        # 1回のタッチで提示する候補の上限。多すぎると現場で待たされる
@@ -1204,6 +1397,63 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
     else:
         print(f"[{module_id}] {worker['name']}: 使用しないで終了")
         _notify_briefly(device_id, module_id, ["キャンセルしました"], "idle", sec=3)
+
+
+WEB_PORT = 5000   # app.run() のポート。モジュールが音声を送ってくる先にも使う
+
+
+def _voice_upload_url(module_ip, tag_id, module_id):
+    """
+    モジュールから見たこのPCのURLを組み立てる。SELF_URL は 127.0.0.1 なので
+    そのままでは向こうから届かない。相手のIPへ到達する側の自IPを使う。
+    """
+    if not module_ip:
+        return None
+    host = _outbound_ip_toward(module_ip)
+    if not host:
+        return None
+    return f"http://{host}:{WEB_PORT}/api/voice?tag_id={tag_id}&module_id={module_id}"
+
+
+def _register_by_voice(device_id, module_id, tag_id, worker, equipment, working_here):
+    """
+    音声でタスクを登録する（E-2）。決定ボタンを押している間だけ録音させ、
+    送られてきた音声を /api/voice が文字起こししてタスクにする。
+
+    **機材はロックしない。** 登録は機材を使う操作ではないので、作業中でも
+    空きでも同じように使えるようにしてある。
+    """
+    back_led = "working" if working_here else "idle"
+    url = _voice_upload_url(equipment.get("ip"), tag_id, module_id)
+    if not url:
+        print(f"[{module_id}] モジュールのIPが分からないので音声を受け取れません")
+        _notify_briefly(device_id, module_id,
+                        ["音声を受け取れません", "モジュールのIPが不明です"], "error")
+        return
+
+    # 「フリー利用中」ではなく専用の状態にする。機材を使っているわけではないので、
+    # 周りから見て使用中と取り違えられないようにしておく
+    _notify(device_id, [f"{worker['name']} さん", "決定ボタンを押している間",
+                        "話してください"], "recording")
+    reply = request_record(device_id, url,
+                           equipment_name=equipment.get("name"), worker_name=worker["name"])
+
+    if reply is None:
+        print(f"[{module_id}] {worker['name']}: 録音の応答がありません")
+        _notify_briefly(device_id, module_id,
+                        ["登録できませんでした", "もう一度お試しください"], "error")
+        return
+    if not reply.get("answer"):
+        reason = {"no audio": "録音できませんでした",
+                  "upload failed": "PCへ送れませんでした"}.get(reply.get("error"), "登録できませんでした")
+        print(f"[{module_id}] {worker['name']}: 音声登録に失敗 ({reply.get('error')})")
+        _notify_briefly(device_id, module_id, [reason, "もう一度お試しください"], "error")
+        return
+
+    text = reply.get("text") or ""
+    print(f"[{module_id}] {worker['name']}: 音声でタスク登録 #{reply.get('task_id')} 「{text}」")
+    _notify_briefly(device_id, module_id,
+                    ["タスクを登録しました", text], back_led, sec=8)
 
 
 def _pick_guidance(conn, equipment, tasks, has_candidates):
@@ -1418,6 +1668,9 @@ DEBUG = True
 
 if __name__ == "__main__":
     db.init_db()
+    # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ
+    _intent_ok, _intent_why = intent.available()
+    print(f"[voice] 意図分析: {'有効' if _intent_ok else '無効'} - {_intent_why}")
     # debug=True のリローダーは子プロセスで再実行されるため、実際に配信する
     # プロセス(WERKZEUG_RUN_MAIN)でのみ MQTT を起動して二重接続を防ぐ。
     if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
