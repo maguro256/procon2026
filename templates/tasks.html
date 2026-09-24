@@ -80,7 +80,8 @@
   {% if perms.parse(t.required_permissions) %}
   <div class="task-perms">必要権限 {{ perm_badges(t.required_permissions) }}</div>
   {% endif %}
-  <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions">
+  {# data-autosave: 変えた瞬間に保存する（base.html）。「更新」ボタンも残してある #}
+  <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions" data-autosave>
     <div class="field"><label>担当者</label>
       <select class="input" name="assigned_worker_id" title="担当者">
         <option value="">担当者なし</option>

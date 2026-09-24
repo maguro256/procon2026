@@ -564,3 +564,8 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .test-mode-state.is-on { color: var(--yellow); }
 .test-mode-btn { background: transparent; color: var(--paper); border-color: color-mix(in srgb, var(--paper) 45%, transparent); }
 .test-mode-btn:hover { background: color-mix(in srgb, var(--paper) 12%, transparent); }
+/* 自動保存の状態（data-autosave のフォームの末尾に1行で出る） */
+.autosave-status { font-size: 12px; color: var(--ink-soft); }
+.autosave-status[data-kind="saved"] { color: var(--good); font-weight: 700; }
+.autosave-status[data-kind="error"], .autosave-status[data-kind="offline"] { color: var(--bad); font-weight: 700; }
+.autosave-status[data-kind="wait"] { color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); }

@@ -284,6 +284,144 @@
     if (isTagForm) close();
   }
 
+  // ---- 自動保存（data-autosave を付けたフォーム） ----
+  // 選択・チェック・日付は変えた瞬間に、文字・数値は打ち終わって少し待ってから
+  // （または欄を離れたときに）保存する。保存ボタンはそのまま残してある。
+  // 保存後は <main> を差し替えて表示を最新にするが、入力中の欄のフォーカスと
+  // カーソル、開いている「編集」、スクロール位置は元に戻す。
+  const AUTOSAVE_DELAY = 800;
+  const autosaveTimers = new WeakMap();
+  let inputSeq = 0;   // 入力のたびに進む。保存中に打たれたら画面を差し替えない
+
+  const actionOf = form => form && form.getAttribute("action");
+  const findForm = action => document.querySelector(`main.main form[action="${CSS.escape(action)}"]`);
+  const isTyping = el => el.matches('input[type="text"], input[type="number"], input:not([type]), textarea');
+
+  function detailsKey(d) {
+    const form = d.closest("form") || d.querySelector("form");
+    const summary = d.querySelector("summary");
+    return actionOf(form) + "|" + (summary ? summary.textContent.trim() : "");
+  }
+
+  function captureState() {
+    const el = document.activeElement;
+    const state = {
+      scrollY: window.scrollY,
+      open: [...document.querySelectorAll("main.main details[open]")].map(detailsKey),
+      focus: null,
+    };
+    if (el && el.form && el.name && el.closest("main.main")) {
+      state.focus = { action: actionOf(el.form), name: el.name, value: el.type === "checkbox" ? el.value : null };
+      try { state.focus.sel = [el.selectionStart, el.selectionEnd]; } catch (e) { /* number などは選択範囲を持たない */ }
+    }
+    return state;
+  }
+
+  function restoreState(state) {
+    document.querySelectorAll("main.main details").forEach(d => {
+      if (state.open.includes(detailsKey(d))) d.open = true;
+    });
+    window.scrollTo(0, state.scrollY);
+    const f = state.focus;
+    if (!f) return;
+    const form = findForm(f.action);
+    if (!form) return;
+    const el = [...form.elements].find(x => x.name === f.name && (f.value === null || x.value === f.value));
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    if (f.sel && f.sel[0] != null) { try { el.setSelectionRange(f.sel[0], f.sel[1]); } catch (e) { /* 同上 */ } }
+    // 優先度を変えると並びが変わり、行が画面外へ動くことがある。そのときだけ追いかける
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) el.scrollIntoView({ block: "center" });
+  }
+
+  function setStatus(form, kind) {
+    if (!form) return;
+    let s = form.querySelector(".autosave-status");
+    if (!s) {
+      s = document.createElement("span");
+      s.className = "autosave-status span-all";
+      s.setAttribute("aria-live", "polite");
+      form.appendChild(s);
+    }
+    s.dataset.kind = kind;
+    s.textContent = {
+      pending: "入力中…（手を止めると保存します）",
+      saving: "保存しています…",
+      saved: "✓ 保存しました",
+      error: "保存できませんでした（上の赤い表示を確認してください）",
+      offline: "保存できませんでした（通信エラー）。もう一度変更するか、保存ボタンを押してください",
+      wait: "数値が空のため、まだ保存していません",
+    }[kind];
+  }
+
+  function autosaveReady(form) {
+    // 数値欄が空 = 打ち直している途中。このまま送ると 0 や既定値で保存されてしまう
+    for (const el of form.querySelectorAll('input[type="number"]')) {
+      if (el.value === "") return false;
+    }
+    return form.checkValidity();
+  }
+
+  async function autosave(form) {
+    clearTimeout(autosaveTimers.get(form));
+    if (!autosaveReady(form)) { setStatus(form, "wait"); return; }
+    const action = actionOf(form);
+    const seq = inputSeq;
+    setStatus(form, "saving");
+    let html;
+    try {
+      const res = await fetch(action, { method: "POST", body: new FormData(form), credentials: "same-origin" });
+      html = await res.text();
+    } catch (e) {
+      setStatus(findForm(action), "offline");
+      return;
+    }
+    // 保存している間に続けて入力された。いま差し替えると打った文字が消えるので、
+    // 表示の更新は次の保存に任せる（保存そのものは済んでいる）
+    if (seq !== inputSeq) return;
+
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const newMain = doc.querySelector("main.main");
+    const curMain = document.querySelector("main.main");
+    if (!newMain || !curMain) { setStatus(findForm(action), "offline"); return; }
+    // 「更新しました」の帯は出さない（入力のたびに積み上がる）。エラーだけ残す
+    const flashes = newMain.querySelector(".flashes");
+    let failed = false;
+    if (flashes) {
+      flashes.querySelectorAll(".flash-ok").forEach(x => x.remove());
+      failed = !!flashes.querySelector(".flash-error");
+      if (!failed) flashes.remove();
+    }
+    const state = captureState();
+    curMain.replaceWith(document.importNode(newMain, true));
+    restoreState(state);
+    setStatus(findForm(action), failed ? "error" : "saved");
+  }
+
+  function autosaveFormOf(el) {
+    const form = el && el.form;
+    return form && form.hasAttribute("data-autosave") ? form : null;
+  }
+
+  document.addEventListener("input", function (e) {
+    const form = autosaveFormOf(e.target);
+    if (!form) return;
+    inputSeq++;
+    if (!isTyping(e.target)) return;   // 選択・チェック・日付は change で保存する
+    setStatus(form, "pending");
+    clearTimeout(autosaveTimers.get(form));
+    autosaveTimers.set(form, setTimeout(() => autosave(form), AUTOSAVE_DELAY));
+  });
+  document.addEventListener("change", function (e) {
+    const form = autosaveFormOf(e.target);
+    if (form) autosave(form);
+  });
+  // Enter は従来どおり保存ボタンでの送信になる（下の submit）。待ち中の自動保存は取り消す
+  document.addEventListener("submit", function (e) {
+    if (e.target.hasAttribute && e.target.hasAttribute("data-autosave")) clearTimeout(autosaveTimers.get(e.target));
+  }, true);
+
   document.addEventListener("submit", function (e) {
     if (e.defaultPrevented) return; // 削除確認などでキャンセルされた場合はここで止まる
     const form = e.target;
