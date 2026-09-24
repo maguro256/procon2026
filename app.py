@@ -40,6 +40,18 @@ from voice import intent
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
 
+# Flask のデバッグモード（自動リロード＋ブラウザ上のデバッガ）。**既定は OFF。**
+# host=0.0.0.0 で配信しているので、ON のままだと LAN 内の誰でもデバッガから
+# このPCでコードを実行できてしまう。開発時だけ GEMMBA_DEBUG=1 を付けて起動する。
+# 起動後には切り替えられない（管理画面のボタンで切り替わるのは下のテストモード）。
+DEBUG = os.environ.get("GEMMBA_DEBUG") == "1"
+
+# テストモード: /test の仮想モジュールを使えるようにする。管理画面のサイドバーの
+# ボタンで切り替える。本番では OFF にしておく（実機と同じモジュールIDで仮想
+# モジュールを起動すると、実機への指示を横取りできてしまうため）。
+# 状態はメモリにだけ持つので、app.py を再起動すると OFF に戻る。
+_test_mode = {"on": DEBUG or os.environ.get("GEMMBA_TEST_PAGE") == "1"}
+
 # 未登録NFCタグの一時保持: {tag_id: module_id}
 _pending_tags: dict = {}
 # どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
@@ -99,7 +111,8 @@ def _safe_int(value, default):
 def inject_labels():
     # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
     return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS, F=FELT_LABELS,
-                PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms)
+                PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms,
+                test_mode=_test_mode["on"])
 
 
 # ---------------------------------------------------------------- 画面
@@ -937,13 +950,14 @@ def api_voice():
 
     if not text:
         return jsonify({"ok": False, "error": "聞き取れませんでした"})
-    return jsonify(_register_task_from_text(tag_id, text))
+    return jsonify(_register_task_from_text(tag_id, text, device_id))
 
 
-def _register_task_from_text(tag_id, text):
+def _register_task_from_text(tag_id, text, device_id=None):
     """
     文字起こし済みのテキストからタスクを立てる。/api/voice の後段で、
     仮想モジュール（/test）は録音の代わりにテキストを直接ここへ渡す。
+    device_id は処理中の表示を出す先（無ければ出さない）。
     """
     # 意図分析（E-2）。Ollama が落ちていても analyze() は既定値の入った dict を
     # 返すので、ここに失敗の分岐は要らない。どちらを通ったかは source で分かる
@@ -2058,6 +2072,42 @@ def _virtual_state(vm, active_requests, equipment_by_device):
     }
 
 
+@app.before_request
+def _guard_test_mode():
+    """テストモードが OFF の間は、/test も仮想モジュールの API も存在しない扱いにする"""
+    path = request.path
+    if (path == "/test" or path.startswith("/api/test/")) and not _test_mode["on"]:
+        return (jsonify({"error": "テストモードが OFF です"}), 404) if path.startswith("/api/") \
+            else ("Not Found", 404)
+    return None
+
+
+@app.route("/test-mode", methods=["POST"])
+def toggle_test_mode():
+    """サイドバーのボタン。テストモードを切り替える。OFF にしたら仮想モジュールは全部止める"""
+    turn_on = request.form.get("on") == "1"
+    _test_mode["on"] = turn_on
+    stopped = []
+    if not turn_on:
+        with _virtual_lock:
+            stopped = list(_virtual_modules)
+            _virtual_modules.clear()
+        for device_id in stopped:
+            # 実機なら LWT で届く offline。機材の表示をオフラインに戻す
+            _handle_presence(device_id, {"device_id": device_id, "online": False})
+    print(f"[app] テストモードを {'ON' if turn_on else 'OFF'} にしました"
+          + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""))
+    flash("テストモードを ON にしました。サイドバーの「テスト」から仮想モジュールを使えます" if turn_on
+          else "テストモードを OFF にしました" + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""),
+          "ok")
+    if turn_on:
+        return redirect(url_for("test_page"))
+    # /test にいたなら、消えたページには戻さない
+    if request.form.get("next", "").startswith("/test"):
+        return redirect(url_for("dashboard"))
+    return _back_to("dashboard")
+
+
 @app.route("/test")
 def test_page():
     conn = db.get_db()
@@ -2231,12 +2281,12 @@ def api_test_record(device_id):
         try:
             if wav is not None:
                 res = requests.post(url, data=wav, headers={"Content-Type": "audio/wav"},
-                                    timeout=RECORD_TOTAL_SEC - 30)
+                                    timeout=RECORD_UPLOAD_SEC)
                 body = res.json() if res.ok else None
             else:
                 from urllib.parse import parse_qs, urlparse
                 tag_id = (parse_qs(urlparse(url or "").query).get("tag_id") or [None])[0]
-                body = _register_task_from_text(tag_id, text)
+                body = _register_task_from_text(tag_id, text, device_id)
         except Exception as e:
             print(f"[{device_id}] 仮想モジュールの音声登録に失敗: {e}")
         with _virtual_lock:
@@ -2254,10 +2304,10 @@ def api_test_record(device_id):
     return jsonify({"ok": True})
 
 
-DEBUG = True
-
 if __name__ == "__main__":
     db.init_db()
+    print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}"
+          f" / テストモード: {'ON' if _test_mode['on'] else 'OFF'}")
     # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ
     _intent_ok, _intent_why = intent.available()
     print(f"[voice] 意図分析: {'有効' if _intent_ok else '無効'} - {_intent_why}")
