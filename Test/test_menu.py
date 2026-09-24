@@ -57,7 +57,7 @@ def run_menu(answers, equipment):
 
 app.request_choice = _fake_choice
 app._notify = lambda *a, **k: None
-app._notify_briefly = lambda *a, **k: None
+app._notify_briefly = lambda *a, **k: calls.append(("briefly", a[2][0]))
 app._notify_pause = lambda *a, **k: calls.append(("pause", a[1][0]))
 app._start_session = lambda *a, **k: calls.append(("start", None))
 app._end_session = lambda *a, **k: calls.append(("end", None))
@@ -93,14 +93,17 @@ check("作業中にタスク実行 → 戻して終了を選び直せる",
       calls, [("pause", "すでに作業中です"), ("end", None)])
 check("  メニューを出し直している", len(menu_seen), 2)
 
+# 終われる物が無いときはメニューへ戻さず、その旨を出してカード受付まで戻す
 run_menu([2, 0], IDLE_EQ)
-check("空きで作業終了 → 戻して実行を選び直せる",
-      calls, [("pause", "作業中のタスクがありません"), ("start", None)])
+check("空きで作業終了 → 理由を出して待機へ",
+      calls, [("briefly", "作業中のタスクがありません")])
+check("  メニューは出し直さない", len(menu_seen), 1)
 
 # ---------------------------------------------------------------- 無応答
 
 run_menu([], IDLE_EQ)
-check("無応答なら何もしない", calls, [])
+check("無応答なら案内だけ出して何もしない",
+      calls, [("briefly", "応答がありませんでした")])
 
 # ---------------------------------------------------------------- タッチしただけでは終了しない
 

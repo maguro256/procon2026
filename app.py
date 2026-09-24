@@ -1071,6 +1071,9 @@ def _request_answer(device_id, cmd, text, timeout, want_payload=False, **fields)
         if not send_cmd(device_id, cmd, request_id=request_id, text=text,
                         timeout=timeout, **fields):
             return None
+        # 問い合わせも画面を書き換える。世代を進めておかないと、直前の
+        # _notify_briefly が残した「戻し」が、いま出ている問い合わせを消してしまう
+        _bump_screen_gen(device_id)
         # モジュール側のタイムアウトより少しだけ長く待つ。先に諦めると、
         # 後から届いた答えの行き場が無くなる。
         if not slot["event"].wait(timeout + 2):
@@ -1100,14 +1103,19 @@ _screen_gen: dict = {}  # device_id -> 表示の世代番号。戻し処理の�
 _screen_lock = threading.Lock()
 
 
+def _bump_screen_gen(device_id):
+    """画面を書き換えたことを記録して、新しい世代番号を返す"""
+    with _screen_lock:
+        _screen_gen[device_id] = gen = _screen_gen.get(device_id, 0) + 1
+    return gen
+
+
 def _notify(device_id, lines, led=None):
     """モジュールの画面とLEDをまとめて更新する。部品が付くまでは向こうで print される"""
     send_cmd(device_id, "display", lines=lines)
     if led:
         send_cmd(device_id, "led", state=led)
-    with _screen_lock:
-        _screen_gen[device_id] = gen = _screen_gen.get(device_id, 0) + 1
-    return gen
+    return _bump_screen_gen(device_id)
 
 
 def _notify_briefly(device_id, module_id, lines, led, sec=6):
@@ -1165,24 +1173,51 @@ def _sync_module_state(device_id, eq_id):
 _touch_queues: dict = {}
 _touch_lock = threading.Lock()
 
+# 操作中のモジュール: device_id -> 操作を始めた時刻(monotonic)。
+#
+# 1回のタッチで始まった操作が終わる（何かを選ぶ／時間切れ）までは、同じモジュール
+# への後続のタッチを捨てる。順番待ちに積むと、終わった直後にメニューがもう一度
+# 出るのが延々と続き、何を操作しているのか分からなくなるため。
+#
+# 操作中かどうかだけで決めていて、カードが載っているかは見ていない。モジュールは
+# カードが離れても何も送らない（raspi.py の touch_loop は離脱時に次のタッチへ
+# 備えるだけ）ので、読ませたカードをすぐ外しても操作は時間切れまで続く。
+#
+# 札を下ろすのは操作を終えた _touch_worker だけ。ワーカーは機材に1本なので、
+# 「操作中は積まずに捨てる」と「積んだものは必ず処理する」はここで一致する。
+_touch_busy: dict = {}
+_touch_busy_lock = threading.Lock()
+
 
 def _dispatch_touch(device_id, module_id, tag_id):
+    now = time.monotonic()
+    with _touch_busy_lock:
+        if device_id in _touch_busy:
+            print(f"[{module_id}] 操作中なのでタッチを無視しました (tag={tag_id})")
+            return
+        _touch_busy[device_id] = now
     with _touch_lock:
         q = _touch_queues.get(device_id)
         if q is None:
             q = queue.Queue()
             _touch_queues[device_id] = q
             threading.Thread(target=_touch_worker, args=(device_id, q), daemon=True).start()
-    q.put((module_id, tag_id))
+    q.put((module_id, tag_id, now))
 
 
 def _touch_worker(device_id, q):
     while True:
-        module_id, tag_id = q.get()
+        module_id, tag_id, token = q.get()
         try:
             _handle_touch(device_id, module_id, tag_id)
         except Exception as e:  # ワーカーを絶対に落とさない
             print(f"[{device_id}] タッチ処理で例外: {e}")
+        finally:
+            # 例外で抜けても必ず下ろす。ここを落とすとその機材が
+            # 二度とタッチを受け付けなくなる
+            with _touch_busy_lock:
+                if _touch_busy.get(device_id) == token:
+                    _touch_busy.pop(device_id, None)
 
 
 def _mqtt_on_connect(client, userdata, flags, reason_code, properties):
@@ -1344,7 +1379,8 @@ def _show_menu(device_id, module_id, tag_id, worker, equipment, tasks):
 
     項目の並びは常に同じにして、指が位置を覚えられるようにする。そのうえで
     作業中なら「作業終了」を選んだ状態で出すので、終わるときは決定を1回押すだけ。
-    選べない項目を選んだときは理由を出してメニューへ戻す。
+    選べない項目を選んだときは理由を出す。「タスク実行」ならメニューへ戻り、
+    「作業終了」なら終われる物が無いのでカード受付（待機画面）まで戻す。
     """
     while True:
         # 状態はメニューを出すたびに取り直す。着手した直後に戻ってくる場合がある
@@ -1381,9 +1417,14 @@ def _show_menu(device_id, module_id, tag_id, worker, equipment, tasks):
 
         if choice == "作業終了":
             if not working_here:
-                _notify_pause(device_id, ["作業中のタスクがありません",
-                                          "「タスク実行」から始めてください"], "idle")
-                continue
+                # メニューへは戻さず、カード受付（待機画面）まで戻す。終わる物が
+                # 無いのにここへ来たのは大抵ただの勘違いなので、一度仕切り直した
+                # 方が早い。_notify_briefly が数秒後に待機画面へ戻す
+                print(f"[{module_id}] {worker['name']}: 作業中のタスクが無いので作業終了はできません")
+                _notify_briefly(device_id, module_id,
+                                ["作業中のタスクがありません",
+                                 "「タスク実行」から始めてください"], "idle", sec=4)
+                return
             _end_session(device_id, module_id, worker, equipment)
             return
 
