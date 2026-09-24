@@ -239,6 +239,8 @@ select.input {
 .table tbody tr { transition: background-color .12s var(--ease); }
 .table tbody tr:hover { background: var(--paper); }
 .table .num { text-align: right; }
+/* 行末の操作ボタン。form は block なので、囲わないと縦積みになる */
+.table .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 /* ---------------- アプリシェル ---------------- */
 .app { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; background: var(--paper); color: var(--ink); }

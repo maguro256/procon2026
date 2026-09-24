@@ -80,7 +80,17 @@
         <td><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></td>
         <td>{{ e.worker_name or '—' }}</td>
         <td>{{ e.task_title or '—' }}</td>
-        <td class="num">
+        <td class="num row-actions">
+          {# モジュールのプログラムだけを作り直す。機材の電源は切らない #}
+          <form method="post" action="{{ url_for('restart_module', eq_id=e.id) }}"
+                onsubmit="return confirm('「{{ e.name }}」のモジュールのプログラムを再起動しますか？\n操作中の作業者がいると中断されます。')">
+            <button type="submit" class="btn btn-icon btn-secondary"
+                    title="{{ 'モジュールを再起動' if e.online else 'オフラインのため再起動できません' }}"
+                    aria-label="{{ e.name }} のモジュールを再起動"
+                    {% if not e.online %}disabled{% endif %}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4h-4"/></svg>
+            </button>
+          </form>
           <form method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
                 onsubmit="return confirm('機材「{{ e.name }}」を削除しますか？')">
             <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ e.name }} を削除">

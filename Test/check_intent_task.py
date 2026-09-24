@@ -14,6 +14,7 @@ fallback に落ちる（source=fallback）。どちらを通ったかは必ず�
 import os
 import sys
 import json
+import time
 import tempfile
 from pathlib import Path
 
@@ -32,25 +33,41 @@ conn.close()
 import app
 from voice import intent
 
-TEXT = sys.argv[1] if len(sys.argv) > 1 else "明日までに旋盤で製品Aを削り出し"
+arg = sys.argv[1] if len(sys.argv) > 1 else "明日までに旋盤で製品Aを削り出し"
+# .wav を渡したときだけ本物の文字起こしを通す。それ以外は
+# 「文字起こしは済んでいる」として、意図分析から先だけを見る
+WAV = arg if arg.lower().endswith(".wav") else None
+TEXT = None if WAV else arg
 
 print("=" * 70)
-print("文字起こし結果（と仮定するテキスト）:")
-print(f"  「{TEXT}」")
+if WAV:
+    print(f"音声ファイル: {WAV}（文字起こしから通す）")
+else:
+    print("文字起こし結果（と仮定するテキスト）:")
+    print(f"  「{TEXT}」")
 
 ok, why = intent.available()
 print(f"\n意図分析(Gemma): {'有効' if ok else '無効'} - {why}")
 print(f"  model={intent.MODEL}  host={intent.HOST}")
 
-# Whisper は通さない。この1行が「音声認識は済んでいる」という仮定そのもの
-app._transcribe = lambda path: TEXT
+if WAV:
+    print(f"文字起こし: {os.environ.get('GEMMBA_STT_MODEL', 'large-v3')} / "
+          f"{app.VOICE_PYTHON}")
+    with open(WAV, "rb") as fp:
+        audio = fp.read()
+else:
+    # Whisper は通さない。この1行が「音声認識は済んでいる」という仮定そのもの
+    app._transcribe = lambda path: TEXT
+    audio = b"\0" * 2000
 
 print("\n" + "=" * 70)
-print("POST /api/voice （音声の代わりにダミーのbodyを送る）")
+print("POST /api/voice")
+started = time.time()
 client = app.app.test_client()
 res = client.post("/api/voice?tag_id=TAG-1&module_id=MOD-A-01",
-                  data=b"\0" * 2000, content_type="audio/wav")
+                  data=audio, content_type="audio/wav")
 body = res.get_json()
+print(f"  所要 {time.time() - started:.1f}秒")
 print(f"  HTTP {res.status_code}")
 print("  " + json.dumps(body, ensure_ascii=False, indent=2).replace("\n", "\n  "))
 

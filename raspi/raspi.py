@@ -219,6 +219,9 @@ def on_message(client, userdata, msg):
         threading.Thread(target=_handle_choice, args=(payload,), daemon=True).start()
     elif cmd == "record":
         threading.Thread(target=_handle_record, args=(payload,), daemon=True).start()
+    elif cmd == "restart":
+        # 応答を返してから作り直すので、このスレッドは塞げない
+        threading.Thread(target=_handle_restart, args=(payload,), daemon=True).start()
     elif cmd == "ping":
         publish_reply({"request_id": payload.get("request_id"), "answer": "pong"})
     else:
@@ -1180,6 +1183,17 @@ def record_while_held(max_sec=REC_MAX_SEC, wait_sec=30):
         return None
     ok = _buttons["ok"]
 
+    # **メニューの「決定」を押した指がまだ載っていることがある。**
+    # wait_for_press() は既に押されていれば即座に返るので、その押下をそのまま
+    # 録音の開始と解釈すると、指を離した瞬間に REC_MIN_SEC 未満で捨てられる。
+    # 作業者から見ると「話してください」が出た直後に勝手に終わる。
+    # いったん離されるのを待ってから、あらためて押し直しを受け付ける。
+    if ok.is_pressed:
+        print("[REC] 決定がまだ押されています。離すのを待ちます")
+        if not ok.wait_for_release(timeout=wait_sec):
+            print("[REC] 決定が離されませんでした")
+            return None
+
     if not ok.wait_for_press(timeout=wait_sec):
         print("[REC] 決定ボタンが押されませんでした")
         return None
@@ -1399,6 +1413,59 @@ def _handle_choice(payload):
     if index is None:
         print("[cmd] 応答なしで時間切れ")
     publish_reply({"request_id": payload.get("request_id"), "answer": index})
+
+
+def _release_hardware():
+    """
+    掴んでいるGPIO・SPIを手放す。**作り直す前に必ず通すこと。**
+    握ったままだと、新しいプロセスがボタンを開けず 'GPIO busy' で
+    キーボード入力に落ちる（画面もLEDも死んだまま復帰しない）。
+    """
+    for name, parts in (("BTN", _buttons), ("LED", _leds)):
+        for part in list(parts.values()):
+            try:
+                part.close()
+            except Exception as e:
+                print(f"[{name}] 解放に失敗: {e}")
+        parts.clear()
+    global _lcd
+    if _lcd is not None:
+        try:
+            _lcd.close()
+        except Exception as e:
+            print(f"[LCD] 解放に失敗: {e}")
+        _lcd = None
+
+
+def _handle_restart(payload):
+    """
+    管理画面からの再起動指示。**終了ではなく作り直す。**
+
+    nohup で起動している運用なので、プロセスを終わらせると誰も起こしてくれず、
+    現場へ行かないと復帰できない。os.execv で自分を置き換えれば、同じ起動引数と
+    環境変数のまま新しいプロセスになる。
+
+    切断は app.py 側が LWT で拾う（オフライン → オンラインと並ぶ）ので、
+    向こうは再起動として扱える。
+    """
+    publish_reply({"request_id": payload.get("request_id"), "answer": True})
+    print("[restart] 管理画面から再起動を指示されました")
+    render_display(["再起動しています", "しばらくお待ちください"])
+    set_led("offline")
+    time.sleep(1.0)   # 応答と画面を送り切ってから切る
+
+    try:
+        client.loop_stop()
+        client.disconnect()   # LWT任せより早く offline が出る
+    except Exception as e:
+        print(f"[restart] 切断に失敗（続行します）: {e}")
+    _release_hardware()
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except OSError as e:
+        # ここまで来て失敗すると、もう何も動いていない状態で残る
+        print(f"[restart] 作り直しに失敗しました: {e}")
+        os._exit(1)
 
 
 def connect_forever():

@@ -492,6 +492,45 @@ def delete_equipment(eq_id):
     return redirect(url_for("equipment"))
 
 
+@app.route("/equipment/<int:eq_id>/restart", methods=["POST"])
+def restart_module(eq_id):
+    """
+    モジュールのプログラムを再起動させる。
+
+    現場のラズパイに ssh で入らずに復帰させるための口。向こうは終了ではなく
+    os.execv で自分を作り直すので、起動引数（GEMMBA_INPUT=buttons など）は
+    そのまま引き継がれる。**機材の電源は切らない。** 落ちるのはプログラムだけ。
+    """
+    conn = db.get_db()
+    eq = conn.execute("SELECT * FROM equipment WHERE id = ?", (eq_id,)).fetchone()
+    conn.close()
+    if not eq:
+        flash("機材が見つかりません", "error")
+        return redirect(url_for("equipment"))
+
+    device_id = _device_id_of(eq)
+    if not device_id:
+        flash(f"「{eq['name']}」にモジュールが紐付いていません", "error")
+        return redirect(url_for("equipment"))
+    if not eq["online"]:
+        # retain されない cmd なので、繋がっていない相手に送っても消えるだけ
+        flash(f"「{eq['name']}」はオフラインです。指示が届きません", "error")
+        return redirect(url_for("equipment"))
+
+    # 操作中だと、作業者は理由が分からないまま画面が消える。止めはしないが伝える
+    with _touch_busy_lock:
+        busy = device_id in _touch_busy
+
+    if not send_cmd(device_id, "restart"):
+        flash("ブローカーに繋がっていないため指示を送れませんでした", "error")
+        return redirect(url_for("equipment"))
+
+    print(f"[{device_id}] 管理画面からモジュールの再起動を指示しました")
+    flash(f"「{eq['name']}」のモジュールを再起動しています"
+          + ("（操作中だったので、その操作は中断されます）" if busy else ""), "ok")
+    return redirect(url_for("equipment"))
+
+
 def _detach_work_logs(conn, column, value):
     """
     削除される機材・作業者・タスクを参照している実績の参照だけを外す。
@@ -796,31 +835,158 @@ VOICE_PYTHON = os.environ.get(
 # 0.7倍速なので 30秒の録音に 50秒前後かかる。ここを伸ばすと下の録音の予算
 # （RECORD_* ）がそのまま伸びて、現場の待ち時間になることに注意する。
 VOICE_TIMEOUT = 90
+# 常駐の起動を待つ上限。モデルが手元に無いと数GBのダウンロードから始まるので、
+# 1回の文字起こし（VOICE_TIMEOUT）とは別物として長く取る
+WARMUP_TIMEOUT = 1800
 # タスク名の長さは voice/intent.py が持っている（文字起こしの整形もあちらの仕事）
 
 
-def _transcribe(path):
-    """録音を文字にする。戻り値: テキスト / None（失敗）"""
+# 文字起こしは **常駐プロセス** に任せる（E-2）。
+#
+# 以前は呼び出しのたびに stt.py を起こしていたが、モデルの読み込みだけで
+# large-v3 / CPU なら30秒台かかり、それが毎回そのまま現場の待ち時間になっていた。
+# 常駐にすれば読み込みは起動時の1回だけで済む。
+#
+# やりとりは「パスを1行送る → 結果のJSONが1行返る」だけ。__main__ 以外
+# （テストなど）から import されたときは起動しないので、使う側は
+# 今までどおり _transcribe() を呼べばよい。
+_stt = {"proc": None, "out": None}   # out は stdout の行を積むキュー
+_stt_lock = threading.Lock()         # 文字起こしは1件ずつ。並行させても速くならない
+
+
+def _stt_spawn():
+    """常駐プロセスを起こす。戻り値: Popen / None（起こせなかった）"""
     import subprocess
 
     if not os.path.exists(VOICE_PYTHON):
         print(f"[voice] 文字起こし用のPythonがありません: {VOICE_PYTHON}")
         return None
     try:
-        res = subprocess.run([VOICE_PYTHON, os.path.join("voice", "stt.py"), "--json", path],
-                             capture_output=True, timeout=VOICE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        print("[voice] 文字起こしが時間内に終わりませんでした")
+        proc = subprocess.Popen(
+            [VOICE_PYTHON, os.path.join("voice", "stt.py"), "--serve"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            bufsize=1, universal_newlines=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"[voice] 文字起こしを起動できません: {e}")
         return None
-    if res.returncode != 0:
-        print(f"[voice] 文字起こしに失敗: {res.stderr.decode('utf-8', 'replace')[-400:]}")
+
+    q = queue.Queue()
+
+    def pump_out():
+        for line in proc.stdout:
+            q.put(line)
+        q.put(None)          # 相手が死んだ。待っている側を起こす
+
+    def pump_err():
+        # 読み捨てずに出す。溜めたままにするとパイプが詰まって相手が止まる
+        for line in proc.stderr:
+            line = line.rstrip()
+            if line:
+                print(f"[stt] {line}")
+
+    threading.Thread(target=pump_out, daemon=True).start()
+    threading.Thread(target=pump_err, daemon=True).start()
+    _stt["proc"], _stt["out"] = proc, q
+    return proc
+
+
+def _stt_kill():
+    """常駐を畳む。次の依頼で作り直される"""
+    proc = _stt["proc"]
+    _stt["proc"], _stt["out"] = None, None
+    if proc is None:
+        return
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _stt_reply(timeout):
+    """常駐からの1行を読む。戻り値: dict / None（時間切れ・異常終了・壊れた行）"""
+    q = _stt["out"]
+    if q is None:
         return None
     try:
-        # stt.py はリダイレクト先には UTF-8 で出す
-        return (json.loads(res.stdout.decode("utf-8")).get("text") or "").strip()
-    except (ValueError, UnicodeDecodeError) as e:
-        print(f"[voice] 応答を読めません: {e}")
+        line = q.get(timeout=timeout)
+    except queue.Empty:
         return None
+    if line is None:
+        print("[voice] 文字起こしが終了しました")
+        return None
+    try:
+        return json.loads(line)
+    except ValueError:
+        print(f"[voice] 応答を読めません: {line[:200]}")
+        return None
+
+
+def _stt_ensure():
+    """常駐が生きていることを保証する。居なければ起こしてモデルの読み込みを待つ"""
+    proc = _stt["proc"]
+    if proc is not None and proc.poll() is None:
+        return proc
+    proc = _stt_spawn()
+    if proc is None:
+        return None
+    # 最初の1行は準備完了の合図。**ここで読み捨てないと、次の依頼の答えとして
+    # 受け取ってしまう。** モデルが手元に無ければダウンロードから始まるので長め
+    ready = _stt_reply(WARMUP_TIMEOUT)
+    if not (ready or {}).get("ready"):
+        print(f"[voice] 文字起こしの準備に失敗しました: {ready}")
+        _stt_kill()
+        return None
+    print(f"[voice] 文字起こしを常駐させました "
+          f"{ready.get('model')} / {ready.get('device')} {ready.get('compute_type')}")
+    return proc
+
+
+def _transcribe(path):
+    """録音を文字にする。戻り値: テキスト / None（失敗）"""
+    with _stt_lock:
+        if _stt_ensure() is None:
+            return None
+        try:
+            _stt["proc"].stdin.write(path + "\n")
+            _stt["proc"].stdin.flush()
+        except (OSError, ValueError) as e:
+            print(f"[voice] 文字起こしへ送れません: {e}")
+            _stt_kill()
+            return None
+        res = _stt_reply(VOICE_TIMEOUT)
+        if res is None:
+            # どこまで進んだか分からない。次の依頼に前回の答えが混ざらないよう畳む
+            print("[voice] 文字起こしが時間内に終わりませんでした")
+            _stt_kill()
+            return None
+        if res.get("error"):
+            print(f"[voice] 文字起こしに失敗: {res['error']}")
+            return None
+        return (res.get("text") or "").strip()
+
+
+def start_stt_warmup():
+    """
+    起動時に文字起こしの常駐を起こしておく（E-2）。
+
+    _transcribe() も必要になれば自分で起こすので、これが無くても動く。ただし
+    その場合、**最初の録音だけ**がモデルの読み込み（手元に無ければ数GBの
+    ダウンロード）を丸ごと被り、VOICE_TIMEOUT を使い切って「聞き取れません
+    でした」になりかねない。先に済ませておけばそれが起きない。
+
+    起動を止めないよう別スレッドで走らせる。失敗しても録音の時点で作り直せる
+    ので、ここでは警告を出すだけにする。
+    """
+    def run():
+        started = time.time()
+        model = os.environ.get("GEMMBA_STT_MODEL", "既定")
+        print(f"[voice] 文字起こし({model})を準備しています…")
+        with _stt_lock:
+            ok = _stt_ensure() is not None
+        if ok:
+            print(f"[voice] 文字起こしの準備ができました ({time.time() - started:.1f}秒)")
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 # 音声を受け取ってから応答を返すまでの間、モジュールの画面は
@@ -1860,7 +2026,11 @@ def start_mqtt_bridge():
         print("       → Web/APIは動きますが、NFCタッチは受信されません。")
 
 
-DEBUG = True
+# 開発中はリローダーが効いた方が速いので既定は True のまま。
+# **本番想定で動かすときは GEMMBA_DEBUG=0 を付ける。** リローダーは
+# ファイルが書かれるたびにプロセスを作り直すので、MQTTのセッションが
+# 切れてモジュールとの接続が落ち着かない（.venv-voice の作成で実際に起きた）。
+DEBUG = os.environ.get("GEMMBA_DEBUG", "1") != "0"
 
 if __name__ == "__main__":
     db.init_db()
@@ -1872,4 +2042,5 @@ if __name__ == "__main__":
     if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_discovery_responder()
         start_mqtt_bridge()
+        start_stt_warmup()
     app.run(debug=DEBUG, host="0.0.0.0", port=5000, threaded=True)

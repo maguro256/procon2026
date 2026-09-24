@@ -303,9 +303,51 @@ def _report(r: dict) -> str:
     return f"{head}\n{info}\n\n  {body}\n"
 
 
+def _emit(obj) -> None:
+    """常駐モードの返事。**1依頼につき必ず1行**。改行を挟むと相手が読めなくなる"""
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _serve(args) -> int:
+    """
+    常駐モード。標準入力から音声ファイルのパスを1行ずつ受け取り、結果のJSONを
+    1行で返す。**モデルの読み込みは最初の1回だけ**なので、2回目以降の呼び出しから
+    30秒台の固定費が消える（CPUのlarge-v3で実測）。
+
+    話し相手は app.py の _transcribe()。どんな失敗でも必ず1行返すこと。
+    返さないと向こうが VOICE_TIMEOUT まで待ち続ける。
+    """
+    load_model(args.model, args.device, args.compute)
+    info = model_info()
+    print(f"[stt] 常駐を開始しました {info['model']} / {info['device']} "
+          f"{info['compute_type']}", file=sys.stderr)
+    # 準備ができたことを最初の1行で知らせる。向こうはこれを読み捨ててから依頼する
+    _emit(dict(info, ready=True))
+
+    for line in sys.stdin:
+        path = line.strip()
+        if not path:
+            continue
+        if path == "quit":
+            break
+        try:
+            if not Path(path).exists():
+                _emit({"error": f"ファイルがありません: {path}"})
+                continue
+            _emit(transcribe(path, model=args.model, device=args.device,
+                             compute_type=args.compute, language=args.language,
+                             prompt=args.prompt, vad=not args.no_vad,
+                             beam_size=args.beam_size, raw=args.raw))
+        except Exception as e:   # 1件の失敗で常駐を落とさない
+            _emit({"error": f"{type(e).__name__}: {e}"})
+    print("[stt] 常駐を終了します", file=sys.stderr)
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Whisper で音声を文字起こしする")
-    p.add_argument("files", nargs="+", help="WAV等の音声ファイル")
+    p.add_argument("files", nargs="*", help="WAV等の音声ファイル")
     p.add_argument("--model", default=None, help=f"既定 {MODEL_NAME}")
     p.add_argument("--device", default=None, choices=["auto", "cuda", "cpu"])
     p.add_argument("--compute", default=None, help="float16 / int8 など")
@@ -315,6 +357,11 @@ def main(argv=None) -> int:
     p.add_argument("--raw", action="store_true", help="ハイパス・ゲインを掛けない")
     p.add_argument("--beam-size", type=int, default=5)
     p.add_argument("--json", action="store_true", help="結果をJSONで出す")
+    p.add_argument("--warmup", action="store_true",
+                   help="モデルを用意する（無ければダウンロード）だけで終わる")
+    p.add_argument("--serve", action="store_true",
+                   help="常駐する。標準入力にパスを1行、結果のJSONが1行返る。"
+                        "モデルを読み直さないので app.py はこちらを使う")
     args = p.parse_args(argv)
 
     # リダイレクト先では UTF-8 で出す。Windows の Python は既定で cp932 になるので、
@@ -323,6 +370,23 @@ def main(argv=None) -> int:
     if not sys.stdout.isatty():
         sys.stdout.reconfigure(encoding="utf-8")
 
+    if args.serve:
+        # 常駐では入力も相手（app.py）が UTF-8 で書いてくる。日本語を含むパスが
+        # 来ても壊れないよう、こちらも合わせる
+        sys.stdin.reconfigure(encoding="utf-8")
+        return _serve(args)
+
+    if args.warmup:
+        # 読み込むだけ。モデルが手元に無ければ faster-whisper がここで落としてくる
+        t0 = time.time()
+        load_model(args.model, args.device, args.compute)
+        info = model_info()
+        print(f"[stt] 準備完了 {info['model']} / {info['device']} {info['compute_type']}"
+              f" ({time.time() - t0:.1f}秒)", file=sys.stderr)
+        return 0
+
+    if not args.files:
+        p.error("音声ファイルを指定してください（--warmup のときは不要）")
     missing = [f for f in args.files if not Path(f).exists()]
     if missing:
         print(f"ファイルがありません: {', '.join(missing)}", file=sys.stderr)
