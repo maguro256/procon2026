@@ -28,7 +28,10 @@
       <a href="{{ url_for('equipment') }}" class="navlink {{ 'active' if request.endpoint == 'equipment' }}">
         <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 3.3l2 2-2.4 2.4 2 2 2.4-2.4 2 2c.5 1.7.1 3.6-1.2 4.9-1.5 1.5-3.7 1.8-5.5 1l-6.4 6.4a1.8 1.8 0 0 1-2.5-2.5l6.4-6.4c-.8-1.8-.5-4 1-5.5 1.3-1.3 3.2-1.7 4.9-1.2z"/></svg>
         機械</a>
-    
+      <a href="{{ url_for('test_page') }}" class="navlink {{ 'active' if request.endpoint == 'test_page' }}">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><rect x="7" y="6" width="10" height="7" rx="1"/><circle cx="8.5" cy="17" r="1"/><circle cx="12" cy="17" r="1"/><circle cx="15.5" cy="17" r="1"/></svg>
+        テスト</a>
+    </nav>
   </aside>
 
   <main class="main">
@@ -209,8 +212,9 @@
       return;  // app.py の再起動中など。次の周期で拾い直す
     }
 
-    // 応答待ちを先に出す。現場が機材の前で待っているので、タグ登録より急ぐ
-    const confirms = data.confirms || [];
+    // 応答待ちを先に出す。現場が機材の前で待っているので、タグ登録より急ぐ。
+    // /test では仮想モジュールの画面そのもので答えるので、その分の代替ポップアップは出さない
+    const confirms = (data.confirms || []).filter(c => !({{ 'true' if request.endpoint == 'test_page' else 'false' }} && c.virtual));
     if (pendingId && !confirms.some(c => c.request_id === pendingId)) {
       pendingId = null;            // 時間切れか、機材側で答えられた
       cModal.hidden = true;

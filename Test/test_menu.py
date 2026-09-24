@@ -121,7 +121,7 @@ class _Resp:
         return self._body
 
 
-def _fake_get(url, timeout=None):
+def _fake_get(url, timeout=None, params=None):
     if "next_task" in url:
         return _Resp(200, {"worker": WORKER, "tasks": []})
     return _Resp(200, dict(BUSY_EQ))
@@ -136,7 +136,7 @@ check("作業中に本人がタッチしてもメニュー（自動終了しな�
 OTHER = {"id": 9, "name": "佐藤 花子"}
 
 
-def _fake_get_other(url, timeout=None):
+def _fake_get_other(url, timeout=None, params=None):
     if "next_task" in url:
         return _Resp(200, {"worker": OTHER, "tasks": []})
     return _Resp(200, dict(BUSY_EQ))
