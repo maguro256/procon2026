@@ -792,7 +792,10 @@ VOICE_PYTHON = os.environ.get(
     "GEMMBA_STT_PYTHON",
     os.path.join(".venv-voice", "Scripts" if os.name == "nt" else "bin",
                  "python.exe" if os.name == "nt" else "python"))
-VOICE_TIMEOUT = 120
+# 文字起こしに使ってよい上限。GPUなら数秒で終わるが、CPUに落ちると large-v3 は
+# 0.7倍速なので 30秒の録音に 50秒前後かかる。ここを伸ばすと下の録音の予算
+# （RECORD_* ）がそのまま伸びて、現場の待ち時間になることに注意する。
+VOICE_TIMEOUT = 90
 # タスク名の長さは voice/intent.py が持っている（文字起こしの整形もあちらの仕事）
 
 
@@ -820,6 +823,41 @@ def _transcribe(path):
         return None
 
 
+# 音声を受け取ってから応答を返すまでの間、モジュールの画面は
+# 「決定ボタンを押している間 話してください」のまま止まっている。文字起こしと
+# 意図分析で数秒〜1分かかるので、そのままだと録り直しを誘う。節目で画面を送る。
+PROGRESS_TEXT_MAX = 36   # 画面に出す聞き取り結果の長さ。溢れると本文が切れる
+
+
+def _clip(text, limit=PROGRESS_TEXT_MAX):
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _device_of_module(module_id):
+    """module_id から、その機材に繋がっているモジュールの device_id を引く"""
+    if not module_id:
+        return None
+    conn = db.get_db()
+    row = conn.execute("SELECT hostname FROM equipment WHERE module_id = ?",
+                       (module_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    # hostname が空でも、module_id をそのままデバイス名にしている構成がある
+    # （_find_equipment_by_device と同じ扱い）
+    return row["hostname"] or module_id
+
+
+def _notify_progress(device_id, lines):
+    """
+    処理中であることを画面に出す。**LEDは触らない。**
+    タスク登録中(recording)のままにしておかないと、周りから見た状態が変わる。
+    """
+    if device_id:
+        _notify(device_id, lines)
+
+
 @app.route("/api/voice", methods=["POST"])
 def api_voice():
     """
@@ -831,6 +869,8 @@ def api_voice():
     既定値のタスクが1件立つ）。現場で「何も残らない」のが一番困るため。
     """
     tag_id = request.args.get("tag_id")
+    # 処理中の表示を出す先。紐付けが分からなければ黙って出さないだけで、登録は続ける
+    device_id = _device_of_module(request.args.get("module_id"))
     audio = request.get_data()
     if len(audio) < 1000:
         return jsonify({"ok": False, "error": "音声が短すぎます"}), 400
@@ -839,6 +879,7 @@ def api_voice():
     try:
         with open(tmp, "wb") as fp:
             fp.write(audio)
+        _notify_progress(device_id, ["音声を文字にしています", "そのままお待ちください"])
         text = _transcribe(tmp)
     finally:
         try:
@@ -851,6 +892,10 @@ def api_voice():
 
     # 意図分析（E-2）。Ollama が落ちていても analyze() は既定値の入った dict を
     # 返すので、ここに失敗の分岐は要らない。どちらを通ったかは source で分かる
+    #
+    # ここが一番長い（gemma3:4b で数秒、モデルの読み込みが入ると1分近い）。
+    # 聞き取った内容を一緒に出すので、待つ間に言い直しの要否も判断できる
+    _notify_progress(device_id, ["内容を解析しています", _clip(text)])
     parsed = intent.analyze(text)
 
     conn = db.get_db()
@@ -1038,9 +1083,27 @@ def request_choice(device_id, text, options, timeout=CMD_TIMEOUT_SEC, **fields):
                            options=list(options), **fields)
 
 
+# 音声でのタスク登録（E-2）の待ち時間の予算。
+#
+# **諦める順番が全てで、これが逆転すると最悪の壊れ方をする。** 先に諦めた側が
+# 「登録できませんでした」と出す一方、サーバーは処理を続けてタスクを作るため、
+# 作業者は失敗したと思って録り直し、**同じタスクが2件**できる。必ずこの順:
+#
+#   サーバーの処理 < モジュールの送信待ち < サーバーの応答待ち
+#
+# 個別に数字を置かず積み上げで決めているのは、片方だけ直して順序を崩すのを
+# 防ぐため。不変条件は Test/test_voice_budget.py が見張っている。
 RECORD_WAIT_SEC = 30      # 決定ボタンが押されるのを待つ秒数
 RECORD_MAX_SEC = 30       # 1回の録音の上限
-RECORD_TOTAL_SEC = 150    # 録音 + 送信 + 文字起こし を待つ上限
+# サーバーが /api/voice で使いうる最大。文字起こしも意図分析も自前の timeout を
+# 持っているので、その合計が上限になる（両方が上限まで粘るのが最悪ケース）
+RECORD_PROCESS_SEC = VOICE_TIMEOUT + intent.TIMEOUT
+# モジュールがHTTPの応答を待つ秒数。**サーバーが諦めた後に諦める**ようにする。
+# 上乗せはWAVの送信と応答の往復ぶん
+RECORD_UPLOAD_SEC = RECORD_PROCESS_SEC + 15
+# サーバーがモジュールの応答を待つ秒数。モジュールが取りうる最長
+# （押下待ち + 録音 + 送信待ち）より後に諦める
+RECORD_TOTAL_SEC = RECORD_WAIT_SEC + RECORD_MAX_SEC + RECORD_UPLOAD_SEC + 5
 
 
 def request_record(device_id, url, **fields):
@@ -1052,7 +1115,7 @@ def request_record(device_id, url, **fields):
     return _request_answer(device_id, "record", None, RECORD_TOTAL_SEC,
                            want_payload=True, url=url,
                            max_sec=RECORD_MAX_SEC, wait_sec=RECORD_WAIT_SEC,
-                           upload_timeout=RECORD_TOTAL_SEC - 30, **fields)
+                           upload_timeout=RECORD_UPLOAD_SEC, **fields)
 
 
 def _request_answer(device_id, cmd, text, timeout, want_payload=False, **fields):
