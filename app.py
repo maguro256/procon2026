@@ -897,6 +897,10 @@ def api_work_log_feedback(log_id):
     conn.close()
     if cur.rowcount == 0:
         return jsonify({"error": "not found"}), 404
+    # felt_difficulty は既存行の UPDATE なので、ai_stub のキャッシュキー
+    # （件数・最大id）だけ見ていると変化が検知されない。ここで明示的に捨てて
+    # 次回の割り当てからこのフィードバックが学習に反映されるようにする。
+    ai_stub.invalidate_cache()
     return jsonify({"ok": True, "felt_difficulty": felt})
 
 

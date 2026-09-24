@@ -185,6 +185,18 @@ def update_model(task: dict, worker_id: int, duration_sec: int, work_logs: list)
     タスク完了時の学習フック。work_logs への追記は app.py 側で済んでいるので、
     ここではキャッシュを捨てて次回の呼び出しで再学習させるだけでよい。
     """
+    invalidate_cache()
+
+
+def invalidate_cache() -> None:
+    """
+    次回の assign_task/rank_tasks で work_logs を再生し直させる。
+
+    felt_difficulty (D-6) は既存の work_logs 行を後から UPDATE するだけなので、
+    _get_beliefs の cache_key（件数と最大id）が変わらず、そのままだと
+    モジュール側から届いたフィードバックが学習に反映されない。
+    api_work_log_feedback からもこれを呼んでキャッシュを捨てる。
+    """
     global _cache_key
     with _lock:
         _cache_key = None
