@@ -86,7 +86,8 @@
         <td colspan="8">
           <details>
             <summary>役職・権限・ICタグを編集</summary>
-            <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="worker-edit-grid">
+            {# data-autosave: 変えた瞬間に保存する（base.html）。「保存」ボタンも残してある #}
+            <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="worker-edit-grid" data-autosave>
               <div class="field"><label>勤続年数</label>
                 <input class="input input-sm" type="number" name="years_of_service" step="0.5" min="0"
                        value="{{ w.years_of_service }}">

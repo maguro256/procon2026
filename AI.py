@@ -75,16 +75,18 @@ class RewardConverter:
         self.learningdata[choicetask]=(prev_avg*(current_count-1)+reward)/current_count
 
 class workerBelief:
-    def __init__(self):
-        self.mu=np.zeros(3+TASK_COUNT)
-        self.sigma=np.eye(3+TASK_COUNT)*100
+    def __init__(self,dim=3+TASK_COUNT):
+        # dim は文脈ベクトルの次元。単体シミュレーションは既定の8次元、
+        # ai_stub.py は権限・機材の one-hot を足した次元で作る
+        self.mu=np.zeros(dim)
+        self.sigma=np.eye(dim)*100
         self.sigma_obs2=0.1
-        
+
     def sample_theta(self):
         return np.random.multivariate_normal(self.mu,self.sigma)
-        
+
     def predict(self,x,theta):
-        return float(np.dot(theta,x))  #x,thetaは3+TASK_COUNT次元。TASK_COUNTが変わっても動くようにベタ書きをやめた
+        return float(np.dot(theta,x))  #x,thetaは同じ次元なら何次元でもよい
     
     def update(self,x,reward):
         x=np.array(x)

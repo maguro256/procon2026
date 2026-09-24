@@ -40,6 +40,18 @@ from voice import intent
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
 
+# Flask のデバッグモード（自動リロード＋ブラウザ上のデバッガ）。**既定は OFF。**
+# host=0.0.0.0 で配信しているので、ON のままだと LAN 内の誰でもデバッガから
+# このPCでコードを実行できてしまう。開発時だけ GEMMBA_DEBUG=1 を付けて起動する。
+# 起動後には切り替えられない（管理画面のボタンで切り替わるのは下のテストモード）。
+DEBUG = os.environ.get("GEMMBA_DEBUG") == "1"
+
+# テストモード: /test の仮想モジュールを使えるようにする。管理画面のサイドバーの
+# ボタンで切り替える。本番では OFF にしておく（実機と同じモジュールIDで仮想
+# モジュールを起動すると、実機への指示を横取りできてしまうため）。
+# 状態はメモリにだけ持つので、app.py を再起動すると OFF に戻る。
+_test_mode = {"on": DEBUG or os.environ.get("GEMMBA_TEST_PAGE") == "1"}
+
 # 未登録NFCタグの一時保持: {tag_id: module_id}
 _pending_tags: dict = {}
 # どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
@@ -56,10 +68,13 @@ FELT_LABELS = {"easy": "簡単", "normal": "普通", "hard": "難しい"}
 STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
 EQ_STATUS_LABELS = {"idle": "空き", "working": "稼働中", "stopped": "停止", "maintenance": "メンテ中"}
 
-# WariAthena の文脈ベクトルには work_logs だけでは足りない（難易度と勤続年数が要る）ので
-# tasks / workers を結合して渡す。作業者やタスクが消されたログも報酬計算には使えるよう LEFT JOIN。
+# WariAthena の文脈ベクトルには work_logs だけでは足りない（難易度・数量・必要権限と
+# 勤続年数が要る）ので tasks / workers を結合して渡す。作業者やタスクが消されたログも
+# 報酬計算には使えるよう LEFT JOIN。機材は work_logs.equipment_id（実際に使った機材）を使う。
 AI_LOG_SQL = """
-    SELECT l.*, t.difficulty AS difficulty, w.years_of_service AS years_of_service
+    SELECT l.*, t.difficulty AS difficulty, t.quantity AS quantity,
+           t.required_permissions AS required_permissions,
+           w.years_of_service AS years_of_service
     FROM work_logs l
     LEFT JOIN tasks   t ON t.id = l.task_id
     LEFT JOIN workers w ON w.id = l.worker_id
@@ -96,7 +111,8 @@ def _safe_int(value, default):
 def inject_labels():
     # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
     return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS, F=FELT_LABELS,
-                PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms)
+                PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms,
+                test_mode=_test_mode["on"])
 
 
 # ---------------------------------------------------------------- 画面
@@ -367,11 +383,19 @@ def auto_assign(task_id):
     # 無資格者を選ばせてから弾くのでは、AI が選べなかった理由を説明できない。
     eligible = perms.eligible_workers([dict(w) for w in workers_], task)
     dropped = len(workers_) - len(eligible)
-    wid = ai_stub.assign_task(dict(task), eligible, logs)
+    # 各人の手持ち（割り当て済み・作業中）。多い人ほど選ばれにくくして負荷を分散する。
+    # 割り当て直しのときに自分自身を手持ちに数えないよう、このタスクは除く
+    open_tasks = [dict(r) for r in conn.execute(
+        """SELECT id, difficulty, quantity, status, started_at, assigned_worker_id FROM tasks
+           WHERE status IN ('assigned', 'in_progress') AND assigned_worker_id IS NOT NULL
+             AND id != ?""", (task_id,))]
+    wid = ai_stub.assign_task(dict(task), eligible, logs, open_tasks=open_tasks)
     if wid:
         conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned' WHERE id = ?", (wid, task_id))
         conn.commit()
-        note = f"（実績 {len(logs)} 件から学習"
+        loads = ai_stub.workloads(open_tasks, logs)
+        chosen = next(w["name"] for w in eligible if w["id"] == wid)
+        note = f"（{chosen} さん / 手持ち 約{loads.get(wid, 0) / 3600:.1f}時間 / 実績 {len(logs)} 件から学習"
         note += f" / 権限不足の {dropped} 名を除外）" if dropped else "）"
         if ai_stub.is_ready():
             flash(f"AIがタスクを割り当てました{note}", "ok")
@@ -453,6 +477,15 @@ def bind_equipment():
         return redirect(url_for("equipment"))
 
     conn = db.get_db()
+    _bind_module(conn, eq_id, hostname)
+    conn.close()
+
+    flash(f"モジュールID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
+    return redirect(url_for("equipment"))
+
+
+def _bind_module(conn, eq_id, hostname):
+    """機材にモジュールIDを付け替える。/test の仮想モジュールからも使う"""
     # 同じモジュールIDが複数機材に付くと宛先が一意に決まらないため、先に他を外す
     if hostname:
         conn.execute("UPDATE equipment SET hostname = NULL, online = 0 WHERE hostname = ? AND id != ?",
@@ -472,10 +505,6 @@ def bind_equipment():
     elif not hostname:
         conn.execute("UPDATE equipment SET online = 0 WHERE id = ?", (eq_id,))
     conn.commit()
-    conn.close()
-
-    flash(f"モジュールID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
-    return redirect(url_for("equipment"))
 
 
 @app.route("/equipment/<int:eq_id>/delete", methods=["POST"])
@@ -602,7 +631,9 @@ def api_pending():
             {"request_id": rid, "device_id": s["device_id"], "text": s["text"],
              "lines": s["lines"], "options": s.get("options"),
              "equipment_name": s["equipment_name"],
-             "worker_name": s["worker_name"]}
+             "worker_name": s["worker_name"],
+             # /test の仮想モジュール宛て。/test の画面ではポップアップを出さない
+             "virtual": s["device_id"] in _virtual_modules}
             for rid, s in _pending_replies.items()
             if s.get("text") is not None and not s["event"].is_set()
         ]
@@ -690,16 +721,28 @@ def api_send_equipment_cmd(module_id):
 
 @app.route("/api/workers/<nfc_tag_id>/next_task", methods=["GET"])
 def api_next_task(nfc_tag_id):
-    """NFCタッチ時: その作業者に表示すべき次のタスクを優先度順に返す"""
+    """
+    NFCタッチ時: その作業者に表示すべきタスクを、提示する順に返す。
+
+    並び順:
+        1. 作業中のタスク（投げ出させない）
+        2. 自分に割り当て済みのタスク（管理画面の「AI割当」などで決まったもの）
+        3. 誰にも割り当てられていないタスク
+    2と3の中はそれぞれ「優先度 → WariAthena の評価」の順。
+
+    ?module_id= でタッチされた機材を渡すと、tasks はその機材で出来るもの
+    （機材指定なし＋その機材）だけにし、他機材のものは elsewhere に分けて返す。
+    件数は絞った後で切るので、この機材のタスクが他機材のタスクに押し出されない。
+    elsewhere は他機材への誘導（C-3）の材料。
+    """
     conn = db.get_db()
     w = conn.execute("SELECT * FROM workers WHERE nfc_tag_id = ?", (nfc_tag_id,)).fetchone()
     if not w:
         conn.close()
         return jsonify({"error": "unknown tag"}), 404
-    # 割当方針: WariAthena(ai_stub) が「この人が速く終わらせられそうな順」に並べ替える。
     rows = [dict(r) for r in conn.execute("""
         SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id,
-               required_permissions
+               required_permissions, assigned_worker_id
         FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
@@ -713,10 +756,28 @@ def api_next_task(nfc_tag_id):
     # 未着手の候補は権限（D-2）を満たすものだけ。この1行でモジュール側の
     # 候補提示（C-1/C-2）と他機材への誘導（C-3）の両方に効く。
     rest = perms.eligible_tasks(w, [t for t in rows if t["status"] != "in_progress"])
-    ordered = in_progress + ai_stub.rank_tasks(dict(w), rest, logs)
+    # タッチされた機材（?module_id=）。機材指定の無いタスクを「この機材でやったら」で評価する
+    eq_row = None
+    if request.args.get("module_id"):
+        conn = db.get_db()
+        eq_row = conn.execute("SELECT id FROM equipment WHERE module_id = ?",
+                              (request.args["module_id"],)).fetchone()
+        conn.close()
+    here_id = eq_row["id"] if eq_row else None
+    ranked = ai_stub.rank_tasks(dict(w), rest, logs, equipment_id=here_id)
+    # sort は安定なので、同じ組・同じ優先度の中では AI の並びがそのまま残る
+    ranked.sort(key=lambda t: (0 if t["assigned_worker_id"] == w["id"] else 1,
+                               PRIORITY_RANK.get(t.get("priority"), 9)))
+    ordered = in_progress + ranked
+
+    if eq_row is None:
+        here, elsewhere = ordered, []
+    else:
+        here = [t for t in ordered if t["equipment_id"] in (None, here_id)]
+        elsewhere = [t for t in ordered if t["equipment_id"] not in (None, here_id)]
     return jsonify({"worker": {"id": w["id"], "name": w["name"], "role": w["role"],
                                "permissions": perms.held(w)},
-                    "tasks": ordered[:5]})
+                    "tasks": here[:5], "elsewhere": elsewhere[:5]})
 
 
 @app.route("/api/tasks/<int:task_id>/start", methods=["POST"])
@@ -1055,7 +1116,15 @@ def api_voice():
 
     if not text:
         return jsonify({"ok": False, "error": "聞き取れませんでした"})
+    return jsonify(_register_task_from_text(tag_id, text, device_id))
 
+
+def _register_task_from_text(tag_id, text, device_id=None):
+    """
+    文字起こし済みのテキストからタスクを立てる。/api/voice の後段で、
+    仮想モジュール（/test）は録音の代わりにテキストを直接ここへ渡す。
+    device_id は処理中の表示を出す先（無ければ出さない）。
+    """
     # 意図分析（E-2）。Ollama が落ちていても analyze() は既定値の入った dict を
     # 返すので、ここに失敗の分岐は要らない。どちらを通ったかは source で分かる
     #
@@ -1081,12 +1150,12 @@ def api_voice():
           f"「{parsed['title']}」 優先度={parsed['priority']} 難易度={parsed['difficulty']} "
           f"数量={parsed['quantity']} 期限={parsed['deadline'] or '-'} "
           f"権限={','.join(parsed['required_permissions']) or '-'} 全文「{text}」")
-    return jsonify({"ok": True, "task_id": task_id, "text": parsed["title"],
-                    "full_text": text, "priority": parsed["priority"],
-                    "difficulty": parsed["difficulty"], "quantity": parsed["quantity"],
-                    "deadline": parsed["deadline"],
-                    "required_permissions": parsed["required_permissions"],
-                    "source": parsed["source"]})
+    return {"ok": True, "task_id": task_id, "text": parsed["title"],
+            "full_text": text, "priority": parsed["priority"],
+            "difficulty": parsed["difficulty"], "quantity": parsed["quantity"],
+            "deadline": parsed["deadline"],
+            "required_permissions": parsed["required_permissions"],
+            "source": parsed["source"]}
 
 
 @app.route("/api/work_logs/<int:log_id>/feedback", methods=["POST"])
@@ -1221,6 +1290,10 @@ def send_cmd(device_id, cmd, **fields):
     """モジュールへ指示を1件送る。返事が要る場合は request_confirm を使う"""
     if not device_id:
         return False
+    # /test の仮想モジュール宛てはブローカーを通さず、プロセス内で受け渡す
+    if device_id in _virtual_modules:
+        _virtual_receive(device_id, dict(fields, cmd=cmd))
+        return True
     client = _mqtt_client
     if client is None or not client.is_connected():
         print(f"[cmd] ブローカー未接続のため {device_id} へ '{cmd}' を送れません")
@@ -1478,7 +1551,11 @@ def _mqtt_on_message(client, userdata, msg):
     if kind == "reply":
         _handle_reply(device_id, payload)
         return
+    _handle_data(device_id, payload)
 
+
+def _handle_data(device_id, payload):
+    """NFCタッチ（pi/<device_id>/data）。仮想モジュールのタッチもここへ入る"""
     tag_id = payload.get("tag_id")
     if not tag_id:
         print(f"[{device_id}] payload missing tag_id")
@@ -1549,7 +1626,8 @@ def _handle_presence(device_id, payload):
 def _handle_touch(device_id, module_id, tag_id):
     """1回のNFCタッチを機材の状態に応じて 開始/終了/拒否 に振り分ける"""
     try:
-        w_resp = requests.get(f"{SELF_URL}/api/workers/{tag_id}/next_task", timeout=HTTP_TIMEOUT)
+        w_resp = requests.get(f"{SELF_URL}/api/workers/{tag_id}/next_task",
+                              params={"module_id": module_id}, timeout=HTTP_TIMEOUT)
         eq_resp = requests.get(f"{SELF_URL}/api/equipment/{module_id}/status", timeout=HTTP_TIMEOUT)
     except requests.RequestException as e:
         print(f"[{module_id}] self API unreachable: {e}")
@@ -1573,7 +1651,9 @@ def _handle_touch(device_id, module_id, tag_id):
         return
 
     worker = w_resp.json()["worker"]
-    tasks = w_resp.json()["tasks"]
+    # tasks はこの機材の候補（提示順）、elsewhere は他機材の分。_start_session が
+    # この機材の分だけを提示し、他機材の分は誘導（C-3）の判断に使う
+    tasks = w_resp.json()["tasks"] + w_resp.json().get("elsewhere", [])
     equipment = eq_resp.json()
 
     if equipment["status"] in ("stopped", "maintenance"):
@@ -1689,7 +1769,8 @@ def _task_lines(task):
 
 def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
     """
-    空き機材でのタッチ = 開始。候補タスクを古い順に1件ずつ提示し、
+    空き機材でのタッチ = 開始。候補タスクを api_next_task の並び順
+    （割り当て済み → 優先度 → AIの評価）に1件ずつ提示し、
     承認されたら着手・ロックする（TODO.md の C-1 / C-2）。
 
     - はい     → そのタスクに着手して機材をロック
@@ -2026,14 +2107,373 @@ def start_mqtt_bridge():
         print("       → Web/APIは動きますが、NFCタッチは受信されません。")
 
 
-# 開発中はリローダーが効いた方が速いので既定は True のまま。
-# **本番想定で動かすときは GEMMBA_DEBUG=0 を付ける。** リローダーは
-# ファイルが書かれるたびにプロセスを作り直すので、MQTTのセッションが
-# 切れてモジュールとの接続が落ち着かない（.venv-voice の作成で実際に起きた）。
-DEBUG = os.environ.get("GEMMBA_DEBUG", "1") != "0"
+# ------------------------------------------------ 仮想モジュール（/test）
+# 実機（ラズパイ）もブローカーも無い環境で、現場の操作をブラウザから試すためのもの。
+# raspi.py と同じ振る舞いを app.py の中に持ち、MQTT の代わりに関数呼び出しで
+# 受け渡す。サーバー側のフロー（_handle_touch 以降）は実機のときと同じコードが走る。
+#
+#   下り: send_cmd() が宛先を見て _virtual_receive() へ回す
+#   上り: タッチは _handle_data()、応答は _handle_reply()、死活は _handle_presence()
+#
+# 状態はメモリにだけ持つ。app.py を再起動すると消えるが、/test の画面が
+# 起動していたモジュールを覚えていて、自動で繋ぎ直す。
+
+VIRTUAL_IP = "127.0.0.1"   # 音声の送り先URLを組み立てるのに使われる（_voice_upload_url）
+VIRTUAL_LOG_MAX = 60
+
+_virtual_modules: dict = {}  # device_id -> 状態
+# _replies_lock と両方取るときは必ずこちらが先。_handle_reply は _replies_lock を
+# 取るので、応答は必ずこのロックを放してから呼ぶ（_virtual_reply）
+_virtual_lock = threading.RLock()
+
+
+def _virtual_timer(sec, *args):
+    # daemon にしないと、待ちが残っている間 app.py を終了できない
+    t = threading.Timer(sec, _virtual_timeout, args=args)
+    t.daemon = True
+    t.start()
+
+
+def _virtual_log(vm, direction, text):
+    vm["log"].append({"at": datetime.now().strftime("%H:%M:%S"), "dir": direction, "text": text})
+    del vm["log"][:-VIRTUAL_LOG_MAX]
+
+
+def _virtual_reply(device_id, body):
+    """モジュール → サーバーの応答。raspi.publish_reply に当たる"""
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return
+        _virtual_log(vm, "up", "応答 " + json.dumps(
+            {k: v for k, v in body.items() if k != "request_id"}, ensure_ascii=False))
+    _handle_reply(device_id, dict(body, device_id=device_id))
+
+
+def _virtual_timeout(device_id, request_id, body):
+    """問い合わせの時間切れ。まだ答えていなければ、実機と同じく無回答で返す"""
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None or vm["waiting"] != request_id:
+            return
+        vm["waiting"] = None
+        vm["choice"] = None
+        vm["record"] = None
+    _virtual_reply(device_id, dict(body, request_id=request_id))
+
+
+def _virtual_receive(device_id, payload):
+    """サーバーからの指示。raspi.on_message と同じ分岐"""
+    cmd = payload.get("cmd")
+    request_id = payload.get("request_id")
+    timeout = float(payload.get("timeout") or CMD_TIMEOUT_SEC)
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return
+        summary = {k: v for k, v in payload.items() if k not in ("cmd", "request_id")}
+        _virtual_log(vm, "down", f"{cmd} " + json.dumps(summary, ensure_ascii=False))
+
+        if cmd == "display":
+            vm["lines"] = [str(x) for x in payload.get("lines") or []]
+            vm["badge"] = payload.get("badge")
+            vm["choice"] = None   # 新しい表示が来たら選択画面は畳む（実機と同じ）
+            return
+        if cmd == "led":
+            vm["led"] = payload.get("state", "idle")
+            return
+        if cmd in ("confirm", "choice"):
+            options = ["はい", "いいえ"] if cmd == "confirm" else [str(o) for o in payload.get("options") or []]
+            if not options:
+                pending = {"answer": None}
+            else:
+                default = _safe_int(payload.get("default"), 0)
+                vm["choice"] = {
+                    "request_id": request_id, "kind": cmd, "text": payload.get("text") or "",
+                    "lines": [str(x) for x in payload.get("lines") or []],
+                    "badge": payload.get("badge"), "options": options,
+                    "selected": min(max(default, 0), len(options) - 1),
+                    "deadline": time.time() + timeout,
+                }
+                vm["waiting"] = request_id
+                _virtual_timer(timeout, device_id, request_id, {"answer": None})
+                return
+        elif cmd == "record":
+            wait = float(payload.get("wait_sec") or 30)
+            vm["record"] = {"request_id": request_id, "url": payload.get("url"),
+                            "deadline": time.time() + wait}
+            vm["waiting"] = request_id
+            _virtual_timer(wait, device_id, request_id, {"answer": False, "error": "no audio"})
+            return
+        elif cmd == "ping":
+            pending = {"answer": "pong"}
+        else:
+            _virtual_log(vm, "info", f"未知のコマンド: {cmd}")
+            return
+    _virtual_reply(device_id, dict(pending, request_id=request_id))
+
+
+def _virtual_state(vm, active_requests, equipment_by_device):
+    """画面に渡す形にする。管理画面のポップアップ側で答えられた問い合わせはここで畳む"""
+    choice = vm["choice"]
+    if choice and choice["request_id"] not in active_requests:
+        vm["choice"] = choice = None
+        vm["waiting"] = None
+    record = vm["record"]
+    if record and record["request_id"] not in active_requests:
+        vm["record"] = record = None
+        vm["waiting"] = None
+    now = time.time()
+    eq = equipment_by_device.get(vm["device_id"])
+    return {
+        "device_id": vm["device_id"],
+        "led": vm["led"], "lines": vm["lines"], "badge": vm["badge"],
+        # app.py は 3.8 固定なので dict の | は使えない
+        "choice": choice and dict({k: v for k, v in choice.items() if k != "deadline"},
+                                  remaining=max(0, int(choice["deadline"] - now + 0.99))),
+        "record": record and {"remaining": max(0, int(record["deadline"] - now + 0.99)),
+                              "busy": record.get("busy", False)},
+        "equipment": eq,
+        "log": list(vm["log"]),
+    }
+
+
+@app.before_request
+def _guard_test_mode():
+    """テストモードが OFF の間は、/test も仮想モジュールの API も存在しない扱いにする"""
+    path = request.path
+    if (path == "/test" or path.startswith("/api/test/")) and not _test_mode["on"]:
+        return (jsonify({"error": "テストモードが OFF です"}), 404) if path.startswith("/api/") \
+            else ("Not Found", 404)
+    return None
+
+
+@app.route("/test-mode", methods=["POST"])
+def toggle_test_mode():
+    """サイドバーのボタン。テストモードを切り替える。OFF にしたら仮想モジュールは全部止める"""
+    turn_on = request.form.get("on") == "1"
+    _test_mode["on"] = turn_on
+    stopped = []
+    if not turn_on:
+        with _virtual_lock:
+            stopped = list(_virtual_modules)
+            _virtual_modules.clear()
+        for device_id in stopped:
+            # 実機なら LWT で届く offline。機材の表示をオフラインに戻す
+            _handle_presence(device_id, {"device_id": device_id, "online": False})
+    print(f"[app] テストモードを {'ON' if turn_on else 'OFF'} にしました"
+          + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""))
+    flash("テストモードを ON にしました。サイドバーの「テスト」から仮想モジュールを使えます" if turn_on
+          else "テストモードを OFF にしました" + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""),
+          "ok")
+    if turn_on:
+        return redirect(url_for("test_page"))
+    # /test にいたなら、消えたページには戻さない
+    if request.form.get("next", "").startswith("/test"):
+        return redirect(url_for("dashboard"))
+    return _back_to("dashboard")
+
+
+@app.route("/test")
+def test_page():
+    conn = db.get_db()
+    equipment_rows = conn.execute("SELECT id, name, module_id, hostname FROM equipment ORDER BY id").fetchall()
+    worker_rows = conn.execute(
+        "SELECT id, name, nfc_tag_id FROM workers WHERE nfc_tag_id IS NOT NULL AND nfc_tag_id != '' ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return render_template("test.html", equipment=equipment_rows, workers=worker_rows)
+
+
+@app.route("/api/test/state")
+def api_test_state():
+    conn = db.get_db()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT e.name, e.module_id, e.hostname, e.status, w.name AS worker_name, t.title AS task_title
+        FROM equipment e
+        LEFT JOIN workers w ON w.id = e.current_worker_id
+        LEFT JOIN tasks t   ON t.id = e.current_task_id
+    """)]
+    conn.close()
+    # _find_equipment_by_device と同じく hostname の一致を優先する（後から上書き）
+    equipment_by_device = {r["module_id"]: r for r in rows if r["module_id"]}
+    equipment_by_device.update({r["hostname"]: r for r in rows if r["hostname"]})
+    with _virtual_lock:
+        # 問い合わせの一覧は仮想モジュールのロックの中で取る。外で取ると、その直後に
+        # 届いた問い合わせを「もう答えられた」と見なして畳んでしまう。
+        # （_virtual_lock → _replies_lock の順。逆順で取る箇所は無い）
+        with _replies_lock:
+            active = {rid for rid, s in _pending_replies.items() if not s["event"].is_set()}
+        modules = [_virtual_state(vm, active, equipment_by_device) for vm in _virtual_modules.values()]
+    return jsonify({"modules": modules})
+
+
+def _valid_device_id(device_id):
+    return bool(device_id) and len(device_id) <= 40 and all(
+        c.isalnum() or c in "-_." for c in device_id)
+
+
+@app.route("/api/test/modules", methods=["POST"])
+def api_test_connect():
+    """
+    仮想モジュールを起動する。equipment_id を渡すとその機材に紐付けてから繋ぐ。
+    渡さなければ未登録モジュールとして検出され、機材管理画面に紐付けパネルが出る。
+    """
+    data = request.get_json(silent=True) or {}
+    device_id = (data.get("device_id") or "").strip()
+    if not _valid_device_id(device_id):
+        return jsonify({"error": "モジュールIDは英数字と - _ . の40文字以内にしてください"}), 400
+    eq_id = _safe_int(data.get("equipment_id"), None)
+    if eq_id is not None:
+        conn = db.get_db()
+        _bind_module(conn, eq_id, device_id)
+        conn.close()
+
+    with _virtual_lock:
+        if device_id in _virtual_modules:
+            return jsonify({"ok": True, "note": "already running"})
+        vm = {"device_id": device_id, "led": "offline", "lines": [], "badge": None,
+              "choice": None, "record": None, "waiting": None, "log": []}
+        _virtual_modules[device_id] = vm
+        _virtual_log(vm, "info", "起動しました")
+        # raspi.on_connect と同じ暫定表示。紐付いていれば直後にサーバーが本来の表示を送る
+        vm["led"] = "idle"
+        vm["lines"] = ["社員証をタッチしてください"]
+    _handle_presence(device_id, {"device_id": device_id, "online": True,
+                                 "session": uuid4().hex[:8], "ip": VIRTUAL_IP})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/test/modules/<device_id>", methods=["DELETE"])
+def api_test_disconnect(device_id):
+    with _virtual_lock:
+        if _virtual_modules.pop(device_id, None) is None:
+            return jsonify({"error": "not running"}), 404
+    # 実機なら LWT でブローカーが代理送信する offline
+    _handle_presence(device_id, {"device_id": device_id, "online": False})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/test/modules/<device_id>/touch", methods=["POST"])
+def api_test_touch(device_id):
+    """社員証のタッチ。raspi.send_to_host_tag_id に当たる"""
+    tag_id = ((request.get_json(silent=True) or {}).get("tag_id") or "").strip()
+    if not tag_id:
+        return jsonify({"error": "tag_id required"}), 400
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return jsonify({"error": "not running"}), 404
+        _virtual_log(vm, "up", f"タッチ {tag_id}")
+    _handle_data(device_id, {"device_id": device_id, "tag_id": tag_id, "timestamp": time.time()})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/test/modules/<device_id>/button", methods=["POST"])
+def api_test_button(device_id):
+    """
+    物理ボタン（左/決定/右）。{"button": "left"|"ok"|"right"}
+    {"select": n} は画面の選択肢を直接指したとき（カーソルだけ動かす）。
+    """
+    data = request.get_json(silent=True) or {}
+    button = data.get("button")
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return jsonify({"error": "not running"}), 404
+        choice = vm["choice"]
+        if not choice:
+            # 実機も、問い合わせが無いときのボタンは何も起こさない
+            return jsonify({"ok": True, "note": "no question"})
+        n = len(choice["options"])
+        if "select" in data:
+            choice["selected"] = min(max(_safe_int(data.get("select"), 0), 0), n - 1)
+            return jsonify({"ok": True})
+        if button in ("left", "right"):
+            # 端では止める（raspi._move_selection と同じ）
+            choice["selected"] = min(max(choice["selected"] + (-1 if button == "left" else 1), 0), n - 1)
+            return jsonify({"ok": True})
+        if button != "ok":
+            return jsonify({"error": "button must be left / ok / right"}), 400
+        index = choice["selected"]
+        answer = index == 0 if choice["kind"] == "confirm" else index
+        request_id = choice["request_id"]
+        vm["choice"] = None
+        vm["waiting"] = None
+        _virtual_log(vm, "info", f"決定: {choice['options'][index]}")
+    _virtual_reply(device_id, {"request_id": request_id, "answer": answer})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/test/modules/<device_id>/record", methods=["POST"])
+def api_test_record(device_id):
+    """
+    録音の代わり（E-2）。3通りある:
+        JSON {"text": "..."}   … 話した内容をそのまま渡す（文字起こしを飛ばす）
+        multipart の audio     … WAV を実機と同じく /api/voice へ送る
+        JSON {"cancel": true}  … 決定を押さなかった扱い
+    """
+    data = request.get_json(silent=True) or {}
+    audio = request.files.get("audio")
+    text = (data.get("text") or "").strip()
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return jsonify({"error": "not running"}), 404
+        record = vm["record"]
+        if not record or record.get("busy"):
+            return jsonify({"error": "録音の指示が来ていません"}), 409
+        request_id, url = record["request_id"], record["url"]
+        if data.get("cancel"):
+            vm["record"] = None
+            vm["waiting"] = None
+            cancel = True
+        elif not text and not audio:
+            return jsonify({"error": "text か audio が必要です"}), 400
+        else:
+            cancel = False
+            # 実機も送信中は時間切れにしない（録音が済めば待ちは終わっている）
+            record["busy"] = True
+            vm["waiting"] = None
+            _virtual_log(vm, "info", f"録音の代わりに送信: {text or audio.filename}")
+    if cancel:
+        _virtual_reply(device_id, {"request_id": request_id, "answer": False, "error": "no audio"})
+        return jsonify({"ok": True})
+
+    wav = audio.read() if audio else None
+
+    def upload():
+        body = None
+        try:
+            if wav is not None:
+                res = requests.post(url, data=wav, headers={"Content-Type": "audio/wav"},
+                                    timeout=RECORD_UPLOAD_SEC)
+                body = res.json() if res.ok else None
+            else:
+                from urllib.parse import parse_qs, urlparse
+                tag_id = (parse_qs(urlparse(url or "").query).get("tag_id") or [None])[0]
+                body = _register_task_from_text(tag_id, text, device_id)
+        except Exception as e:
+            print(f"[{device_id}] 仮想モジュールの音声登録に失敗: {e}")
+        with _virtual_lock:
+            vm = _virtual_modules.get(device_id)
+            if vm is not None and vm["record"] and vm["record"]["request_id"] == request_id:
+                vm["record"] = None
+        if body is None:
+            reply = {"answer": False, "error": "upload failed"}
+        else:
+            reply = {"answer": bool(body.get("ok")), "text": body.get("text"),
+                     "task_id": body.get("task_id"), "error": body.get("error")}
+        _virtual_reply(device_id, dict(reply, request_id=request_id))
+
+    threading.Thread(target=upload, daemon=True).start()
+    return jsonify({"ok": True})
+
 
 if __name__ == "__main__":
     db.init_db()
+    print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}"
+          f" / テストモード: {'ON' if _test_mode['on'] else 'OFF'}")
     # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ
     _intent_ok, _intent_why = intent.available()
     print(f"[voice] 意図分析: {'有効' if _intent_ok else '無効'} - {_intent_why}")
