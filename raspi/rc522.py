@@ -180,6 +180,27 @@ class RC522:
             check ^= b
         return data if check == data[4] else None
 
+    def _calc_crc(self, data):
+        """チップのCRCコプロセッサで CRC_A を計算する。戻り値: [下位, 上位]"""
+        self._write(_CommandReg, _PCD_IDLE)
+        self._clear_bits(_DivIrqReg, 0x04)
+        self._set_bits(_FIFOLevelReg, 0x80)
+        for b in data:
+            self._write(_FIFODataReg, b)
+        self._write(_CommandReg, _PCD_CALCCRC)
+        for _ in range(255):
+            if self._read(_DivIrqReg) & 0x04:        # CRCIRq
+                break
+        self._write(_CommandReg, _PCD_IDLE)
+        return [self._read(_CRCResultRegL), self._read(_CRCResultRegH)]
+
+    def _select(self, cmd, uid5):
+        """1カスケードレベルぶんの SELECT。成功すれば True（カードが SAK を返した）"""
+        self._write(_BitFramingReg, 0x00)
+        frame = [cmd, 0x70] + list(uid5)
+        ok, data, _ = self._transceive(frame + self._calc_crc(frame))
+        return ok and len(data) >= 1
+
     def read_uid(self):
         """
         かざされているカードのUIDを16進文字列で返す。無ければ None。
@@ -193,7 +214,11 @@ class RC522:
         if first[0] != _PICC_SElECT_CT:
             return bytes(first[:4]).hex()
 
-        # 先頭がカスケードタグ = UIDは7バイト。残りを次のレベルで取る
+        # 先頭がカスケードタグ = UIDは7バイト。残りを次のレベルで取る。
+        # レベル1を SELECT しないとカードはレベル2の衝突回避に答えない
+        # （NTAG213/215/216 や Ultralight がここに当たる）
+        if not self._select(_PICC_ANTICOLL, first):
+            return None
         second = self._anticoll(_PICC_ANTICOLL2)
         if second is None:
             return None
