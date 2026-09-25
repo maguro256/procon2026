@@ -1980,7 +1980,19 @@ def _end_session(device_id, module_id, worker, equipment):
     )
     if work_log_id:
         _ask_felt_difficulty(device_id, module_id, worker, equipment, work_log_id, task_title)
-    _notify(device_id, ["お疲れさまでした", "社員証をタッチしてください"], "idle")
+    # 「お疲れさまでした」だけを見せてから待機画面へ戻す。タッチの案内を
+    # 同時に出すと、ねぎらいの画面なのか受付なのか分からなくなる。
+    # このワーカーの中で待つので、表示している間のタッチは _dispatch_touch が捨てる
+    _notify(device_id, ["お疲れさまでした"], "idle")
+    time.sleep(DONE_NOTICE_SEC)
+    conn = db.get_db()
+    row = conn.execute("SELECT id FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
+    conn.close()
+    if row:
+        _sync_module_state(device_id, row["id"])   # 機材名 + 「社員証をタッチしてください」
+
+
+DONE_NOTICE_SEC = 3     # 作業終了後に「お疲れさまでした」を出しておく秒数
 
 
 FEEDBACK_TIMEOUT = 20   # 難易度フィードバックの応答待ち。答えないまま立ち去られてもよい
