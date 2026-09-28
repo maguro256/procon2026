@@ -93,7 +93,7 @@
     </div>
     <details class="eq-tech">
       <summary>詳しい設定</summary>
-      <div class="mono">機材コード：{{ e.module_id or '未接続' }}</div>
+      <div class="mono">モジュールID：{{ e.hostname or '未紐付け' }}</div>
       <div class="card-meta">最終更新：{{ e.updated_at }}</div>
       {% if e.last_seen %}<div class="card-meta">最終通信：{{ e.last_seen }}</div>{% endif %}
     </details>

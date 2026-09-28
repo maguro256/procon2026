@@ -69,9 +69,18 @@
       <div class="field"><label>社員証をタッチ</label>
         <div class="vm-touch-row">
           <select class="input vm-touch-worker">
+            <optgroup label="登録済み">
             {% for w in workers %}
             <option value="{{ w.nfc_tag_id }}">{{ w.name }}（{{ w.nfc_tag_id }}）</option>
             {% endfor %}
+            </optgroup>
+            {# 登録ポップアップ・登録済み作業者への紐付けを試すためのカード #}
+            <optgroup label="未登録">
+            {% for tag in unregistered_tags %}
+            <option value="{{ tag }}">未登録の社員証（{{ tag }}）</option>
+            {% endfor %}
+            <option value="__new__">新しい未登録の社員証（タッチごとに別ID）</option>
+            </optgroup>
             <option value="">タグIDを直接入力…</option>
           </select>
           <button type="submit" class="btn btn-primary btn-sm">タッチ</button>
@@ -183,7 +192,9 @@
     el.querySelector(".vm-touch").addEventListener("submit", async e => {
       e.preventDefault();
       e.stopPropagation();   // base.html のフォーム送信の横取りを通さない
-      const tag = tagSelect.value || tagInput.value.trim();
+      let tag = tagSelect.value || tagInput.value.trim();
+      // 用意した未登録カードを使い切っても試せるよう、その場で使われていないIDを作る
+      if (tag === "__new__") tag = "test-card-" + Math.random().toString(16).slice(2, 8);
       if (!tag) { tagInput.focus(); return; }
       try { await api(moduleUrl(id, "/touch"), "POST", { tag_id: tag }); } catch (err) { alertIn(el, err); }
       poll();
@@ -243,7 +254,7 @@
     el.querySelector(".vm-eq").textContent = eq
       ? `${eq.name} ・ ${EQ_LABELS[eq.status] || eq.status}` +
         (eq.worker_name ? ` ・ ${eq.worker_name} さん` : "") + (eq.task_title ? `「${eq.task_title}」` : "")
-      : "未紐付け（機械の画面で紐付けてください）";
+      : "未紐付け（機材の画面で紐付けてください）";
 
     const timer = el.querySelector(".vm-timer");
     if (!timer.classList.contains("is-error")) {

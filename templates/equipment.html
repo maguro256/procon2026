@@ -36,10 +36,7 @@
     <div class="field"><label>機材名 *</label>
       <input class="input" type="text" name="name" placeholder="例：レーザー加工機 #2" required>
     </div>
-    <div class="field"><label>機材コード（任意）</label>
-      {# 空なら _ensure_module_id() が MOD-001 形式で採番する。「後で紐付け可」は誤解を招くので直した #}
-      <input class="input" type="text" name="module_id" placeholder="空欄なら自動で採番">
-    </div>
+    {# 機材コード(module_id)は内部の目印なので入力させない。_ensure_module_id() が MOD-001 形式で採番する #}
     <div class="field"><label>モジュールID（任意）</label>
       <input class="input" type="text" name="hostname" placeholder="例：pi01">
     </div>
@@ -49,18 +46,17 @@
 
 <h3 class="section-title">登録済み機材（{{ equipment|length }}台）</h3>
 <details class="tech-toggle">
-  <summary>詳しい設定（機材コード・最終通信を表示）</summary>
+  <summary>詳しい設定（最終通信を表示）</summary>
 </details>
 <p class="table-hint"><svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>横にスクロールできます</p>
 <div class="sheet table-wrap">
   <table class="table">
-    <thead><tr><th>ID</th><th>機材名</th><th class="tech-col">機材コード</th><th>モジュールID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>機材名</th><th>モジュールID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
     <tbody>
     {% for e in equipment %}
       <tr data-key="eq-{{ e.id }}">
         <td class="mono text-muted">{{ e.id }}</td>
         <td class="strong">{{ e.name }}</td>
-        <td class="mono tech-col">{{ e.module_id or '未接続' }}</td>
         <td>
           <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
             <input type="hidden" name="equipment_id" value="{{ e.id }}">
@@ -100,7 +96,7 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="10" class="empty">機材が登録されていません。</td></tr>
+      <tr><td colspan="9" class="empty">機材が登録されていません。</td></tr>
     {% endfor %}
     </tbody>
   </table>
