@@ -258,29 +258,66 @@ def assign_task(task: dict, workers: list, work_logs: list, open_tasks=None):
     open_tasks（割り当て済み・作業中のタスク）を渡すと、手持ちの多い人ほど
     点数を下げて負荷を分散する（上の「負荷分散」を参照）。
     """
+    return assign_task_explained(task, workers, work_logs, open_tasks)[0]
+
+
+def assign_task_explained(task: dict, workers: list, work_logs: list, open_tasks=None):
+    """
+    assign_task() と同じ選び方で、選んだ worker_id と「なぜそうなったか」を返す。
+    管理画面で割当の根拠を見せるために使う。
+
+    返り値: (worker_id or None, explain)
+      explain = {"method": "thompson" | "fallback", "logs": 学習に使った実績数,
+                 "candidates": [{worker_id, name, expected, sampled, load_sec,
+                                 busy, score, logs}, ...]  ← 点数の高い順}
+    expected は事後分布の平均での予測（その人の実力の見込み）、sampled は今回
+    Thompson Sampling で引いた値。実績の少ない人は sampled が大きくぶれる。
+    """
+    explain = {"method": "thompson", "logs": len(work_logs), "candidates": []}
     if not workers:
-        return None
+        return None, explain
     loads = workloads(open_tasks or [], work_logs)
+    counts: dict = {}
+    for l in work_logs:
+        if l.get("worker_id"):
+            counts[l["worker_id"]] = counts.get(l["worker_id"], 0) + 1
+
+    def base(w):
+        return {"worker_id": w["id"], "name": w.get("name"), "load_sec": loads.get(w["id"], 0.0),
+                "logs": counts.get(w["id"], 0), "expected": None, "sampled": None,
+                "busy": None, "score": None}
+
     if not _AI_READY:
-        return _fallback_worker(workers, loads)
+        explain["method"] = "fallback"
+        explain["candidates"] = [base(w) for w in workers]
+        return _fallback_worker(workers, loads), explain
     try:
         model = _get_model(work_logs)
         this_task = max(estimate_seconds(task, work_logs), 1.0)
         best_id, best_score = None, float("-inf")
+        rows = []
         for w in workers:
             x = _task_context(model, w.get("years_of_service"), task)
             belief = _belief_for(model, w["id"])
-            score = float(belief.predict(x, belief.sample_theta()))
+            sampled = float(belief.predict(x, belief.sample_theta()))
             busy = 1.0 + loads.get(w["id"], 0.0) / this_task
             # 実績の少ない人は事前分布が広く、負の点数も引く。負を割ると
             # 手持ちが多いほど良く見えてしまうので、そのときは掛ける
-            score = score / busy if score >= 0 else score * busy
+            score = sampled / busy if sampled >= 0 else sampled * busy
+            row = base(w)
+            row.update(expected=float(belief.predict(x, belief.mu)), sampled=sampled,
+                       busy=busy, score=score)
+            rows.append(row)
             if score > best_score:
                 best_score, best_id = score, w["id"]
-        return best_id
+        rows.sort(key=lambda r: -r["score"])
+        explain["candidates"] = rows
+        return best_id, explain
     except Exception as exc:
         print(f"[ai] 割り当てに失敗したのでダミーに切り替えます: {exc}")
-        return _fallback_worker(workers, loads)
+        explain["method"] = "fallback"
+        explain["candidates"] = [base(w) for w in workers]
+        return _fallback_worker(workers, loads), explain
 
 
 def rank_tasks(worker: dict, tasks: list, work_logs: list, equipment_id=None) -> list:

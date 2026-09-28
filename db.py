@@ -52,7 +52,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     equipment_id INTEGER REFERENCES equipment(id),
     started_at TEXT,
     completed_at TEXT,
+    -- 直近の AI割当（WariAthena）の根拠。JSON。手で担当者を変えたら NULL に戻す
+    ai_note TEXT,
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 未登録のICタグ・モジュール。管理画面で登録・紐付けされるまで残す。
+-- メモリだけに持っていると app.py の再起動で消え、タッチし直すまで気づけない（G-3）
+CREATE TABLE IF NOT EXISTS pending_tags (
+    tag_id TEXT PRIMARY KEY,
+    module_id TEXT,                             -- タッチされた機材の機材コード
+    seen_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS pending_modules (
+    device_id TEXT PRIMARY KEY,
+    ip TEXT,
+    seen_at TEXT
 );
 
 -- 作業実績ログ: NFCタッチで収集する所要時間データ（WariAthena の学習用）
@@ -86,6 +101,7 @@ MIGRATIONS = {
     },
     "tasks": {
         "required_permissions": "TEXT NOT NULL DEFAULT ''",
+        "ai_note": "TEXT",
     },
     "work_logs": {
         # 完了後の難易度フィードバック。既存の実績は答えていないので NULL のまま

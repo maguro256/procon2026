@@ -57,7 +57,7 @@
     <thead><tr><th>ID</th><th>機材名</th><th class="tech-col">機材コード</th><th>モジュールID（MQTT）</th><th>接続</th><th class="tech-col">最終通信</th><th>状態</th><th>担当者</th><th>実行中タスク</th><th></th></tr></thead>
     <tbody>
     {% for e in equipment %}
-      <tr>
+      <tr data-key="eq-{{ e.id }}">
         <td class="mono text-muted">{{ e.id }}</td>
         <td class="strong">{{ e.name }}</td>
         <td class="mono tech-col">{{ e.module_id or '未接続' }}</td>
@@ -83,7 +83,7 @@
         <td class="num row-actions">
           {# モジュールのプログラムだけを作り直す。機材の電源は切らない #}
           <form method="post" action="{{ url_for('restart_module', eq_id=e.id) }}"
-                onsubmit="return confirm('「{{ e.name }}」のモジュールのプログラムを再起動しますか？\n操作中の作業者がいると中断されます。')">
+                data-confirm="「{{ e.name }}」のモジュールのプログラムを再起動しますか？操作中の作業者がいると中断されます。" data-confirm-ok="再起動する">
             <button type="submit" class="btn btn-icon btn-secondary"
                     title="{{ 'モジュールを再起動' if e.online else 'オフラインのため再起動できません' }}"
                     aria-label="{{ e.name }} のモジュールを再起動"
@@ -92,7 +92,7 @@
             </button>
           </form>
           <form method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
-                onsubmit="return confirm('機材「{{ e.name }}」を削除しますか？')">
+                data-confirm="機材「{{ e.name }}」を削除しますか？" data-confirm-ok="削除する">
             <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ e.name }} を削除">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
             </button>

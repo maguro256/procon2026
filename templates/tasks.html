@@ -49,89 +49,198 @@
 </section>
 
 <section class="form-panel">
-  <h4>タスクを検索</h4>
-  <form method="get" action="{{ url_for('tasks') }}" class="task-search-grid">
+  <h4>タスクを探す</h4>
+  {# data-live-search: 打つ・選ぶとその場で一覧が絞り込まれる（base.html）。検索ボタンも残してある #}
+  <form method="get" action="{{ url_for('tasks') }}" class="task-search-grid" data-live-search>
     <div class="field"><label>タスク名</label>
-      <input class="input" type="text" name="q_title" placeholder="タスク名で絞り込み" value="{{ q_title }}">
+      <input class="input" type="search" name="q_title" placeholder="タスク名で絞り込み" value="{{ q_title }}">
     </div>
     <div class="field"><label>担当者</label>
-      <input class="input" type="text" name="q_worker" placeholder="担当者名で絞り込み" value="{{ q_worker }}">
+      <input class="input" type="search" name="q_worker" placeholder="担当者名で絞り込み" value="{{ q_worker }}">
+    </div>
+    <div class="field"><label>優先度</label>
+      <select class="input" name="q_priority">
+        <option value="">すべて</option>
+        {% for key, label in P.items() %}
+        <option value="{{ key }}" {{ 'selected' if q_priority == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>状態</label>
+      <select class="input" name="q_status">
+        <option value="">すべて</option>
+        <option value="unassigned" {{ 'selected' if q_status == 'unassigned' }}>担当者なし</option>
+        {% for key, label in S.items() %}
+        <option value="{{ key }}" {{ 'selected' if q_status == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>機材</label>
+      <select class="input" name="q_equipment">
+        <option value="">すべて</option>
+        <option value="none" {{ 'selected' if q_equipment == 'none' }}>機材なし</option>
+        {% for e in equipment_list %}
+        <option value="{{ e.id }}" {{ 'selected' if q_equipment == e.id|string }}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
     </div>
     <button type="submit" class="btn btn-primary">検索</button>
-    {% if q_title or q_worker %}
-    <a href="{{ url_for('tasks') }}" class="btn btn-secondary">クリア</a>
+    {% if filtered %}
+    <a href="{{ url_for('tasks') }}" class="btn btn-secondary">条件をクリア</a>
     {% endif %}
   </form>
 </section>
 
+{% macro trash_icon() %}<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>{% endmacro %}
+
+{# 削除の確認は base.html の確認ダイアログ（data-confirm）で出す #}
+{% macro delete_form(t) %}
+<form id="delete-task-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
+      data-confirm="タスク「{{ t.title }}」を削除しますか？" data-confirm-ok="削除する">
+  <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+</form>
+{% endmacro %}
+
+{# AI割当（WariAthena）の根拠。auto_assign() が tasks.ai_note に残したもの #}
+{% macro ai_why(note) %}
+{% set thompson = note.method != 'fallback' %}
+<details class="ai-why">
+  <summary>AIがこの人を選んだ理由{% if note.at %}（{{ note.at }}）{% endif %}</summary>
+  {% if thompson %}
+  <p class="ai-why-lead">
+    実績 {{ note.logs }} 件から、人ごとに「この種類の仕事をどれだけ速くこなせそうか」を学習しています。
+    その見込みをもとに毎回くじを引き（抽選値）、手持ちの仕事が多い人ほど割り引いた「点数」で比べました。
+    実績の少ない人はくじの振れ幅が大きいので、ときどき試しに選ばれます。
+  </p>
+  {% else %}
+  <p class="ai-why-lead">AI本体が使えなかったため、手持ちの仕事が少なく、勤続年数の長い人を選びました。</p>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="table ai-why-table">
+      <thead><tr>
+        <th>作業者</th>
+        {% if thompson %}<th class="num">見込み</th><th class="num">抽選値</th>{% endif %}
+        <th class="num">手持ち</th>
+        {% if thompson %}<th class="num">点数</th>{% endif %}
+        <th class="num">実績</th>
+      </tr></thead>
+      <tbody>
+      {% for c in note.candidates %}
+        <tr class="{{ 'is-chosen' if c.worker_id == note.chosen }}">
+          <td>{% if c.worker_id == note.chosen %}<strong>{{ c.name }}</strong> <span class="tag tag-accent-2">選択</span>{% else %}{{ c.name }}{% endif %}</td>
+          {% if thompson %}
+          <td class="num mono">{{ '%.2f'|format(c.expected) if c.expected is not none else '—' }}</td>
+          <td class="num mono">{{ '%.2f'|format(c.sampled) if c.sampled is not none else '—' }}</td>
+          {% endif %}
+          <td class="num mono">{{ '%.1f'|format((c.load_sec or 0) / 3600) }} 時間</td>
+          {% if thompson %}
+          <td class="num mono strong">{{ '%.2f'|format(c.score) if c.score is not none else '—' }}</td>
+          {% endif %}
+          <td class="num mono">{{ c.logs }} 件</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if note.excluded %}
+  <p class="ai-why-excluded">権限が足りず候補から外した人：
+    {% for x in note.excluded %}{{ x.name }}{% if x.missing %}（{{ x.missing|join('・') }}）{% endif %}{{ '、' if not loop.last }}{% endfor %}
+  </p>
+  {% endif %}
+</details>
+{% endmacro %}
+
 {% macro task_row(t) %}
-<article class="sheet-row task-row {{ 'task-done' if t.status == 'done' }}">
+<article class="sheet-row task-row" data-key="task-{{ t.id }}">
   <div class="task-head">
     <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
     <h3>{{ t.title }}</h3>
     <span class="badge badge-status">{{ S[t.status] }}</span>
+    <div class="task-tools">
+      <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
+      <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">{{ trash_icon() }}</button>
+    </div>
   </div>
   <div class="task-meta">
-    難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
-    {# 完了直後に機材の画面で本人が答えた体感。設定値の難易度とは別物 #}
-    {% if t.felt_difficulty %}　・　<span class="felt" title="完了後に作業者が答えた体感難易度">体感「{{ F[t.felt_difficulty] }}」</span>{% endif %}
+    <span class="{{ 'strong' if t.worker_name else 'unassigned' }}">担当 {{ t.worker_name or '未割当' }}</span>
+    　・　機材 {{ t.equipment_name or 'なし' }}
+    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
     {% if t.description %}　・　{{ t.description }}{% endif %}
   </div>
   {% if perms.parse(t.required_permissions) %}
   <div class="task-perms">必要権限 {{ perm_badges(t.required_permissions) }}</div>
   {% endif %}
-  {# data-autosave: 変えた瞬間に保存する（base.html）。「更新」ボタンも残してある #}
-  <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions" data-autosave>
-    <div class="field"><label>担当者</label>
-      <select class="input" name="assigned_worker_id" title="担当者">
-        <option value="">担当者なし</option>
-        {% for w in worker_list %}
-        <option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="field"><label>優先度</label>
-      <select class="input" name="priority" title="優先度">
-        {% for key, label in P.items() %}
-        <option value="{{ key }}" {{ 'selected' if t.priority == key }}>{{ label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="field"><label>数量</label>
-      <input class="input" type="number" name="quantity" title="数量" min="1" value="{{ t.quantity }}">
-    </div>
-    <div class="field"><label>期限</label>
-      <input class="input" type="date" name="deadline" title="期限" value="{{ t.deadline or '' }}">
-    </div>
-    <div class="field"><label>機材</label>
-      <select class="input" name="equipment_id" title="機材">
-        <option value="">機材なし</option>
-        {% for e in equipment_list %}
-        <option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit" class="btn btn-secondary">更新</button>
-    <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
-    <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
-    </button>
-    {# チェックボックスは未チェックだと送信されないので、このフォーム経由だと分かる目印を付ける #}
-    <input type="hidden" name="req_perm_form" value="1">
-    {# 検索で絞り込んだ状態からの更新・AI割当・削除でも、絞り込みを外さずに戻す #}
-    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
-    <details class="perm-edit span-all">
-      <summary>必要権限を編集</summary>
-      {{ perm_checks('required_permissions', perms.parse(t.required_permissions)) }}
-    </details>
-  </form>
+  {% if ai_notes.get(t.id) %}{{ ai_why(ai_notes[t.id]) }}{% endif %}
+  <details class="task-edit">
+    <summary>担当者・内容を変更</summary>
+    {# data-autosave: 変えた瞬間に保存する（base.html）。「更新」ボタンも残してある #}
+    <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions" data-autosave>
+      <div class="field"><label>担当者</label>
+        <select class="input" name="assigned_worker_id" title="担当者">
+          <option value="">担当者なし</option>
+          {% for w in worker_list %}
+          <option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>優先度</label>
+        <select class="input" name="priority" title="優先度">
+          {% for key, label in P.items() %}
+          <option value="{{ key }}" {{ 'selected' if t.priority == key }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>数量</label>
+        <input class="input" type="number" name="quantity" title="数量" min="1" value="{{ t.quantity }}">
+      </div>
+      <div class="field"><label>期限</label>
+        <input class="input" type="date" name="deadline" title="期限" value="{{ t.deadline or '' }}">
+      </div>
+      <div class="field"><label>機材</label>
+        <select class="input" name="equipment_id" title="機材">
+          <option value="">機材なし</option>
+          {% for e in equipment_list %}
+          <option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-secondary">更新</button>
+      {# チェックボックスは未チェックだと送信されないので、このフォーム経由だと分かる目印を付ける #}
+      <input type="hidden" name="req_perm_form" value="1">
+      {# 検索で絞り込んだ状態からの更新・AI割当・削除でも、絞り込みを外さずに戻す #}
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <details class="perm-edit span-all">
+        <summary>必要権限を編集</summary>
+        {{ perm_checks('required_permissions', perms.parse(t.required_permissions)) }}
+      </details>
+    </form>
+  </details>
   <form id="ai-assign-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('auto_assign', task_id=t.id) }}">
     <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
   </form>
-  <form id="delete-task-{{ t.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_task', task_id=t.id) }}"
-        onsubmit="return confirm('タスク「{{ t.title }}」を削除しますか？')">
-    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
-  </form>
+  {{ delete_form(t) }}
+</article>
+{% endmacro %}
+
+{# 完了済みは担当も所要時間も確定しているので編集させない。表示と削除だけ #}
+{% macro done_row(t) %}
+<article class="sheet-row task-row task-done" data-key="task-{{ t.id }}">
+  <div class="task-head">
+    <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
+    <h3>{{ t.title }}</h3>
+    <span class="badge badge-done"><svg class="icon" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg>完了</span>
+    <div class="task-tools">
+      <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">{{ trash_icon() }}</button>
+    </div>
+  </div>
+  <div class="task-meta">
+    担当 {{ t.worker_name or '—' }}　・　完了 {{ t.completed_at or '—' }}
+    {% if t.equipment_name %}　・　機材 {{ t.equipment_name }}{% endif %}
+    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}
+    {# 完了直後に機材の画面で本人が答えた体感。設定値の難易度とは別物 #}
+    {% if t.felt_difficulty %}　・　<span class="felt" title="完了後に作業者が答えた体感難易度">体感「{{ F[t.felt_difficulty] }}」</span>{% endif %}
+  </div>
+  {{ delete_form(t) }}
 </article>
 {% endmacro %}
 
@@ -141,7 +250,7 @@
 {{ task_row(t) }}
 {% else %}
 <p class="empty">
-  {%- if q_title or q_worker -%}
+  {%- if filtered -%}
   条件に一致する未完了タスクはありません。
   {%- else -%}
   タスクはまだありません。上のフォームから登録してください。
@@ -153,10 +262,10 @@
 <h3 class="section-title">完了済みタスク（{{ done_tasks|length }}件）</h3>
 <div class="sheet task-list">
 {% for t in done_tasks %}
-{{ task_row(t) }}
+{{ done_row(t) }}
 {% else %}
 <p class="empty">
-  {%- if q_title or q_worker -%}
+  {%- if filtered -%}
   条件に一致する完了済みタスクはありません。
   {%- else -%}
   完了したタスクはまだありません。

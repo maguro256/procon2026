@@ -61,6 +61,83 @@ _module_sessions: dict = {}
 # 上の3つは Flask のリクエストスレッドと MQTT 受信スレッドの両方から読み書きされる
 _pending_lock = threading.Lock()
 
+
+# 未登録タグ・モジュールはDB（pending_tags / pending_modules）にも書いておき、
+# 起動時に読み戻す（G-3）。メモリの dict は読み出しを軽くするための写しで、
+# 書き換えは必ず下の4関数を通す。
+def _pending_db(sql, params, conn=None):
+    """conn を渡すとその接続で書く（commit は呼び出し側）。書き込み途中の接続を
+    持ったまま別の接続で書くと、SQLite のロック待ちで失敗するため"""
+    if conn is not None:
+        conn.execute(sql, params)
+        return
+    try:
+        conn = db.get_db()
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+    except db.sqlite3.OperationalError as e:   # テーブルがまだ無い古いDB（テストの一時DBなど）
+        print(f"[pending] DBに保存できませんでした: {e}")
+
+
+def _remember_tag(tag_id, module_id):
+    with _pending_lock:
+        _pending_tags[tag_id] = module_id
+        n = len(_pending_tags)
+    _pending_db("INSERT OR REPLACE INTO pending_tags (tag_id, module_id, seen_at)"
+                " VALUES (?, ?, datetime('now','localtime'))", (tag_id, module_id))
+    return n
+
+
+def _forget_tag(tag_id):
+    if not tag_id:
+        return
+    with _pending_lock:
+        _pending_tags.pop(tag_id, None)
+    _pending_db("DELETE FROM pending_tags WHERE tag_id = ?", (tag_id,))
+
+
+def _remember_module(device_id, ip):
+    info = {"ip": ip, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    with _pending_lock:
+        _pending_modules[device_id] = info
+    _pending_db("INSERT OR REPLACE INTO pending_modules (device_id, ip, seen_at) VALUES (?, ?, ?)",
+                (device_id, ip, info["seen_at"]))
+
+
+def _forget_module(device_id, conn=None):
+    """外した情報を返す（紐付け時に死活情報を引き継ぐため）"""
+    if not device_id:
+        return None
+    with _pending_lock:
+        info = _pending_modules.pop(device_id, None)
+    _pending_db("DELETE FROM pending_modules WHERE device_id = ?", (device_id,), conn)
+    return info
+
+
+def _load_pending():
+    """起動時にDBから読み戻す。既に登録・紐付け済みになっているものは捨てる"""
+    try:
+        conn = db.get_db()
+        tags = conn.execute("""SELECT tag_id, module_id FROM pending_tags
+                               WHERE tag_id NOT IN (SELECT nfc_tag_id FROM workers
+                                                    WHERE nfc_tag_id IS NOT NULL)""").fetchall()
+        mods = conn.execute("""SELECT device_id, ip, seen_at FROM pending_modules
+                               WHERE device_id NOT IN (SELECT hostname FROM equipment
+                                                       WHERE hostname IS NOT NULL)""").fetchall()
+        conn.execute("DELETE FROM pending_tags WHERE tag_id IN (SELECT nfc_tag_id FROM workers)")
+        conn.execute("DELETE FROM pending_modules WHERE device_id IN (SELECT hostname FROM equipment)")
+        conn.commit()
+        conn.close()
+    except db.sqlite3.OperationalError as e:
+        print(f"[pending] 読み戻せませんでした: {e}")
+        return
+    with _pending_lock:
+        _pending_tags.update({r["tag_id"]: r["module_id"] for r in tags})
+        _pending_modules.update({r["device_id"]: {"ip": r["ip"], "seen_at": r["seen_at"]} for r in mods})
+    if tags or mods:
+        print(f"[pending] 未登録タグ {len(tags)} 件・未登録モジュール {len(mods)} 件を読み戻しました")
+
 PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low": "低"}
 # 完了直後に現場で答えてもらう体感難易度。順番がそのままモジュールの選択肢の並びになる
 FELT_CODES = ["easy", "normal", "hard"]
@@ -96,6 +173,15 @@ def _like_escape(text):
     return f"%{escaped}%"
 
 
+def _parse_ai_note(text):
+    """tasks.ai_note(JSON) を読む。壊れていたら無かったことにする"""
+    try:
+        note = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return note if isinstance(note, dict) else None
+
+
 def _safe_int(value, default):
     """
     フォームやJSONの数値項目を int にする。空文字や null が来ると
@@ -123,7 +209,10 @@ def dashboard():
     conn = db.get_db()
     equipment = conn.execute("""
         SELECT e.*, w.name AS worker_name, t.title AS task_title,
-               t.quantity AS task_quantity, t.deadline AS task_deadline
+               t.quantity AS task_quantity, t.deadline AS task_deadline,
+               t.priority AS task_priority,
+               -- 使い始めた時刻。タスクがあれば着手時刻、フリー利用なら機材の最終更新
+               COALESCE(t.started_at, e.updated_at) AS since
         FROM equipment e
         LEFT JOIN workers w ON w.id = e.current_worker_id
         LEFT JOIN tasks t   ON t.id = e.current_task_id
@@ -134,15 +223,26 @@ def dashboard():
           (SELECT COUNT(*) FROM tasks WHERE status != 'done')       AS open_tasks,
           (SELECT COUNT(*) FROM tasks WHERE status = 'in_progress') AS active_tasks,
           (SELECT COUNT(*) FROM workers)                            AS workers,
-          (SELECT COUNT(*) FROM equipment WHERE status = 'working') AS working_eq
+          (SELECT COUNT(*) FROM equipment WHERE status = 'working') AS working_eq,
+          -- モジュールを紐付けてあるのに繋がっていない機材。タッチしても何も起きない
+          (SELECT COUNT(*) FROM equipment WHERE hostname IS NOT NULL AND online = 0) AS offline_eq
     """).fetchone()
-    recent = conn.execute("""
-        SELECT t.*, w.name AS worker_name FROM tasks t
-        LEFT JOIN workers w ON w.id = t.assigned_worker_id
-        ORDER BY t.created_at DESC LIMIT 8
+    # 要対応: 至急、または期限切れ・今日が期限の未完了タスク
+    attention = conn.execute("""
+        SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
+               CASE WHEN t.deadline < date('now','localtime') THEN 'overdue'
+                    WHEN t.deadline = date('now','localtime') THEN 'today' END AS due
+        FROM tasks t
+        LEFT JOIN workers w   ON w.id = t.assigned_worker_id
+        LEFT JOIN equipment e ON e.id = t.equipment_id
+        WHERE t.status != 'done'
+          AND (t.priority = 'urgent' OR t.deadline <= date('now','localtime'))
+        ORDER BY t.deadline IS NULL, t.deadline,
+                 CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
     """).fetchall()
     conn.close()
-    return render_template("dashboard.html", equipment=equipment, counts=counts, recent=recent)
+    return render_template("dashboard.html", equipment=equipment, counts=counts, attention=attention,
+                           now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 @app.route("/workers")
@@ -187,8 +287,7 @@ def add_worker():
             (name, float(years or 0), role, held, nfc),
         )
         conn.commit()
-        with _pending_lock:
-            _pending_tags.pop(nfc, None)
+        _forget_tag(nfc)
         flash(f"{name} さんを登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に使われています", "error")
@@ -218,8 +317,7 @@ def update_worker(worker_id):
              perms.dump(f.getlist("permissions")), nfc, worker_id),
         )
         conn.commit()
-        with _pending_lock:
-            _pending_tags.pop(nfc, None)
+        _forget_tag(nfc)
         flash(f"{row['name']} さんの役職・権限・ICタグを更新しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に別の作業者が使っています", "error")
@@ -247,6 +345,13 @@ def tasks():
     # GETのクエリ文字列なので、検索結果のURLをそのまま共有・ブックマークできる。
     q_title = request.args.get("q_title", "").strip()
     q_worker = request.args.get("q_worker", "").strip()
+    # 絞り込み。値は既知のコードだけ受け付ける（それ以外は無視＝絞り込まない）
+    q_priority = request.args.get("q_priority", "")
+    q_priority = q_priority if q_priority in PRIORITY_LABELS else ""
+    q_status = request.args.get("q_status", "")
+    q_status = q_status if q_status in STATUS_LABELS or q_status == "unassigned" else ""
+    q_equipment = request.args.get("q_equipment", "")
+    q_equipment = q_equipment if q_equipment.isdigit() or q_equipment == "none" else ""
 
     conditions = []
     params = []
@@ -256,6 +361,19 @@ def tasks():
     if q_worker:
         conditions.append("w.name LIKE ? ESCAPE '\\'")
         params.append(_like_escape(q_worker))
+    if q_priority:
+        conditions.append("t.priority = ?")
+        params.append(q_priority)
+    if q_status == "unassigned":
+        conditions.append("t.assigned_worker_id IS NULL AND t.status != 'done'")
+    elif q_status:
+        conditions.append("t.status = ?")
+        params.append(q_status)
+    if q_equipment == "none":
+        conditions.append("t.equipment_id IS NULL")
+    elif q_equipment:
+        conditions.append("t.equipment_id = ?")
+        params.append(int(q_equipment))
     where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     conn = db.get_db()
@@ -285,9 +403,13 @@ def tasks():
     worker_list = conn.execute("SELECT id, name FROM workers ORDER BY name").fetchall()
     equipment_list = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
     conn.close()
+    filtered = any((q_title, q_worker, q_priority, q_status, q_equipment))
     return render_template("tasks.html", active_tasks=active_tasks, done_tasks=done_tasks,
                            worker_list=worker_list, equipment_list=equipment_list,
-                           q_title=q_title, q_worker=q_worker)
+                           q_title=q_title, q_worker=q_worker, q_priority=q_priority,
+                           q_status=q_status, q_equipment=q_equipment, filtered=filtered,
+                           ai_notes={t["id"]: _parse_ai_note(t["ai_note"]) for t in rows
+                                     if t["ai_note"]})
 
 
 @app.route("/tasks/add", methods=["POST"])
@@ -357,10 +479,12 @@ def update_task(task_id):
 
     # status はここでは触らない。着手・完了はNFCタッチ側でしか起きない設計にしてある
     # （画面から done にできると、所要時間の入っていない実績が混ざる）。
+    # 担当者を手で変えたら、AI割当の根拠はもう当てはまらないので消す
+    ai_note = task["ai_note"] if str(task["assigned_worker_id"] or "") == str(worker_id or "") else None
     conn.execute(
         """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?, priority = ?,
-           quantity = ?, deadline = ?, required_permissions = ? WHERE id = ?""",
-        (worker_id, equipment_id, priority, quantity, deadline, required_perms, task_id),
+           quantity = ?, deadline = ?, required_permissions = ?, ai_note = ? WHERE id = ?""",
+        (worker_id, equipment_id, priority, quantity, deadline, required_perms, ai_note, task_id),
     )
     conn.commit()
     conn.close()
@@ -389,9 +513,16 @@ def auto_assign(task_id):
         """SELECT id, difficulty, quantity, status, started_at, assigned_worker_id FROM tasks
            WHERE status IN ('assigned', 'in_progress') AND assigned_worker_id IS NOT NULL
              AND id != ?""", (task_id,))]
-    wid = ai_stub.assign_task(dict(task), eligible, logs, open_tasks=open_tasks)
+    wid, explain = ai_stub.assign_task_explained(dict(task), eligible, logs, open_tasks=open_tasks)
     if wid:
-        conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned' WHERE id = ?", (wid, task_id))
+        # 根拠は一覧の行に残す。フラッシュ1行だけだと、画面を移ると確かめようがない
+        eligible_ids = {w["id"] for w in eligible}
+        explain.update(
+            chosen=wid, at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            excluded=[{"name": w["name"], "missing": perms.labels(perms.missing(w, task))}
+                      for w in workers_ if w["id"] not in eligible_ids])
+        conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned', ai_note = ? WHERE id = ?",
+                     (wid, json.dumps(explain, ensure_ascii=False), task_id))
         conn.commit()
         loads = ai_stub.workloads(open_tasks, logs)
         chosen = next(w["name"] for w in eligible if w["id"] == wid)
@@ -494,8 +625,7 @@ def _bind_module(conn, eq_id, hostname):
 
     # 紐付け前に受信していた死活情報を引き継ぐ。次のハートビートを待たずに
     # 「オンライン」と表示できる。
-    with _pending_lock:
-        pending = _pending_modules.pop(hostname, None) if hostname else None
+    pending = _forget_module(hostname, conn)
     if pending:
         conn.execute(
             """UPDATE equipment SET online = 1, ip = COALESCE(?, ip),
@@ -1197,9 +1327,7 @@ def api_unknown_tag():
     conn.close()
     if already:
         return jsonify({"ok": True, "note": "already registered"})
-    with _pending_lock:
-        _pending_tags[tag_id] = module_id
-        pending = len(_pending_tags)
+    pending = _remember_tag(tag_id, module_id)
     return jsonify({"ok": True, "pending": pending})
 
 
@@ -1582,18 +1710,18 @@ def _handle_presence(device_id, payload):
 
     if not row:
         # 未登録モジュール。機材管理画面に出して紐付けを促す（未登録タグと同じ流れ）
-        with _pending_lock:
-            if online:
-                _pending_modules[device_id] = {"ip": ip, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-            else:
-                _pending_modules.pop(device_id, None)
+        if online:
+            _remember_module(device_id, ip)
+        else:
+            _forget_module(device_id)
         if online:
             print(f"[{device_id}] 未登録モジュールを検出 (ip={ip}) → 機材管理画面に表示")
         conn.close()
         return
 
+    if device_id in _pending_modules:
+        _forget_module(device_id)
     with _pending_lock:
-        _pending_modules.pop(device_id, None)
         # モジュールが再起動すると session が変わる。DB上は online のままなので
         # 「変化なし」に見えるが、向こうの画面は起動時の汎用表示に戻っているため
         # 送り直す必要がある。
@@ -2484,6 +2612,7 @@ def api_test_record(device_id):
 
 if __name__ == "__main__":
     db.init_db()
+    _load_pending()
     print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}"
           f" / テストモード: {'ON' if _test_mode['on'] else 'OFF'}")
     # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ

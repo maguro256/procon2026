@@ -91,6 +91,32 @@ a:hover { color: var(--ink); }
 @keyframes lamp-pulse { 0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 35%, transparent); } 50% { box-shadow: 0 0 0 0 transparent; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 差し替えた後（送信・自動保存・自動更新）は、開いたときの持ち上がる演出を繰り返さない */
+.main.is-swapped :is(.page-head, .signage-strip, .sheet, .form-panel, .callout) { animation: none; }
+
+/* 差し替えの前後で中身が変わった行を一瞬光らせる（base.html の highlightChanges） */
+.is-changed { animation: row-changed 1.8s var(--ease); }
+.is-changed.is-added { animation: row-added 1.8s var(--ease); }
+@keyframes row-changed {
+  0%, 25% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); }
+  100% { background-color: transparent; box-shadow: inset 4px 0 0 transparent; }
+}
+@keyframes row-added {
+  0% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); opacity: 0; transform: translateY(-4px); }
+  20% { opacity: 1; transform: none; }
+  40% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); }
+  100% { background-color: transparent; box-shadow: inset 4px 0 0 transparent; }
+}
+/* 空き⇄使用中が切り替わった瞬間。状態灯とバッジが一度だけ弾む */
+.is-status-changed .status-lamp, .is-status-changed .badge-idle, .is-status-changed .badge-inuse {
+  animation: status-pop .6s var(--ease);
+}
+@keyframes status-pop { 0% { transform: scale(.6); } 60% { transform: scale(1.18); } 100% { transform: none; } }
+/* 件数のタイル。数字が変わったら下から差し替わる */
+.signage-tile.is-changed { animation: none; }
+.signage-tile.is-changed .tile-num { animation: num-bump .5s var(--ease); }
+@keyframes num-bump { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 /* ---------------- アイコン ---------------- */
 .icon { display: block; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -283,15 +309,35 @@ select.input {
 .section-title:first-of-type { margin-top: 0; }
 
 /* ---------------- フラッシュ ---------------- */
-.flashes { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-6); }
-.flash { display: flex; align-items: flex-start; gap: 10px; padding: 13px 16px; font-size: 13.5px; border-radius: var(--radius); border: 2px solid var(--line-strong); }
+.flashes {
+  /* 画面右上に重ねる。一覧の下の方で操作しても結果が目に入るように。成功は数秒で消える（base.html） */
+  position: fixed; z-index: 40; right: var(--space-5); top: var(--space-5);
+  width: min(420px, calc(100vw - 2 * var(--space-5)));
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.flash {
+  display: flex; align-items: flex-start; gap: 10px; padding: 13px 12px 13px 16px; font-size: 13.5px;
+  border-radius: var(--radius); border: 2px solid var(--line-strong);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 18%, transparent);
+  animation: flash-in .22s var(--ease) both;
+}
+.flash > div { flex: 1; min-width: 0; }
 .flash svg { flex: none; margin-top: 1px; }
+.flash.is-leaving { animation: flash-out .2s var(--ease) both; }
+.flash-close {
+  flex: none; width: 24px; height: 24px; margin: -2px 0 0; padding: 0;
+  font: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+  color: inherit; background: transparent; border: none; border-radius: var(--radius); opacity: .7;
+}
+.flash-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
+@keyframes flash-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes flash-out { to { opacity: 0; transform: translateX(16px); } }
 .flash-ok { background: var(--good-tint); color: var(--good); border-color: var(--good); }
 .flash-error { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
 
 /* ---------------- 状況サマリー帯（掲示板の見出し帯） ---------------- */
 .signage-strip {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 2px;
   border: 2px solid var(--line-strong); border-radius: var(--radius);
   overflow: hidden; margin-bottom: var(--space-6); background: var(--line-strong);
 }
@@ -305,6 +351,39 @@ select.input {
    タスクの状況サマリーでも使い回しているので、上の既定は変えずここで上書きする */
 .eq-status-strip .t-idle .tile-num { color: var(--good); }
 .eq-status-strip .t-inuse .tile-num { color: #ec6800; }
+/* 狭い画面では3枚が2+1に折り返し、空いたマスに帯の地（炭黒）が見えてしまう。
+   1列に積み、見出しと件数を横に並べて高さを抑える */
+@media (max-width: 600px) {
+  .signage-strip { grid-template-columns: 1fr; }
+  .signage-tile { flex-direction: row; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); }
+  .signage-tile .tile-num { font-size: 28px; }
+}
+/* 要対応・接続切れ。0件のときは普通の黒、1件以上で赤くする */
+.signage-tile.t-alert .tile-num { color: var(--bad); }
+.signage-tile.t-alert .tile-label { color: var(--bad); }
+
+/* 自動更新の表示（ダッシュボード）。止まったら赤くして、古い表示だと分かるようにする */
+.live-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: var(--space-2); font-size: 13px; }
+.live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+@media (prefers-reduced-motion: no-preference) { .live-dot { animation: live-blink 2s ease-in-out infinite; } }
+@keyframes live-blink { 50% { opacity: .35; } }
+.live-note.is-error .live-dot { background: var(--bad); animation: none; }
+.live-note.is-error .live-state { color: var(--bad); font-weight: 700; }
+.live-note.is-error .live-state::after { content: "（サーバーに繋がりません。再試行しています）"; }
+
+/* 要対応のタスク */
+.attention-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.attention-meta { font-size: 13px; margin-left: auto; }
+.attention-list .empty { padding: var(--space-4) var(--space-5); }
+.badge-overdue { background: var(--bad); color: var(--plate); border-color: var(--bad); }
+.badge-today { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow-deep); }
+.badge-offline-alert { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.badge-done { background: var(--good-tint); color: var(--good); border-color: var(--good); }
+.badge-done .icon { stroke-width: 2.4; }
+
+/* 使用中の経過時間。2時間を超えたら強調（使い終わったのにタッチし忘れている可能性） */
+.elapsed { font-size: 12.5px; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.elapsed.is-long { color: var(--bad); }
 
 /* ---------------- 機材の状況：一枚の掲示板に並ぶ行として続ける ---------------- */
 .eq-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -359,7 +438,7 @@ select.input {
 .form-panel .form-note { font-size: 13px; line-height: 1.7; margin-top: var(--space-4); max-width: 68ch; }
 .task-form-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1.4fr; gap: var(--space-3); align-items: end; }
 .task-form-grid .span-all { grid-column: 1 / -1; }
-.task-search-grid { display: grid; grid-template-columns: 1.4fr 1.4fr auto auto; gap: var(--space-3); align-items: end; }
+.task-search-grid { display: grid; grid-template-columns: 1.3fr 1.3fr .8fr .9fr 1.1fr auto auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid .span-all, .worker-edit-grid .span-all { grid-column: 1 / -1; }
 .equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
@@ -369,7 +448,32 @@ select.input {
 .task-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .task-head h3 { font-size: 16.5px; font-weight: 700; }
 .task-meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
-.task-actions { display: grid; grid-template-columns: 1.3fr 0.9fr 0.6fr 0.95fr 1.3fr auto auto auto; gap: var(--space-2); align-items: end; margin-top: var(--space-3); }
+.task-meta .strong { color: var(--ink); }
+.task-meta .unassigned { font-weight: 700; color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); }
+/* 行の右肩の操作。編集欄は折りたたんだので、よく使う操作だけを常に見せる */
+.task-tools { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+.task-edit { margin-top: var(--space-2); }
+.task-edit > summary {
+  font-size: 12.5px; font-weight: 700; cursor: pointer; width: fit-content;
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+}
+.task-edit > summary:hover { color: var(--blue-deep); }
+
+/* AI割当の根拠（WariAthena）。黄枠はAI操作の目印（DESIGN.md の AI ボタンと同じ語彙） */
+.ai-why { margin-top: var(--space-2); font-size: 13px; }
+.ai-why > summary { cursor: pointer; width: fit-content; font-size: 12.5px; font-weight: 700; color: color-mix(in srgb, var(--ink) 80%, var(--yellow-deep)); }
+.ai-why > summary:hover { color: var(--ink); }
+.ai-why[open] {
+  padding: var(--space-3) var(--space-4); border: 2px solid var(--yellow-deep);
+  border-radius: var(--radius); background: var(--plate);
+}
+.ai-why[open] > summary { margin-bottom: var(--space-2); }
+.ai-why-lead { color: var(--ink-soft); line-height: 1.7; margin-bottom: var(--space-2); max-width: 80ch; }
+.ai-why-table { font-size: 13px; }
+.ai-why-table th, .ai-why-table td { padding: 6px var(--space-3); }
+.ai-why-table tr.is-chosen { background: var(--yellow-tint); }
+.ai-why-excluded { margin-top: var(--space-2); color: var(--ink-soft); }
+.task-actions { display: grid; grid-template-columns: 1.3fr 0.9fr 0.6fr 0.95fr 1.3fr auto; gap: var(--space-2); align-items: end; margin-top: var(--space-3); }
 .task-actions .field { margin: 0; }
 .visually-hidden-form { display: none; }
 
@@ -480,6 +584,8 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
 
 .modal-badge.badge-wait { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
+.modal-badge.badge-danger { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.ask-text { font-size: 15px; line-height: 1.7; margin-bottom: var(--space-5); }
 .confirm-body {
   padding: var(--space-4); margin-bottom: var(--space-3);
   border-radius: var(--radius); background: var(--blue-tint); border: 1.5px solid var(--blue);
