@@ -54,6 +54,9 @@ _test_mode = {"on": DEBUG or os.environ.get("GEMMBA_TEST_PAGE") == "1"}
 
 # 未登録NFCタグの一時保持: {tag_id: module_id}
 _pending_tags: dict = {}
+# 未登録タグが最後にタッチされた時刻: {tag_id: time.time()}。管理画面のポップアップを
+# 「タッチ1回につき1回」だけ出すための目印（画面を移るたびに出し直さない）
+_pending_tag_touched: dict = {}
 # どの機材にも紐付いていないモジュールの一時保持: {device_id: {"ip":..., "seen_at":...}}
 _pending_modules: dict = {}
 # モジュールの起動セッション: {device_id: session}。再起動の検出に使う
@@ -156,7 +159,9 @@ def workers():
     conn.close()
     with _pending_lock:
         pending_tags = dict(_pending_tags)
-    return render_template("workers.html", workers=rows, pending_tags=pending_tags)
+    unlinked = sorted((w for w in rows if not w["nfc_tag_id"]), key=lambda w: w["name"])
+    return render_template("workers.html", workers=rows, pending_tags=pending_tags,
+                           unlinked_workers=unlinked)
 
 
 def _back_to(default_endpoint):
@@ -189,9 +194,43 @@ def add_worker():
         conn.commit()
         with _pending_lock:
             _pending_tags.pop(nfc, None)
+            _pending_tag_touched.pop(nfc, None)
         flash(f"{name} さんを登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に使われています", "error")
+    finally:
+        conn.close()
+    return _back_to("workers")
+
+
+@app.route("/workers/link_tag", methods=["POST"])
+def link_worker_tag():
+    """
+    タッチされた未登録タグを、ICタグIDを空欄のまま登録してあった作業者に紐付ける。
+    カードを後から配った人のための口。既にタグを持っている人の付け替えは
+    誤操作で他人のカードを奪わないよう、ここでは受けず一覧の編集からに限る。
+    """
+    nfc = request.form.get("nfc_tag_id", "").strip()
+    worker_id = request.form.get("worker_id", "").strip()
+    if not nfc or not worker_id:
+        flash("紐付ける作業者を選んでください", "error")
+        return _back_to("workers")
+    conn = db.get_db()
+    try:
+        row = conn.execute("SELECT name, nfc_tag_id FROM workers WHERE id = ?", (worker_id,)).fetchone()
+        if not row:
+            flash("作業者が見つかりません", "error")
+        elif row["nfc_tag_id"]:
+            flash(f"{row['name']} さんには既に別のICタグが紐付いています", "error")
+        else:
+            conn.execute("UPDATE workers SET nfc_tag_id = ? WHERE id = ?", (nfc, worker_id))
+            conn.commit()
+            with _pending_lock:
+                _pending_tags.pop(nfc, None)
+            _pending_tag_touched.pop(nfc, None)
+            flash(f"このICタグを {row['name']} さんに紐付けました", "ok")
+    except db.sqlite3.IntegrityError:
+        flash("そのICタグIDは既に別の作業者が使っています", "error")
     finally:
         conn.close()
     return _back_to("workers")
@@ -220,6 +259,7 @@ def update_worker(worker_id):
         conn.commit()
         with _pending_lock:
             _pending_tags.pop(nfc, None)
+            _pending_tag_touched.pop(nfc, None)
         flash(f"{row['name']} さんの役職・権限・ICタグを更新しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に別の作業者が使っています", "error")
@@ -441,6 +481,8 @@ def equipment():
 @app.route("/equipment/add", methods=["POST"])
 def add_equipment():
     name = request.form.get("name", "").strip()
+    # 機材コード(module_id)は画面では入力させず、登録後に採番する。
+    # 古い画面やスクリプトから送られてきたときだけそのまま使う
     module_id = request.form.get("module_id", "").strip() or None
     hostname = request.form.get("hostname", "").strip() or None
     if not name:
@@ -456,7 +498,7 @@ def add_equipment():
             row = conn.execute("SELECT id, name, module_id FROM equipment WHERE id = ?",
                                (cur.lastrowid,)).fetchone()
             module_id = _ensure_module_id(conn, row)
-        flash(f"機材「{name}」を登録しました（機材コード: {module_id}）", "ok")
+        flash(f"機材「{name}」を登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("その機材コードは既に使われています", "error")
     finally:
@@ -625,6 +667,9 @@ def api_pending():
     conn = db.get_db()
     names = {r["module_id"]: r["name"] for r in
              conn.execute("SELECT module_id, name FROM equipment WHERE module_id IS NOT NULL")}
+    # タグ未紐付けの作業者。ポップアップで「登録済みの人に紐付け」の候補にする
+    unlinked = [{"id": r["id"], "name": r["name"]} for r in
+                conn.execute("SELECT id, name FROM workers WHERE nfc_tag_id IS NULL ORDER BY name")]
     conn.close()
     with _replies_lock:
         confirms = [
@@ -638,13 +683,16 @@ def api_pending():
             if s.get("text") is not None and not s["event"].is_set()
         ]
     with _pending_lock:
-        tags = list(_pending_tags.items())
+        tags = [(tag, mod, _pending_tag_touched.get(tag)) for tag, mod in _pending_tags.items()]
         modules = list(_pending_modules.items())
     return jsonify({
-        "tags": [{"tag_id": tag, "module_id": mod, "equipment_name": names.get(mod)}
-                 for tag, mod in tags],
+        # touch: このタッチの識別子。ポップアップはこれ単位で一度だけ出す
+        "tags": [{"tag_id": tag, "module_id": mod, "equipment_name": names.get(mod),
+                  "touch": f"{tag}@{touched}"}
+                 for tag, mod, touched in tags],
         "modules": [dict(info, device_id=dev) for dev, info in modules],
         "confirms": confirms,
+        "unlinked_workers": unlinked,
     })
 
 
@@ -1199,6 +1247,7 @@ def api_unknown_tag():
         return jsonify({"ok": True, "note": "already registered"})
     with _pending_lock:
         _pending_tags[tag_id] = module_id
+        _pending_tag_touched[tag_id] = time.time()
         pending = len(_pending_tags)
     return jsonify({"ok": True, "pending": pending})
 
@@ -2286,6 +2335,10 @@ def toggle_test_mode():
     return _back_to("dashboard")
 
 
+# /test の「社員証をタッチ」に並べる未登録の仮カード
+TEST_UNREGISTERED_TAGS = ["test-card-01", "test-card-02", "test-card-03"]
+
+
 @app.route("/test")
 def test_page():
     conn = db.get_db()
@@ -2293,8 +2346,13 @@ def test_page():
     worker_rows = conn.execute(
         "SELECT id, name, nfc_tag_id FROM workers WHERE nfc_tag_id IS NOT NULL AND nfc_tag_id != '' ORDER BY id"
     ).fetchall()
+    used = {r["nfc_tag_id"] for r in conn.execute("SELECT nfc_tag_id FROM workers WHERE nfc_tag_id IS NOT NULL")}
     conn.close()
-    return render_template("test.html", equipment=equipment_rows, workers=worker_rows)
+    # 未登録カードのタッチ（登録ポップアップ・既存作業者への紐付け）を試すための仮の社員証。
+    # 誰かに紐付けたものは登録済みの欄に移るので、ここからは外す
+    unregistered = [t for t in TEST_UNREGISTERED_TAGS if t not in used]
+    return render_template("test.html", equipment=equipment_rows, workers=worker_rows,
+                           unregistered_tags=unregistered)
 
 
 @app.route("/api/test/state")

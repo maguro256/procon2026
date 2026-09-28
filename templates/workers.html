@@ -4,13 +4,13 @@
 {% block content %}
 <header class="page-head">
   <h1>作業者管理</h1>
-  <p class="page-sub"style="font-size: 20px;">従業員の登録、情報の更新をします</p>
+  <p class="page-sub"style="font-size: 20px;">作業者の登録、情報の更新をします</p>
 </header>
 
 {% if pending_tags %}
 <section class="callout form-panel">
   <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
-  <p class="callout-lead">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録してください。保有権限は登録後に編集できます。</p>
+  <p class="callout-lead">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録するか、ICタグ未紐付けで登録済みの作業者に紐付けてください。保有権限は登録後に編集できます。</p>
   {% for tag_id, module_id in pending_tags.items() %}
   <div class="callout-row">
     <p>タグID: <strong class="mono">{{ tag_id }}</strong>{% if module_id %} <span class="text-muted">（検出モジュール: {{ module_id }}）</span>{% endif %}</p>
@@ -25,6 +25,18 @@
       <div class="field"><label>役職</label>{{ role_select(None) }}</div>
       <button type="submit" class="btn btn-primary">このタグで登録</button>
     </form>
+    {% if unlinked_workers %}
+    <form method="post" action="{{ url_for('link_worker_tag') }}" class="worker-form-grid">
+      <input type="hidden" name="nfc_tag_id" value="{{ tag_id }}">
+      <div class="field"><label>または登録済みの作業者に紐付け</label>
+        <select class="input" name="worker_id" required>
+          <option value="">ICタグ未紐付けの作業者を選ぶ</option>
+          {% for w in unlinked_workers %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-secondary">この人に紐付け</button>
+    </form>
+    {% endif %}
   </div>
   {% endfor %}
 </section>
@@ -40,7 +52,7 @@
       <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
     </div>
     <div class="field"><label>役職</label>{{ role_select(None) }}</div>
-    {# 「後で紐付け可」と書いてあったが、あとから紐付ける画面は無い。実態に合わせた #}
+    {# 空欄で登録した人には、あとでカードをタッチしたときのポップアップから紐付けられる #}
     <div class="field"><label>腕輪ICタグID（任意）</label>
       <input class="input" type="text" name="nfc_tag_id" placeholder="空欄でも登録できます">
     </div>
@@ -52,8 +64,8 @@
   <p class="text-muted form-note">
     <strong>ICカードは現場でタッチして登録してください。</strong>
     未登録のカードがタッチされると、この画面に登録フォームが自動で出ます。IDを手で打つ必要はありません。
-    ここでICタグIDを空欄のまま登録した人は、<strong>あとからカードを紐付けられません</strong>。
-    カードを渡す予定があるなら、タッチから登録してください。
+    ここでICタグIDを空欄のまま登録した人には、あとでその人のカードをタッチすると出るフォームの
+    「登録済みの作業者に紐付ける」から紐付けられます。
   </p>
 </section>
 

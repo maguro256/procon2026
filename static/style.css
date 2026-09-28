@@ -362,7 +362,7 @@ select.input {
 .task-search-grid { display: grid; grid-template-columns: 1.4fr 1.4fr auto auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }
 .worker-form-grid .span-all, .worker-edit-grid .span-all { grid-column: 1 / -1; }
-.equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap: var(--space-3); align-items: end; }
+.equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr auto; gap: var(--space-3); align-items: end; }
 
 /* ---------------- タスク一覧：一枚の掲示板に並ぶ行として続ける ---------------- */
 .task-row.task-done { opacity: .55; }
@@ -477,6 +477,9 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .modal-facts dd { word-break: break-all; }
 
 .modal-form { display: flex; flex-direction: column; gap: var(--space-4); }
+.modal-form[hidden] { display: none; }
+/* 新規登録の下に置く「登録済みの人に紐付け」。別の操作なので線で区切る */
+.modal-link { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1.5px solid var(--line); }
 .modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
 
 .modal-badge.badge-wait { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
