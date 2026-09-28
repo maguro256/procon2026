@@ -1,0 +1,205 @@
+\documentclass[a4paper,10pt,twocolumn]{ltjsarticle}
+\usepackage[top=20mm,bottom=20mm,left=18mm,right=18mm,columnsep=8mm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+\setlist{nosep,leftmargin=1.2em}
+\setlength{\textfloatsep}{8pt}
+\setlength{\dbltextfloatsep}{8pt}
+\setlength{\floatsep}{6pt}
+\setlength{\intextsep}{6pt}
+\setlength{\abovecaptionskip}{3pt}
+\setlength{\belowcaptionskip}{2pt}
+\makeatletter
+\renewcommand{\section}{\@startsection{section}{1}{\z@}%
+  {1.2ex plus .3ex}{.6ex}{\normalfont\normalsize\bfseries\sffamily}}
+\renewcommand{\thetable}{\arabic{table}}
+\renewcommand{\thefigure}{\arabic{figure}}
+\renewcommand{\tablename}{表}
+\renewcommand{\figurename}{図}
+\long\def\@makecaption#1#2{\vskip\abovecaptionskip
+  \centering\small #1\hspace{1em}#2\par\vskip\belowcaptionskip}
+\makeatother
+\renewcommand{\refname}{参考文献}
+
+\title{\vspace{-12mm}\large\bfseries\sffamily
+NFC タッチで得た文脈を用いる工場向け音声タスク登録\\[2pt]
+\normalsize ――運用データからの認識語彙の自動構成――}
+\author{\normalsize 氏名\hspace{2em}指導教員：○○○○}
+\date{\vspace{-6mm}}
+
+\begin{document}
+\maketitle
+\thispagestyle{plain}
+
+\section{はじめに}
+工場の共有機材（旋盤・プレス機など）では、不具合や段取りの気付きが
+口頭で伝えられ、記録に残らず失われやすい。手が汚れ手袋をした現場では、
+画面操作より\textbf{話して登録する}方が向いている。産業現場での音声入力は
+古くから試みられてきたが \cite{ebukuro}、当時は限られた単語を認識する
+方式であった。大規模事前学習モデルの登場で自由な発話を文字にできるように
+なった \cite{kawahara2018,kawahara2023} 一方、「切粉」「芯出し」「治具」の
+ような現場の語は依然として誤りやすい。
+
+専門語への対処としては、認識器に語句リストを与えて偏らせる文脈適応
+\cite{shudo}、プロンプトで認識を誘導する方法 \cite{sato}、認識後に
+テキストで誤りを直す方法 \cite{ishikawa} などが研究されている。
+しかしいずれも、\textbf{語句リストやプロンプトを誰がどう用意するか}は
+利用者側の問題として残る。専任の IT 担当者がいない中小工場では、
+この準備自体が導入の障壁になる。
+
+本研究は、我々が開発している共有機材の作業管理システムに注目する。
+このシステムでは作業者が機材のモジュールに社員証をタッチしてから操作
+するため、\textbf{話し始める前に「誰が・どの機材で」話すかが分かっている}。
+さらにサーバには、機材名・過去のタスク名・管理者が修正したタスク名が
+運用とともに蓄積される。そこで本研究では次を問う。
+\begin{itemize}
+\item \textbf{Q}：タッチで得た文脈と運用データから、認識語彙を
+  \textbf{人手なしで}構成・更新することで、工場の作業指示を
+  タスクとして正しく登録できるか
+\end{itemize}
+独自性は、(1) 物理的なタッチを認識の文脈として使う点、
+(2) 語彙の出どころを運用データに求め、管理者の修正を\textbf{追加の手間なく}
+語彙に還流させる点、(3) 評価を文字誤り率ではなく
+\textbf{登録されたタスクの正しさ}で行う点にある。
+なお作業の割当や意図分析を行う AI 部は別の担当者が開発しており、
+本稿では扱わない。
+
+\section{対象システム}
+構成を図\ref{fig:arch}に示す。各機材のモジュール（試作は Raspberry Pi 4、
+表\ref{tab:hw}）は、判断をすべてサーバに任せる薄い端末である。
+タッチは MQTT で、IP ではなくモジュール ID を付けてサーバへ送られ、
+サーバはこれを機材と作業者に対応付ける。音声は、メニューで
+「タスク登録」を選んだあと\textbf{決定ボタンを押している間だけ}録音し、
+HTTP で PC に送る。押し始めと話し始めがそろうため、発話の頭や末尾が
+欠けにくい。PC では Whisper（large-v3）を常駐させて文字にする。
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\scriptsize,
+  box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt,minimum height=7mm},
+  >={Stealth[length=4pt]}]
+\node[box,minimum width=17mm] (mod) {モジュール\\(Raspberry Pi)};
+\node[box,right=7mm of mod,minimum width=14mm] (brk) {MQTT\\ブローカ};
+\node[box,right=7mm of brk,minimum width=17mm] (app) {Web サーバ\\(Flask, DB)};
+\node[box,anchor=north,minimum width=17mm,fill=black!6] (stt) at ([xshift=4mm,yshift=-9mm]app.south) {語彙の構成\\＋文字起こし};
+\node[box,above=4mm of app,minimum width=17mm] (web) {管理画面\\(ブラウザ)};
+\node[box,left=7mm of web,minimum width=14mm,dashed] (ai) {AI 部\\(別担当)};
+\draw[->] ([yshift=1.5mm]mod.east) -- node[above=1pt]{タッチ} ([yshift=1.5mm]brk.west);
+\draw[<-] ([yshift=-1.5mm]mod.east) -- node[below]{指示} ([yshift=-1.5mm]brk.west);
+\draw[<->] (brk) -- (app);
+\draw[->] ([xshift=4mm]app.south) -- node[right]{文脈・運用データ} (stt.north);
+\draw[<->,dashed] (app.north west) -- (ai.south east);
+\draw[<->] (web) -- node[right]{修正} (app);
+\draw[->] (mod.south) -- ++(0,-4.5mm) -| node[pos=0.25,below]{音声 WAV（HTTP POST）} ([xshift=-3mm]app.south);
+\end{tikzpicture}
+\caption{システム構成（網掛けが本研究の提案部）}\label{fig:arch}
+\end{figure}
+
+\begin{table}[t]
+\centering\small
+\caption{試作モジュールの部品}\label{tab:hw}
+\begin{tabular}{@{}ll@{}}
+\toprule
+役割 & 部品・接続 \\
+\midrule
+表示 & ILI9341 2.8 インチ TFT（SPI）\\
+NFC & RC522（ISO 14443A, SPI 相乗り）\\
+マイク & INMP441（I$^2$S, 16\,kHz）\\
+入力・表示 & ボタン 3 個（左・決定・右）, LED 2 個\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{提案：運用データからの認識語彙の構成}
+Whisper は認識の前に文脈として読む文（初期プロンプト）を受け取れる。
+ここに現場の語を並べると認識がその語に寄る。ただし長さに上限
+（224 トークン）があり、工場のすべての語は入らない。そこで、
+\textbf{その発話に関係しそうな語を選んで詰める}ことが問題になる。
+
+タッチで機材 $e$ と作業者 $w$ が決まると、プロンプト $P(e,w)$ を
+次の順に上限まで詰めて組み立てる。
+\begin{enumerate}[label=(\arabic*)]
+\item \textbf{文体の核}：「工場の作業指示です。」のような固定の一文。
+  文体と句読点の付け方がこれに引きずられる
+\item \textbf{機材の語}：機材 $e$ の名称と、$e$ で過去に登録・実行された
+  タスク名に現れる語（出現頻度と新しさで順位付け）
+\item \textbf{作業者の語}：$w$ が過去に登録したタスク名に現れる語
+\item \textbf{工場全体の語}：全タスク名・権限名に現れる頻出語
+\end{enumerate}
+\textbf{修正の還流}：音声で登録されたタスク名を管理者が管理画面で直すと、
+直した後の語が (2)(3) の候補に入る。管理者は普段どおりタスクを
+直すだけで、語彙の保守を意識する必要がない。認識器の学習は一切しない。
+
+\textbf{想定される副作用}：プロンプトの語は、発話に含まれないのに
+出力へ現れる（誤挿入）おそれがある。語を増やすほど誤挿入の機会も増える
+ので、語彙量には最適な点があると考えられる。これを評価で確かめる。
+
+\section{予備評価}
+提案の前提である「語彙を与えると工場の語が正しく取れる」ことを、
+\textbf{人手で書いた固定の語彙}を使って確かめた。語彙は旋盤・芯出し・切粉・
+治具など十数語を含む指示文である。実機マイクで 3 文を読み上げ、
+同じ音声を語彙の有無の 2 条件で文字にした（表\ref{tab:prompt}）。
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{予備評価：語彙の有無による認識結果\\（実機マイク・同一音声・large-v3，冒頭部分）}\label{tab:prompt}
+\begin{tabular}{@{}ll@{}}
+\toprule
+語彙あり & 語彙なし（太字が誤り） \\
+\midrule
+旋盤の切粉清掃、至急を… & 旋盤の\textbf{接吻}清掃\textbf{支給}を… \\
+製品Cの外形加工20個、… & 製品Cの外形加工を20個… \\
+治具Bの芯出し…振れが… & \textbf{チグ}Bの\textbf{新出し}…\textbf{フレ}が… \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+語彙ありでは助詞の揺れを除き語はすべて正しく取れ、語彙なしでは
+5 語（うち専門語 4 語）が崩れて句読点も消えた。また「振れ」が
+「触れ」になる誤りは、「振れが出ているので芯出しをやり直します」を
+語彙に加えるだけで解消した。\textbf{語を 1 つ足すだけで誤りが直る}ことは、
+修正を語彙へ還流させる提案の有効性を示唆している。
+処理時間は GPU（RTX 3060 Ti）で 25\,秒の音声に 1.4\,秒であり、
+語彙を毎回組み立て直しても待ち時間への影響は小さい。
+
+\section{今後の展望と評価計画}
+現在はシステム本体の製作を優先しており、語彙の自動構成は設計段階にある。
+今後、実装とあわせて次の評価を行う。
+\begin{itemize}
+\item \textbf{E1（語彙の出どころ）}：作業指示を数十文・複数話者で集め、
+  語彙なし／人手の固定語彙／自動構成（工場全体）／自動構成（機材・作業者で
+  条件付け）の 4 条件で比べる。指標は、機材名・作業内容・数量・期限が
+  正しく登録された割合と、専門語の正解率とする
+\item \textbf{E2（語彙量と誤挿入）}：詰める語の数を変え、正解率と
+  誤挿入率の釣り合いを調べる
+\item \textbf{E3（語彙の成長）}：蓄積したタスクと修正の記録を時系列で
+  再生し、運用が進むにつれて正解率がどう上がるかを調べる
+\item \textbf{E4（騒音）}：工場の騒音を重ねた条件で E1 を繰り返す
+\end{itemize}
+さらに、同じ機材で続けて話す内容は似ると考えられるため、直前の登録内容を
+文脈に加える拡張や、認識後の誤り訂正 \cite{ishikawa} との組み合わせも検討する。
+
+\section{まとめ}
+NFC タッチで話者と機材が事前に分かるという作業管理システムの性質を
+利用し、運用データから認識語彙を人手なしで構成・更新する方法を提案した。
+固定語彙による予備評価では、語彙の付与で専門語の誤りが解消し、
+語の追加で個別の誤りも直せることを確かめた。
+
+\textbf{限界}：予備評価は読み上げ 3 文・静かな環境・人手の語彙のみで、
+自動構成の効果はまだ示せていない。
+
+\begin{thebibliography}{9}\small
+\setlength{\itemsep}{0pt}
+\bibitem{ebukuro} 江袋林蔵，「産業現場における音声入力応答の利用」，日本ロボット学会誌，2(1)，pp.~28--34，1984.
+\bibitem{kawahara2018} 河原達也，「音声認識技術の変遷と最先端」，日本音響学会誌，74(7)，pp.~381--386，2018.
+\bibitem{kawahara2023} 河原達也，三村正人，「大規模事前学習モデルに基づく音声認識」，日本音響学会誌，79(9)，pp.~455--460，2023.
+\bibitem{shudo} 周藤唯，M. Shakeel，Y. Peng，渡部晋治，「動的な語彙拡張を用いた End-to-end 音声認識の文脈適応」，人工知能学会第二種研究会資料，SIG-Challenge-066-05，2024.
+\bibitem{sato} 佐藤文一，吉永直樹，豊田正史，喜連川優，「プロンプトと複数の音声認識候補による青空文庫振り仮名注釈付き音声コーパスの再構築」，言語処理学会第 31 回年次大会，B8-5，2025.
+\bibitem{ishikawa} 石川開，隅田英一郎，「テキストデータを使った音声認識誤りの訂正」，自然言語処理，7(4)，pp.~205--227，2000.
+\end{thebibliography}
+
+\end{document}
