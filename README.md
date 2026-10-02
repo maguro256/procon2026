@@ -1,14 +1,2 @@
 # FACTORY MORE WORTH 
 ## 工場をもっとわーすに。
-### MoreWorth系列企業一覧
-FACTORY MORE WORTH
-
-
-SYOKUDO MORE WORTH
-
-
-KIZUNA MORE WORTH
-
-協力企業様
-
-(有)エムコーポレーション

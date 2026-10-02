@@ -1,0 +1,440 @@
+% 卒業研究 発表ポスター（A1 縦）
+% ビルド: build_poster.bat をダブルクリック（Tectonic）
+% グラフのデータ: python resume/poster_data.py 150 20 → poster_curve.csv
+% 写真を入れるとき: resume/photo_module.jpg を置くと点線の枠が写真に置き換わる
+\documentclass[17pt,a1paper,portrait,margin=0mm,innermargin=14mm,
+  blockverticalspace=7mm,colspace=11mm,subcolspace=8mm]{tikzposter}
+
+\usepackage{xeCJK}
+\setCJKmainfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Regular.otf}
+\setCJKsansfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Regular.otf}
+\setmainfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf]
+\setsansfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf]
+\xeCJKsetup{CJKspace=false}
+\xeCJKDeclareCharClass{FullLeft}{"2015}
+
+\usepackage{amsmath,amssymb,bm}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning,arrows.meta,calc}
+
+\setlist{nosep,leftmargin=1.1em,itemsep=2pt}
+\renewcommand{\labelitemi}{\textcolor{accent}{\textbullet}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\linespread{1.1}
+
+% ---------------------------------------------------------------- 色
+\definecolor{navy}{HTML}{1F3A5F}
+\definecolor{accent}{HTML}{2A78D6}   % 提案（系列1：青）
+\definecolor{accent2}{HTML}{EB6834}  % 提案・負荷分散なし（系列2：橙）
+\definecolor{base}{HTML}{8A8984}     % 比較手法（灰）
+\definecolor{ink}{HTML}{1B1B1A}
+\definecolor{ink2}{HTML}{52514E}
+\definecolor{paper}{HTML}{EEF1F5}
+\colorlet{accentsoft}{accent!8}
+
+\definecolorstyle{wari}{
+  \colorlet{colorOne}{navy}\colorlet{colorTwo}{accent}\colorlet{colorThree}{accent2}
+}{
+  \colorlet{backgroundcolor}{paper}
+  \colorlet{framecolor}{paper}
+  \colorlet{titlefgcolor}{white}
+  \colorlet{titlebgcolor}{navy}
+  \colorlet{blocktitlebgcolor}{navy}
+  \colorlet{blocktitlefgcolor}{white}
+  \colorlet{blockbodybgcolor}{white}
+  \colorlet{blockbodyfgcolor}{ink}
+  \colorlet{innerblocktitlebgcolor}{white}
+  \colorlet{innerblocktitlefgcolor}{navy}
+  \colorlet{innerblockbodybgcolor}{white}
+  \colorlet{innerblockbodyfgcolor}{ink}
+  \colorlet{notefgcolor}{ink}
+  \colorlet{notebgcolor}{accentsoft}
+  \colorlet{noteframecolor}{accent}
+}
+\usecolorstyle{wari}
+\usetitlestyle{Filled}
+\usebackgroundstyle{Default}
+
+% ブロック：見出しは帯、本文は白
+\defineblockstyle{wariblock}{
+  titlewidthscale=1, bodywidthscale=1, titleleft,
+  titleoffsetx=0pt, titleoffsety=0pt, bodyoffsetx=0mm, bodyoffsety=0mm,
+  bodyverticalshift=0mm, roundedcorners=5, linewidth=0pt,
+  titleinnersep=3.5mm, bodyinnersep=8mm
+}{
+  \ifBlockHasTitle
+    \draw[draw=none, fill=blocktitlebgcolor, rounded corners=\blockroundedcorners]
+      (blockbody.south west) rectangle (blocktitle.north east);
+    \draw[draw=none, fill=blockbodybgcolor, rounded corners=\blockroundedcorners]
+      (blockbody.south west) rectangle (blockbody.north east);
+    \fill[blockbodybgcolor] (blockbody.north west) rectangle
+      ($(blockbody.north east)+(0,-\blockroundedcorners)$);
+  \else
+    \draw[draw=none, fill=blockbodybgcolor, rounded corners=\blockroundedcorners]
+      (blockbody.south west) rectangle (blockbody.north east);
+  \fi
+}
+\useblockstyle{wariblock}
+
+% ---------------------------------------------------------------- タイトル
+\settitle{%
+  \begin{minipage}[c]{46cm}
+    \raggedright\color{white}
+    {\fontsize{28pt}{34pt}\selectfont 共有機材の現場における}\\[6pt]
+    {\fontsize{43pt}{54pt}\selectfont\bfseries NFCタッチ起点のタスク自動割当システムと、\\
+     実績から学習する割当AIの開発}\\[12pt]
+    {\fontsize{25pt}{32pt}\selectfont\color{white!78!navy}
+      ―― 予約をなくし、タッチした瞬間に「今やるべき仕事」を渡す ――}\hspace{2.5em}%
+    {\fontsize{24pt}{30pt}\selectfont E2209\quad 指導教員：野村 隼人}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{7cm}
+    \centering
+    \IfFileExists{../logo.png}{%
+      \setlength{\fboxsep}{8pt}%
+      \fcolorbox{white}{white}{\includegraphics[width=5.6cm]{../logo.png}}}{}
+  \end{minipage}%
+}
+
+% ---------------------------------------------------------------- 部品
+\newcommand{\num}[1]{{\color{accent!50!white}#1}\hspace{0.5em}}
+\newcommand{\x}{\bm{x}}
+\newcommand{\thetab}{\bm{\theta}}
+\newcommand{\sm}{\fontsize{15pt}{20pt}\selectfont}
+\newcommand{\capt}[1]{{\centering\fontsize{14pt}{18pt}\selectfont\color{ink2}#1\par}}
+\newcommand{\head}[1]{{\bfseries\color{navy}#1}\par}
+
+% 大きな数字のタイル
+\newcommand{\hero}[3]{%
+  \begin{minipage}[t]{0.32\linewidth}\centering
+    {\fontsize{50pt}{50pt}\selectfont\bfseries\color{#3}#1}\\[4pt]
+    {\fontsize{16pt}{21pt}\selectfont\color{ink2}#2}
+  \end{minipage}}
+
+\tikzset{
+  box/.style={draw=navy, line width=2pt, rounded corners=6pt, fill=white,
+    align=flush center, inner sep=7pt, text=ink},
+  softbox/.style={draw=none, rounded corners=6pt, fill=paper, align=flush center,
+    inner sep=8pt, text=ink},
+  aibox/.style={draw=accent, line width=2.5pt, rounded corners=6pt, fill=accentsoft,
+    align=flush center, inner sep=7pt, text=ink},
+  arr/.style={-{Stealth[length=12pt,width=11pt]}, line width=2.5pt, color=navy!70},
+  dbl/.style={{Stealth[length=12pt,width=11pt]}-{Stealth[length=12pt,width=11pt]},
+    line width=2.5pt, color=navy!70},
+  lab/.style={font=\fontsize{15pt}{18pt}\selectfont, text=ink, align=left},
+}
+
+\pgfplotsset{
+  wari/.style={
+    axis lines=left, axis line style={ink2, line width=1pt},
+    tick style={ink2, line width=1pt},
+    tick label style={font=\fontsize{13pt}{13pt}\selectfont, color=ink2},
+    label style={font=\fontsize{14pt}{17pt}\selectfont, color=ink2},
+    grid=major, major grid style={ink2!15, line width=0.7pt},
+    every axis plot/.append style={line width=2.5pt},
+    unbounded coords=jump,
+    legend style={draw=none, fill=none, font=\fontsize{14pt}{17pt}\selectfont, text=ink},
+    legend cell align=left,
+  },
+}
+
+% ================================================================ 本文
+\tikzposterlatexaffectionproofoff
+\begin{document}
+\maketitle[width=\paperwidth, linewidth=0pt, roundedcorners=0, innersep=8mm,
+  titletoblockverticalspace=8mm]
+
+\begin{columns}
+% ================================================================ 左列
+\column{0.5}
+
+\block{\num{1}背景と課題}{%
+  工場の共有機材（レーザー加工機・旋盤・プレス機など）では次の非効率が起きやすく、
+  専任の IT 担当者がいない中小工場では、計画や探し物のコストが現場の負担になる\,[1,2]。
+  \par\vspace{6pt}
+  {\centering
+  \begin{tikzpicture}
+    \tikzset{p/.style={softbox, text width=7.2cm, minimum height=2.9cm,
+      font=\fontsize{16pt}{21pt}\selectfont}}
+    \node[p] (p1) {{\bfseries\fontsize{21pt}{27pt}\selectfont 使用状況が見えない}\\[4pt]
+                    誰が何に使って\\いるか分からない};
+    \node[p, right=6mm of p1] (p2) {{\bfseries\fontsize{21pt}{27pt}\selectfont ゴースト予約}\\[4pt]
+                    予約はあるのに\\来ない};
+    \node[p, right=6mm of p2] (p3) {{\bfseries\fontsize{21pt}{27pt}\selectfont 仕事の偏り}\\[4pt]
+                    重要な仕事が\\偏る・忘れられる};
+  \end{tikzpicture}\par}
+  \vspace{4pt}
+
+  \coloredbox[bgcolor=accentsoft, fgcolor=ink, framecolor=accent, roundedcorners=6, linewidth=2pt]{%
+    \textbf{方針}：遠隔予約の機能をあえて持たず、\textbf{社員証のタッチだけ}を操作の起点にする。
+    システム上の状態と現場の実態が常に一致し、ゴースト予約が\textbf{原理的に起きない}。
+    チーム開発のうち、筆者は\textbf{タスク割当 AI} を担当した。}
+}
+
+\block{\num{2}システムの構成}{%
+  {\centering
+  \begin{tikzpicture}[font=\fontsize{16pt}{21pt}\selectfont]
+    \node[box, text width=6.2cm, minimum height=3.5cm] (mod)
+      {{\bfseries 機材モジュール}\\機材ごとに 1 台\\[2pt]
+       {\sm\color{ink2} NFC・LCD・ボタン・LED}};
+    \node[box, text width=5.8cm, minimum height=3.5cm, right=21mm of mod] (srv)
+      {{\bfseries サーバ}\\Flask + SQLite\\[2pt]
+       {\sm\color{ink2} 作業者・機材・タスク・ログ}};
+    \node[box, text width=5.4cm, minimum height=3.5cm, right=21mm of srv] (web)
+      {{\bfseries 管理画面}\\ブラウザ\\[2pt]
+       {\sm\color{ink2} 登録・割当・稼働状況}};
+    \node[aibox, text width=8.4cm, below=10mm of srv] (ai)
+      {{\bfseries 割当 AI（WariAthena）}\\{\sm 筆者の担当}};
+    \node[above=2mm of mod, font=\fontsize{15pt}{18pt}\selectfont, text=ink2] {社員証をタッチ};
+    \draw[dbl] (mod) -- node[above=2pt, font=\fontsize{13pt}{13pt}\selectfont, text=ink2]{MQTT} (srv);
+    \draw[dbl] (srv) -- node[above=2pt, font=\fontsize{13pt}{13pt}\selectfont, text=ink2]{HTTP} (web);
+    \draw[dbl, color=accent] (srv) -- (ai);
+  \end{tikzpicture}\par}
+  \vspace{6pt}
+  \begin{minipage}[t]{0.6\linewidth}
+    \begin{itemize}
+      \item \textbf{試作}：Raspberry Pi 4 ＋ NFC リーダー・2.8 インチ LCD・ボタン 3 個・LED（量産は ESP32 へ）
+      \item \textbf{通信}：MQTT\,[7]。切断は即時に死活表示へ
+      \item \textbf{管理画面}：登録・AI 割当と根拠・稼働状況。予約画面は\textbf{意図的に作らない}
+    \end{itemize}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.37\linewidth}
+    \vspace{0pt}\centering
+    \IfFileExists{photo_module.jpg}{%
+      \includegraphics[width=\linewidth,height=0.56\linewidth,keepaspectratio]{photo_module.jpg}%
+    }{%
+      \tikz\node[draw=ink2, dashed, line width=1.5pt, rounded corners=6pt,
+            minimum width=\linewidth, minimum height=0.56\linewidth,
+            align=flush center, text=ink2, font=\fontsize{16pt}{21pt}\selectfont]
+        {試作モジュールの写真\\（photo\_module.jpg）};%
+    }\\[3pt]
+    \capt{試作した機材モジュール}
+  \end{minipage}
+
+}
+
+\block{\num{3}現場の流れ}{%
+  {\centering
+  \begin{tikzpicture}
+    \tikzset{s/.style={draw=navy!30, line width=1.5pt, rounded corners=6pt, fill=white,
+      align=flush center, text width=5.1cm, minimum height=3.9cm, inner sep=4pt,
+      font=\fontsize{15pt}{20pt}\selectfont}}
+    \newcommand{\n}[1]{{\color{accent}\bfseries\fontsize{26pt}{26pt}\selectfont #1}\\[4pt]}
+    \node[s] (s1) {\n{1}空いている機材で\\社員証を\textbf{タッチ}。\\候補タスクが\\LCD に出る};
+    \node[s, right=8mm of s1] (s2) {\n{2}ボタンで\textbf{承認}する\\と機材を\textbf{ロック}。\\他者のタッチは\\拒否（排他制御）};
+    \node[s, right=8mm of s2] (s3) {\n{3}他の機材に本人宛\\のより重要なタスク\\があれば\textbf{移るか}\\\textbf{を尋ねる}（誘導）};
+    \node[s, right=8mm of s3] (s4) {\n{4}\textbf{再タッチで完了}。\\所要時間を記録し、\\体感難易度を\\尋ねる};
+    \foreach \i/\j in {1/2,2/3,3/4} \draw[arr, line width=2pt] (s\i) -- (s\j);
+  \end{tikzpicture}\par}
+}
+
+% ================================================================ 右列
+\column{0.5}
+
+\block{\num{4}割当 AI：WariAthena}{%
+  作業者を「腕」、タスクの特徴を「文脈」とする\textbf{文脈付きバンディット}\,[3] とみなす。
+  実績のある人に任せる\textbf{活用}と、まだ分からない人に任せてみる\textbf{探索}を両立させる。
+  \par\vspace{6pt}
+  {\centering
+  \begin{tikzpicture}[font=\fontsize{17pt}{22pt}\selectfont]
+    \tikzset{c/.style={text width=6.5cm, minimum height=3.3cm}}
+    \node[box, c] (log) {{\bfseries 作業ログ}\\所要時間・体感難易度};
+    \node[box, c, right=13mm of log] (rew) {{\bfseries 報酬 $r$}\\平均と比べた速さ};
+    \node[aibox, c, right=13mm of rew] (blr) {{\bfseries ベイズ線形回帰}\\作業者ごとに\\得意・不得意を学習};
+    \node[aibox, c, below=11mm of blr] (ts) {{\bfseries Thompson Sampling}\\事後分布から引いて比較};
+    \node[box, c, below=11mm of rew] (perm) {{\bfseries 資格で除外}\\無資格者は候補にしない};
+    \node[aibox, c, below=11mm of log] (load) {{\bfseries 負荷分散}\\手持ちの多い人の\\点数を下げる};
+    \draw[arr] (log) -- (rew);
+    \draw[arr] (rew) -- (blr);
+    \draw[arr] (blr) -- (ts);
+    \draw[arr] (ts) -- (perm);
+    \draw[arr] (perm) -- (load);
+    \draw[arr] (load) -- node[left=3pt, align=right, font=\fontsize{14pt}{17pt}\selectfont, text=ink2]
+      {割当・\\作業} (log);
+  \end{tikzpicture}\par}
+
+  \vspace{4pt}
+  \textbf{文脈}：タスク $j$ を作業者 $w$ に任せるときの特徴
+  \begin{equation*}
+    \x = \bigl[\,y,\; d,\; y d,\; \bm{e}_{\mathrm{diff}},\; \bm{e}_{\mathrm{perm}},\; \bm{e}_{\mathrm{eq}}\,\bigr]
+  \end{equation*}
+  {\fontsize{16pt}{21pt}\selectfont\color{ink2}$y$：勤続年数、$d$：難易度、$\bm{e}$：難易度・必要な資格・機材の one-hot。
+  資格と機材を入れて「溶接が得意な人」「旋盤が得意な人」を区別する。}
+
+  \textbf{報酬}：1 個あたりの所要時間 $t$ を、同じ難易度の過去の平均 $\bar t$ と比べる。
+  \begin{equation*}
+    r = c_f \cdot \bar t / t, \qquad c_f \in \{1.5,\ 1.0,\ 0.5\}
+  \end{equation*}
+  {\fontsize{16pt}{21pt}\selectfont\color{ink2}$c_f$：本人の体感（簡単・普通・難しい）。数量で割るので、
+  大量のタスクを引いた人が「遅い」と学習されない。}
+
+  \textbf{学習}：作業者ごとに $r \approx \thetab_w^{\top}\x$ を、ベイズ線形回帰\,[4,5] で学ぶ。
+  ログを古い順に再生して毎回組み立て直すので、再起動しても失われない。
+
+  \textbf{選択}：事後分布から $\tilde\thetab_w$ を引き\,[3,6]、手持ちの残り時間 $L_w$ と
+  このタスクの見積もり時間 $\hat T_j$ で点数を割る。
+  \begin{equation*}
+    s_w = \tilde\thetab_w^{\top}\x \;\Big/\; \bigl(1 + L_w / \hat T_j\bigr)
+  \end{equation*}
+  {\fontsize{16pt}{21pt}\selectfont\color{ink2}実績の少ない人は分布が広く、ときどき大きな値を引くので自然に試される。
+  割り算なので報酬の尺度に依らず、得意・不得意の差が大きい仕事ほど任され続ける。}
+
+  \coloredbox[bgcolor=paper, fgcolor=ink, framecolor=paper, roundedcorners=6, linewidth=0pt]{%
+    \textbf{資格はハード制約}：フォークリフト・溶接などの資格は学習させず、AI を呼ぶ前に候補から除く。
+    無資格者に危険作業を任せて、失敗から学ぶ設計は成り立たない。\\[4pt]
+    \textbf{使い方は 2 通り}：(a) タッチされたとき、その人に向く\textbf{タスクを並べる}。
+    (b) 管理画面で、タスクに向く\textbf{人を選び}、期待値・手持ち・除外理由を根拠として表示する。}
+}
+
+\end{columns}
+
+% ---------------------------------------------------------------- 評価（全幅）
+\block{\num{5}評価（シミュレーション）}{%
+  \begin{minipage}[t]{0.25\linewidth}
+    \head{設定}
+    作業者 6 名（勤続 1〜30 年）。真の時間倍率は AI に隠す。
+    ベテランほど速いが個人差 $\pm30\%$ があり、各人に 1 つ\textbf{得意な作業}（倍率 $\times0.6$）がある。
+    1 ラウンドに 6 件を順に割り当て、150 ラウンド・20 試行。割当 AI は実装をそのまま呼んだ。
+
+    \vspace{6pt}
+    \head{指標}
+    {\sm
+    \textbf{適性比}：任せた人の時間倍率 / 最適な人の倍率（1 が最良）\\[2pt]
+    \textbf{完了時間}：1 ラウンドで最も遅い人が終わるまでの時間\\[2pt]
+    いずれも学習後（51 ラウンド目以降）の平均}
+
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.42\linewidth}
+    \vspace{0pt}
+    \begin{tikzpicture}
+      \begin{axis}[wari, width=\linewidth, height=0.52\linewidth,
+          xlabel={1 ラウンドの完了時間 [分]（左ほど早く終わる）},
+          ylabel={適性比（下ほど向く人に任せた）},
+          xmin=18, xmax=70, ymin=0.9, ymax=1.92, xtick distance=10,
+          ytick={1.0,1.2,1.4,1.6,1.8},
+          yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=1,
+                            /pgf/number format/fixed zerofill},
+          clip=false]
+        \addplot[only marks, mark=*, mark size=7pt, color=base,
+                 error bars/.cd, x dir=both, x explicit, y dir=both, y explicit,
+                 error bar style={line width=1.2pt, color=base}]
+          coordinates {(44.4,1.73) +- (2.7,0.14) (34.7,1.72) +- (2.3,0.13) (63.7,1.27) +- (5.3,0.10)};
+        \addplot[only marks, mark=diamond*, mark size=10pt, color=navy,
+                 error bars/.cd, x dir=both, x explicit, y dir=both, y explicit,
+                 error bar style={line width=1.2pt, color=navy}]
+          coordinates {(23.6,1.21) +- (1.8,0.06)};
+        \addplot[only marks, mark=*, mark size=8pt, color=accent2,
+                 error bars/.cd, x dir=both, x explicit, y dir=both, y explicit,
+                 error bar style={line width=1.2pt, color=accent2}]
+          coordinates {(32.4,1.03) +- (3.7,0.01)};
+        \addplot[only marks, mark=*, mark size=9pt, color=accent,
+                 error bars/.cd, x dir=both, x explicit, y dir=both, y explicit,
+                 error bar style={line width=1.2pt, color=accent}]
+          coordinates {(25.4,1.16) +- (2.0,0.03)};
+        \draw[-{Stealth[length=13pt,width=12pt]}, line width=2.5pt, color=accent,
+              shorten <=14pt, shorten >=16pt]
+          (axis cs:32.4,1.03) -- (axis cs:25.4,1.16);
+        \node[lab, anchor=west] at (axis cs:47.6,1.73) {ランダム};
+        \node[lab, anchor=south] at (axis cs:34.7,1.86) {順番に回す};
+        \node[lab, anchor=south, align=flush center] at (axis cs:63.7,1.38) {経験年数が\\最長の人};
+        \node[lab, anchor=west] at (axis cs:36.6,1.03) {\textbf{提案（負荷分散なし）}};
+        \node[lab, anchor=south west] at (axis cs:26.4,1.20) {\textbf{提案}};
+        \node[lab, anchor=north, align=flush center] at (axis cs:22.6,1.12) {真の適性を\\知る割当};
+        \node[font=\fontsize{14pt}{17pt}\selectfont, text=accent, anchor=west]
+          at (axis cs:29.6,1.13) {負荷分散を加える};
+      \end{axis}
+    \end{tikzpicture}
+    \capt{図 1　割当方式の比較（20 試行の平均、誤差棒は標準偏差）。左下ほど良い}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.30\linewidth}
+    \vspace{0pt}
+    \begin{tikzpicture}
+      \begin{axis}[wari, width=\linewidth, height=0.345\linewidth,
+          ylabel={適性比}, xmin=0, xmax=150, ymin=0.95, ymax=1.9, xtick distance=25,
+          xticklabels={}, ytick={1.0,1.4,1.8},
+          yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=1,
+                            /pgf/number format/fixed zerofill}]
+        \addplot[color=base, line width=2pt] table[x=round, y=roundrobin_ratio, col sep=comma] {poster_curve.csv};
+        \addplot[color=accent2] table[x=round, y=ts_noload_ratio, col sep=comma] {poster_curve.csv};
+        \addplot[color=accent] table[x=round, y=ts_load_ratio, col sep=comma] {poster_curve.csv};
+        \addplot[color=navy, dashed, line width=2pt] table[x=round, y=oracle_ratio, col sep=comma] {poster_curve.csv};
+      \end{axis}
+    \end{tikzpicture}\\[2pt]
+    \begin{tikzpicture}
+      \begin{axis}[wari, width=\linewidth, height=0.345\linewidth,
+          xlabel={ラウンド}, ylabel={完了時間 [分]}, xmin=0, xmax=150, ymin=15, ymax=50, xtick distance=25]
+        \addplot[color=base, line width=2pt] table[x=round, y=roundrobin_span, col sep=comma] {poster_curve.csv};
+        \addplot[color=accent2] table[x=round, y=ts_noload_span, col sep=comma] {poster_curve.csv};
+        \addplot[color=accent] table[x=round, y=ts_load_span, col sep=comma] {poster_curve.csv};
+        \addplot[color=navy, dashed, line width=2pt] table[x=round, y=oracle_span, col sep=comma] {poster_curve.csv};
+      \end{axis}
+    \end{tikzpicture}
+    {\centering
+    \begin{tikzpicture}[font=\fontsize{14pt}{17pt}\selectfont, text=ink]
+      \tikzset{k/.style={line width=2.5pt}}
+      \draw[k, base] (0,0) -- (1,0) node[right, text=ink] {順番に回す};
+      \draw[k, accent2] (5.2,0) -- (6.2,0) node[right, text=ink] {提案（負荷分散なし）};
+      \draw[k, accent] (0,-0.75) -- (1,-0.75) node[right, text=ink] {提案};
+      \draw[k, navy, dashed] (5.2,-0.75) -- (6.2,-0.75) node[right, text=ink] {真の適性を知る割当};
+    \end{tikzpicture}\par}
+    \capt{図 2　学習の進み方（20 試行の平均、5 ラウンドの移動平均）}
+  \end{minipage}
+
+  \vspace{8pt}
+  \begin{minipage}[c]{0.5\linewidth}
+    \begin{itemize}
+      \item {\color{accent2}\textbf{負荷分散なし}}の提案は、学習後ほぼ常に最適な人を選べる（適性比 \textbf{1.03}）。
+            作業ログだけから\textbf{隠れた得意分野を見つけられる}。ただし得意な人に仕事が集まり（偏り 42\%）、
+            完了時間は順番に回す割当とあまり変わらない。
+      \item {\color{accent}\textbf{負荷分散あり}}の提案は、得意な人が埋まれば次に向く人へ回すので、
+            適性比は 1.16 に上がる。一方、完了時間は \textbf{25.4 分}まで縮む。
+    \end{itemize}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.47\linewidth}
+    \coloredbox[bgcolor=paper, fgcolor=ink, framecolor=paper, roundedcorners=6, linewidth=0pt]{%
+      \hero{−60\%}{経験年数で選ぶ割当と\\比べた完了時間}{accent}\hfill
+      \hero{−27\%}{順番に回す割当と\\比べた完了時間}{accent}\hfill
+      \hero{8\%}{真の適性を知る割当\\との完了時間の差}{navy}}
+  \end{minipage}
+}
+
+% ---------------------------------------------------------------- まとめ（全幅）
+\block{\num{6}まとめと今後の展望}{%
+  \begin{minipage}[t]{0.42\linewidth}
+    \coloredbox[bgcolor=accentsoft, fgcolor=ink, framecolor=accent, roundedcorners=6, linewidth=2pt]{%
+      {\fontsize{20pt}{28pt}\selectfont\bfseries
+        「各人に一番向く仕事」と「全体が早く終わる割当」は一致しない。
+        全体を早く終わらせるには、学習に加えて\textcolor{accent}{負荷分散}が要る。}}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.27\linewidth}
+    \head{限界}
+    \begin{itemize}
+      \item 評価はシミュレーションのみ
+      \item 適性は時間で変わらないと仮定した
+      \item ログの増加で計算が重くなる
+    \end{itemize}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.27\linewidth}
+    \head{今後の展望}
+    \begin{itemize}
+      \item 実際の現場でのログ収集と評価
+      \item 古いログの割引で熟練に追従
+      \item 既存の割当手法との比較、ESP32 版の製作
+    \end{itemize}
+  \end{minipage}
+
+  \vspace{4pt}
+  {\fontsize{12pt}{15pt}\selectfont\color{ink2}
+    [1] 経済産業省 他『2025 年版ものづくり白書』2025.\quad
+    [2] 中小企業庁『2025 年版中小企業白書』2025.\quad
+    [3] 本多・中村『バンディット問題の理論とアルゴリズム』講談社, 2016.\quad
+    [4] 須山『ベイズ推論による機械学習入門』講談社, 2017.\quad
+    [5] ビショップ『パターン認識と機械学習（上）』丸善出版, 2012.\quad
+    [6] S. Agrawal and N. Goyal, ``Thompson sampling for contextual bandits with linear payoffs,'' ICML, 2013.\quad
+    [7] OASIS, ``MQTT Version 5.0,'' 2019.\par}
+}
+
+\end{document}
