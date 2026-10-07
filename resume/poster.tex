@@ -1,4 +1,6 @@
-% 卒業研究 発表ポスター（A1 縦）
+% 卒業研究 発表ポスター（A0 縦）
+% A1 で組んだ版面を \mag で √2 倍し、A0 で出力する。寸法・文字サイズは A1 基準のまま
+\mag=1414
 % ビルド: build_poster.bat をダブルクリック（Tectonic）
 % グラフのデータ: python resume/poster_data.py 150 20 → poster_curve.csv
 % 画像: module.png（試作機の写真）、screen_*.png（管理画面。.impeccable/review から切り出し）
@@ -139,7 +141,8 @@
 % ================================================================ 本文
 \tikzposterlatexaffectionproofoff
 \begin{document}
-\maketitle[width=\paperwidth, linewidth=0pt, roundedcorners=0, innersep=8mm,
+\maketitle[width=594mm,  % A1 の幅（\mag の影響で \paperwidth は使えない）
+ linewidth=0pt, roundedcorners=0, innersep=8mm,
   titletoblockverticalspace=8mm]
 
 \begin{columns}
@@ -418,14 +421,16 @@
   \begin{minipage}[t]{0.25\linewidth}
     \head{設定}
     \begin{itemize}
-      \item 作業者 6 名、勤続 1〜30 年。真の時間倍率は AI に隠す
-      \item ベテランほど速いが個人差 $\pm30\%$。各人に得意な作業が 1 つあり、時間は 0.6 倍
-      \item 1 ラウンド 6 件 × 150 ラウンド × 20 試行。AI は実装をそのまま使用
+      \item 作業者 6 名、勤続 1〜30 年。\\真の時間倍率は AI に隠す
+      \item ベテランほど速いが個人差 $\pm30\%$
+      \item 各人の得意な作業は時間 0.6 倍
+      \item 6 件 × 150 ラウンド × 20 試行
+      \item AI は実装をそのまま使用
     \end{itemize}
     \vspace{6pt}
     \head{指標}
     \begin{itemize}
-      \item 適性比：任せた人 / 最適な人の倍率。1 が最良
+      \item 適性比：任せた人 / 最適な人の倍率。\\1 が最良
       \item 完了時間：最も遅い人が終わるまで
       \item 偏り：最も多く担当した人の割合
       \item 学習後の 51 ラウンド目以降で測定
@@ -513,7 +518,7 @@
     \begin{itemize}
       \item 経験年数：ベテラン 1 人に集中し、完了時間が最長
       \item ランダム・順番：向かない人にも任せ、適性比 1.7
-      \item {\color{accent2}負荷分散なし}：適性比 \textbf{1.03}。ログだけで隠れた得意分野を発見。ただし得意な人に集中
+      \item {\color{accent2}負荷分散なし}：隠れた得意分野を見つけ適性比 \textbf{1.03}。\\ただし得意な人に集中
       \item {\color{accent}負荷分散あり}：次に向く人へ回し、完了時間 \textbf{25.4 分}
     \end{itemize}
   \end{minipage}\hfill
@@ -551,7 +556,7 @@
     \vspace{0pt}
     \coloredbox[bgcolor=accentsoft, fgcolor=ink, framecolor=accent, roundedcorners=6, linewidth=2pt]{%
       {\fontsize{20pt}{28pt}\selectfont
-        「各人に一番向く仕事」と「全体が早く終わる割当」は一致しない。
+        「各人に一番向く仕事」と「全体が早く終わる割当」は一致しない。\\%
         全体を早く終わらせるには、学習に加えて\textcolor{accent}{\textbf{負荷分散}}が要る。}}
   \end{minipage}\hfill
   \begin{minipage}[t]{0.25\linewidth}
