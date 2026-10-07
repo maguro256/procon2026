@@ -28,3 +28,5 @@ raspi/.touch_calibration.json
 #   .venv-voice/Scripts/python -m pip install -r voice/requirements.txt
 .venv-voice/
 gemmba.db.bak-*
+slides/node_modules/
+slides/~$*
