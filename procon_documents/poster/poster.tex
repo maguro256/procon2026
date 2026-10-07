@@ -92,8 +92,8 @@
   \end{minipage}\hfill
   \begin{minipage}[c]{0.58\linewidth}
     \raggedright\color{navy}
-    {\fontsize{50pt}{62pt}\selectfont\bfseries 社員証をタッチするだけで、\\「今やるべき仕事」が届く。}\\[14pt]
-    {\fontsize{27pt}{33pt}\selectfont\color{ink2} 共有機材の現場のための タスク自動割当システム}\\[12pt]
+    {\fontsize{60pt}{62pt}\selectfont\bfseries 中小企業向けのDX推進システム}
+  
     {\fontsize{22pt}{26pt}\selectfont\color{ink2}明石工業高等専門学校\quad 小笠原\,悠太\quad 増永\,惺真\qquad 指導教員：野村\,隼人}
   \end{minipage}}
 
@@ -187,12 +187,12 @@
     \hline
     & {\color{ink2}これまで} & {\color{navy}\bfseries Gemmba} \\
     \hline
-    \textbf{次の仕事}   & 管理者に聞きに行く     & タッチで液晶に出る \\
+    \textbf{次の仕事}   & 管理者に聞きに行く     & 腕輪をかざすと液晶に出る \\
     \textbf{機材の状況} & 現場まで見に行く       & 管理画面で一目 \\
-    \textbf{完了報告}   & 口頭・紙で報告         & 再タッチで自動記録 \\
+    \textbf{完了報告}   & 口頭・紙で報告         & 再度かざして自動記録 \\
     \textbf{割り振り}   & 管理者が勘で決める     & AI が実績から決める \\
     \textbf{仕事の偏り} & ベテランに集中         & 手持ちを見て分散 \\
-    \textbf{機材の予約} & 予約しても来ない       & 予約なし・タッチのみ \\
+    \textbf{機材の予約} & 予約しても来ない       & 予約なし・かざすだけ \\
     \hline
   \end{tabular*}\par}
 }
@@ -210,6 +210,9 @@
       {{\bfseries\color{blue} 割当 AI}\ \ 誰に何を任せるか};
     \node[ybox, text width=8.6cm, right=6mm of ai] (va)
       {{\bfseries\color{yellowdeep!80!black} 音声 AI}\ \ 声からタスク登録};
+    \node[box, below=9mm of mod.south west, anchor=north west, xshift=8mm] (band)
+      {{\bfseries 腕輪型タグ}};
+    \draw[arr] (band) -- node[right=3pt, font=\fontsize{15pt}{15pt}\selectfont, text=ink2]{かざす} (mod);
     \draw[dbl] (mod) -- node[above=3pt, font=\fontsize{15pt}{15pt}\selectfont, text=ink2]{MQTT} (srv);
     \draw[dbl] (srv) -- node[above=3pt, font=\fontsize{15pt}{15pt}\selectfont, text=ink2]{HTTP} (web);
     \draw[dbl, color=blue] (ai.north) -- (ai.north |- srv.south);
@@ -237,9 +240,11 @@
   \end{minipage}\hfill
   \begin{minipage}[t]{0.32\linewidth}\vspace{0pt}
     \centering
-    \vspace{1.2cm}
     \photo{lcd_lock.png}{\linewidth}{0.65\linewidth}{}\\[6pt]
     \capt{使用中は他の人を拒否}
+    \vspace{10pt}
+    \includegraphics[height=2.6cm]{watchdevice.png}\\[3pt]
+    \capt{腕輪型タグ（社員証の代わり）}
   \end{minipage}\hfill
   \begin{minipage}[t]{0.32\linewidth}\vspace{0pt}
     {\fontsize{21pt}{26pt}\selectfont
@@ -263,10 +268,10 @@
       \photo{#2}{\linewidth}{0.75\linewidth}{}\\[6pt]
       {\fontsize{21pt}{27pt}\selectfont\bfseries #3\par}
     \end{minipage}}
-  \step{1}{step1_menu.png}{社員証をタッチ}\hfill
+  \step{1}{step1_menu.png}{腕輪をかざす}\hfill
   \step{2}{step2_task.png}{AI の提案を承認}\hfill
   \step{3}{step3_guide.png}{急ぐ仕事へ誘導}\hfill
-  \step{4}{step4_done.png}{再タッチで完了}\par
+  \step{4}{step4_done.png}{かざして完了}\par
   \vspace{6pt}
   \capt{モジュールの実際の画面（テストモードの仮想モジュールで撮影）}
   \vspace{14pt}
@@ -297,8 +302,8 @@
     \coloredbox[bgcolor=goodtint, fgcolor=ink, framecolor=goodtint, roundedcorners=8, linewidth=0pt]{%
       {\centering{\fontsize{32pt}{38pt}\selectfont\bfseries\color{good}従業員}\par}
       \vspace{14pt}
-      \merit{タッチするだけ}{PC・スマホ操作なし}
-      \merit{仕事を探さなくてよい}{タッチで次の仕事が出る}
+      \merit{腕輪をかざすだけ}{カードを出さず、PC・スマホ操作もなし}
+      \merit{仕事を探さなくてよい}{かざすと次の仕事が出る}
       \merit{完了報告がいらない}{時間は自動で記録}
       \merit{機材の取り合いがない}{使用中は画面に表示}
       \merit{新人にもチャンス}{AIが試しに任せる}
@@ -438,45 +443,26 @@
 
 % ---------------------------------------------------------------- ユースケース（全幅）
 \block{\bt{ユースケース}}{%
-  \newcommand{\uc}[3]{% 見出し, 絵, 箇条書き
-    \begin{minipage}[t]{0.238\linewidth}\vspace{0pt}
-      \coloredbox[bgcolor=card, fgcolor=ink, framecolor=card, roundedcorners=8, linewidth=0pt]{%
-        {\fontsize{25pt}{31pt}\selectfont\bfseries\color{navy}#1}\par
-        \vspace{8pt}
-        \begin{minipage}[c][4.4cm][c]{0.52\linewidth}\centering #2\end{minipage}\hfill
-        \begin{minipage}[c][4.4cm][c]{0.45\linewidth}
-          \begin{itemize}\fontsize{19pt}{25pt}\selectfont #3\end{itemize}
-        \end{minipage}}
+  % 1 行：場面（太字）と、そのときの操作の流れ
+  \newcommand{\ucrow}[2]{%
+    \begin{minipage}[t]{0.27\linewidth}{\bfseries\fontsize{21pt}{26pt}\selectfont #1}\end{minipage}\hfill
+    \begin{minipage}[t]{0.72\linewidth}{\fontsize{19pt}{26pt}\selectfont #2}\end{minipage}\par
+    \vspace{6pt}}
+  \newcommand{\ucbox}[4]{% 地の色, 文字色, 見出し, 行
+    \begin{minipage}[t]{0.488\linewidth}\vspace{0pt}
+      \coloredbox[bgcolor=#1, fgcolor=ink, framecolor=#1, roundedcorners=8, linewidth=0pt]{%
+        {\fontsize{28pt}{34pt}\selectfont\bfseries\color{#2}#3}\par
+        \vspace{6pt}
+        \def\ucto{\ \textcolor{#2}{→}\ }#4}
     \end{minipage}}
-  \uc{作業開始}{\photo{uc1_working.png}{\linewidth}{0.70\linewidth}{}}{%
-    \item 旋盤でタッチ
-    \item 提案を承認
-    \item 「作業中」に}\hfill
-  \uc{緊急の仕事}{\photo{uc2_coming.png}{\linewidth}{0.70\linewidth}{}}{%
-    \item 検査台でタッチ
-    \item 至急の仕事へ
-    \item 移動先に通知}\hfill
-  \uc{得意を学習}{%
-    \begin{tikzpicture}
-      \begin{axis}[gem, scale only axis, width=0.72\linewidth, height=2.9cm,
-          /pgf/number format/assume math mode=true,
-          xmin=0, xmax=150, ymin=15, ymax=50, xtick={0,150}, ytick={20,40},
-          tick label style={font=\fontsize{13pt}{13pt}\selectfont, color=ink2},
-          xlabel={回数}, ylabel={分}, unbounded coords=jump,
-          xlabel style={yshift=6pt}, ylabel style={yshift=-6pt},
-          label style={font=\fontsize{13pt}{15pt}\selectfont, color=ink2},
-          every axis plot/.append style={line width=2pt}]
-        \addplot[color=ink2!50] table[x=round, y=roundrobin_span, col sep=comma] {../../resume/poster_curve.csv};
-        \addplot[color=blue] table[x=round, y=ts_load_span, col sep=comma] {../../resume/poster_curve.csv};
-      \end{axis}
-    \end{tikzpicture}}{%
-    
-    \item \textcolor{blue}{\textbf{青}}：Gemmba
-    \item \textcolor{ink2}{\textbf{灰}}：順番}\hfill
-  \uc{その場でタスク登録}{\photo{uc4_rec.png}{\linewidth}{0.70\linewidth}{}}{%
-    \item 登録を選ぶ
-    \item 押して話す
-    \item AI がタスク化}
+  \ucbox{goodtint}{good}{従業員：}{%
+    \ucrow{仕事をする}{腕輪をかざす\ucto 提案を承認\ucto 終わったら再度かざす}
+    \ucrow{急ぎの仕事}{かざすと至急の仕事へ誘導\ucto 移動先の画面に通知}
+    \ucrow{仕事に気づく}{ボタンを押して話す\ucto AI がタスクとして登録}}\hfill
+  \ucbox{skytint}{blue}{管理者：}{%
+    \ucrow{仕事を割り振る}{タスクを登録\ucto 「AI 割当」を押す\ucto 担当者が決まる}
+    \ucrow{現場を確かめる}{管理画面で、機材の使用中・空きと誰が何をしているかを確認}
+    \ucrow{人を育てる}{作業ログから得意・不得意を把握。新人にも AI が試しに任せる}}
 }
 
 \end{document}
