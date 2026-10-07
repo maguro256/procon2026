@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>現場連動型タスク管理システム ポスター</title>
+<!--
+  A1 縦（594 × 841 mm）の発表ポスター。
+  PDF 化: build.bat をダブルクリック（Chrome のヘッドレス印刷）
+  画像: module.png（試作機）、screen_dashboard.png（管理画面）、
+        screens/*.png（python raspi/raspi.py --preview で書き出した LCD の実画面）
+  数値の出典:
+    表1  TODO.md G-2（pi01 の 2026-08-31〜09-09 の実ログ）
+    表2  procon_documents/poster/poster.tex のユースケース・メリットを本ポスターの用語に合わせて整理
+    表3  レジュメ表2（自動テスト）
+    表4  TODO.md E-2（実機マイク・large-v3・GPU、語彙ヒントの有無）
+    表5  TODO.md E-2 意図分析の実測（gemma3:4b、台本 6 文）
+  PowerPoint と文字の組みを揃えるため、フォントは游ゴシックにして約物の詰め（palt）は使わない。
+  ver2（内容を絞った版）は poster_v2.html。
+-->
+<style>
+  @page { size: 594mm 841mm; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 594mm; height: 841mm; }
+  body {
+    background: #fff; color: #222;
+    font-family: "Yu Gothic Medium", "Yu Gothic", sans-serif;
+    font-size: 22pt; line-height: 1.5;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  b, strong, h1, h2, h3, h4, h5, th, caption { font-family: "Yu Gothic", sans-serif; font-weight: 700; }
+  .poster { width: 594mm; height: 841mm; padding: 13mm 16mm 9mm; display: flex; flex-direction: column; gap: 5mm; justify-content: space-between; }
+  .poster > * { flex-shrink: 0; }
+
+  /* タイトル */
+  .title { border-bottom: .8mm solid #222; padding-bottom: 3.5mm; }
+  .title h1 { font-size: 50pt; line-height: 1.3; }
+  .title .author { font-size: 26pt; margin-top: 1.5mm; }
+
+  /* ブロック */
+  .row { display: grid; gap: 12mm; }
+  .stack { display: flex; flex-direction: column; gap: 6mm; }
+  .block { display: flex; flex-direction: column; }
+  .block > h2, .research > h2 { font-size: 30pt; line-height: 1.35; border-bottom: .5mm solid #222; padding-bottom: .8mm; display: flex; align-items: baseline; }
+  h2 .n { margin-right: .6em; }
+  h2 small { font-size: 19pt; font-weight: 400; margin-left: 1em; color: #555; font-family: "Yu Gothic Medium", "Yu Gothic", sans-serif; }
+  .block .body { padding-top: 2.5mm; flex: 1; }
+  h3 { font-size: 23.5pt; font-weight: 700; margin: 3.5mm 0 1.2mm; line-height: 1.35; }
+  h3:first-child { margin-top: 0; }
+  p + p { margin-top: 1.5mm; }
+  .sm { font-size: 20.5pt; line-height: 1.45; }
+  .xs { font-size: 18pt; line-height: 1.4; }
+  .muted { color: #555; }
+  .cap { font-size: 19pt; color: #555; line-height: 1.35; margin-top: 1.2mm; }
+  .cap b { color: #222; }
+  ul.plain { padding-left: 1.2em; }
+  ul.plain li + li { margin-top: .8mm; }
+  ul.plain[style*="grid"] li + li { margin-top: 0; }
+
+  /* 表 */
+  table.t { width: 100%; border-collapse: collapse; font-size: 20.5pt; line-height: 1.38; }
+  table.t caption { caption-side: top; text-align: left; font-size: 20pt; padding-bottom: 1mm; }
+  table.t th, table.t td { padding: 1mm 2mm; text-align: left; vertical-align: top; border-bottom: .3mm solid #bbb; }
+  table.t thead th { border-top: .5mm solid #222; border-bottom: .4mm solid #222; }
+  table.t tbody tr:last-child td, table.t tbody tr:last-child th { border-bottom: .5mm solid #222; }
+  table.t td.num, table.t th.num { text-align: right; white-space: nowrap; }
+  table.t tbody th { white-space: nowrap; }
+  table.t tr.total td { font-family: "Yu Gothic", sans-serif; font-weight: 700; }
+  .err { color: #B3261E; text-decoration: underline; }
+
+  /* 1・2 */
+  .lead { margin-top: 2.5mm; }
+  ol.policy { list-style: none; counter-reset: p; }
+  ol.policy li { counter-increment: p; display: grid; grid-template-columns: 7mm 1fr; gap: 1mm; padding: .8mm 0; }
+  ol.policy li::before { content: counter(p); font-weight: 700; height: 7mm; line-height: 1.5; }
+
+  /* 3 構成 */
+  .arch { display: grid; grid-template-columns: 1fr 60mm; gap: 5mm; align-items: start; }
+  .photo img { width: 100%; display: block; }
+  .ai { margin-top: 3mm; }
+  .ai p { font-size: 21pt; line-height: 1.45; }
+
+  /* 4 流れ */
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr) 1.75fr; gap: 4mm; align-items: start; }
+  .flow h4 { font-size: 19.5pt; line-height: 1.3; margin-bottom: 1.2mm; white-space: nowrap; }
+  .flow h4 i { font-style: normal; display: inline-block; margin-right: .4em; }
+  .lcd { background: #111; padding: 1mm; }
+  .lcd img { width: 100%; display: block; }
+  .flow .stp p { font-size: 18.5pt; line-height: 1.38; color: #444; margin-top: 1.3mm; }
+  .flow .mgr { border-left: .3mm solid #999; padding-left: 4mm; }
+  .flow .mgr img { width: 100%; display: block; border: .3mm solid #999; }
+  .flow .mgr ul { font-size: 19pt; line-height: 1.4; margin-top: 1.5mm; }
+
+  /* 5 ユースケース */
+  table.uc td.who { writing-mode: vertical-rl; text-align: center; vertical-align: middle; font-family: "Yu Gothic", sans-serif; font-weight: 700; width: 9mm; padding: 2mm 0; letter-spacing: .3em; border-right: .3mm solid #bbb; }
+  table.uc td:last-child { font-family: "Yu Gothic", sans-serif; font-weight: 700; }
+
+  /* 7 今後の研究 */
+  .research .cols { display: grid; grid-template-columns: 1fr 1.55fr; gap: 10mm; padding-top: 2.5mm; }
+  .research table.t td:nth-child(n+3), .research table.t th:nth-child(n+3) { white-space: nowrap; }
+  .research .cols3 { display: grid; grid-template-columns: 1fr 1fr; gap: 10mm; margin-top: 4mm; }
+  .tokbar { display: flex; height: 8mm; margin: 1.5mm 0 .8mm; font-size: 18pt; border: .3mm solid #222; font-family: "Yu Gothic", sans-serif; font-weight: 700; }
+  .tokbar .used { background: #555; color: #fff; width: 51.8%; display: flex; align-items: center; padding-left: 2.5mm; }
+  .tokbar .rest { flex: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 2.5mm; }
+  .tokscale { display: flex; justify-content: space-between; font-size: 15pt; color: #555; }
+  .prop { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; align-items: start; }
+  ol.novel { list-style: none; counter-reset: n; margin-top: 2mm; }
+  ol.novel li { counter-increment: n; display: grid; grid-template-columns: 6mm 1fr; gap: 1mm; font-size: 20.5pt; line-height: 1.42; padding: .8mm 0; }
+  ol.novel li::before { content: counter(n); font-weight: 700; height: 6mm; line-height: 1.42; }
+  .evals { display: grid; gap: 1.5mm; }
+  .ev { display: grid; grid-template-columns: 10mm 1fr; gap: 1.5mm; align-items: start; font-size: 21pt; line-height: 1.4; }
+  .ev .id { font-family: "Yu Gothic", sans-serif; font-weight: 700; }
+  .metric { margin-top: 2.5mm; font-size: 21pt; line-height: 1.45; }
+
+  /* 参考文献 */
+  .refs { border-top: .3mm solid #999; padding-top: 2mm; display: grid; grid-template-columns: auto 1fr 1fr; gap: 0 6mm; align-items: start; }
+  .refs h2 { font-size: 16pt; line-height: 1.45; }
+  .refs ol { font-size: 14pt; line-height: 1.45; color: #555; padding-left: 2em; }
+</style>
+</head>
+<body>
+<div class="poster">
+
+  <!-- ===================================================== タイトル -->
+  <header class="title">
+    <h1>中小製造業の共有機材運用を支援する現場連動型タスク管理システム</h1>
+    <div class="author">増永 惺真　　指導教員：野村 隼人</div>
+  </header>
+
+  <!-- ===================================================== 1–3 -->
+  <div class="row" style="grid-template-columns: 1fr 1fr;">
+    <div class="stack">
+      <section class="block">
+        <h2><span class="n">1</span>はじめに</h2>
+        <div class="body">
+          <p>共有機材を複数人で使う中小製造業の現場では、次の問題がある。</p>
+          <ul class="plain" style="margin-top:1mm; display:grid; grid-template-columns:1fr 1fr; gap:.5mm 5mm">
+            <li>誰が何に使っているか分からない</li>
+            <li>予約しても来ない（ゴースト予約）</li>
+            <li>重要なタスクが偏る・忘れられる</li>
+            <li>IT 担当者がおらず定着しない</li>
+          </ul>
+          <p class="lead">本研究では、各機材のモジュールに社員証をタッチするだけで作業の開始・終了・登録ができるタスク管理システムを製作した。</p>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2><span class="n">2</span>設計方針</h2>
+        <div class="body">
+          <ol class="policy">
+            <li><span><b>操作は 3 ボタンのみ</b>とし、1 回の操作を数分以内に収める</span></li>
+            <li><span><b>タスクをサーバで一括管理</b>し、機材をまたいで共有する</span></li>
+            <li><span><b>遠隔予約を作らず</b>、タッチを唯一の起点にする</span></li>
+          </ol>
+          <table class="t" style="margin-top:2.5mm">
+            <caption>表 1　障害からの自動復旧と、11 日間の連続稼働での結果</caption>
+            <thead><tr><th>目的</th><th>方法</th><th>実ログでの結果</th></tr></thead>
+            <tbody>
+              <tr><th>IP 設定をなくす</th><td>UDP でサーバを探索</td><td>IP の変更に追従</td></tr>
+              <tr><th>停止を知らせる</th><td>MQTT の LWT</td><td>offline / online を即反映</td></tr>
+              <tr><th>切断から戻す</th><td>自動再接続</td><td><b>53 回中 53 回復旧</b>（1 秒）</td></tr>
+            </tbody>
+          </table>
+          <p class="cap">2026/8/31〜9/9 の実ログ。プロセスは一度も停止しなかった。</p>
+        </div>
+      </section>
+    </div>
+
+    <section class="block">
+      <h2><span class="n">3</span>システム構成</h2>
+      <div class="body">
+        <div class="arch">
+          <div>
+            <svg viewBox="0 0 400 236" style="width:100%; display:block" font-family="Yu Gothic, sans-serif">
+              <defs>
+                <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#222"/></marker>
+                <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#222"/></marker>
+              </defs>
+              <rect x="128" y="6" width="96" height="40" fill="#fff" stroke="#888" stroke-width="1.4" stroke-dasharray="5 4"/>
+              <text x="176" y="23" font-size="11.5" text-anchor="middle" fill="#555">他の機材の</text>
+              <text x="176" y="38" font-size="11.5" text-anchor="middle" fill="#555">モジュール</text>
+              <line x1="176" y1="48" x2="176" y2="86" stroke="#888" stroke-width="1.4" stroke-dasharray="4 3" marker-start="url(#ah)" marker-end="url(#ah)"/>
+              <rect x="4" y="90" width="112" height="56" fill="#fff" stroke="#222" stroke-width="2.4"/>
+              <text x="60" y="113" font-size="14" font-weight="700" text-anchor="middle" fill="#222">機材モジュール</text>
+              <text x="60" y="131" font-size="11" text-anchor="middle" fill="#555">Raspberry Pi 4</text>
+              <rect x="138" y="90" width="76" height="56" fill="#fff" stroke="#222" stroke-width="1.6"/>
+              <text x="176" y="113" font-size="15.5" font-weight="700" text-anchor="middle" fill="#222">MQTT</text>
+              <text x="176" y="131" font-size="11" text-anchor="middle" fill="#555">ブローカ</text>
+              <rect x="244" y="90" width="152" height="56" fill="#fff" stroke="#222" stroke-width="1.6"/>
+              <text x="320" y="113" font-size="15.5" font-weight="700" text-anchor="middle" fill="#222">サーバ</text>
+              <text x="320" y="131" font-size="11" text-anchor="middle" fill="#555">Flask ＋ SQLite</text>
+              <rect x="276" y="6" width="120" height="40" fill="#fff" stroke="#222" stroke-width="1.6"/>
+              <text x="336" y="23" font-size="14.4" font-weight="700" text-anchor="middle" fill="#222">管理画面</text>
+              <text x="336" y="38" font-size="10.5" text-anchor="middle" fill="#555">ブラウザ</text>
+              <line x1="336" y1="49" x2="336" y2="87" stroke="#222" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+              <text x="342" y="72" font-size="10" fill="#555">HTTP</text>
+              <rect x="244" y="178" width="152" height="50" fill="#EEE" stroke="#222" stroke-width="1.8"/>
+              <text x="320" y="199" font-size="14.4" font-weight="700" text-anchor="middle" fill="#222">割当 AI</text>
+              <text x="320" y="216" font-size="13.2" font-weight="700" text-anchor="middle" fill="#222">音声の解析</text>
+              <line x1="320" y1="149" x2="320" y2="175" stroke="#222" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+              <line x1="118" y1="110" x2="135" y2="110" stroke="#222" stroke-width="1.6" marker-end="url(#ah)"/>
+              <line x1="136" y1="127" x2="119" y2="127" stroke="#222" stroke-width="1.6" marker-end="url(#ah)"/>
+              <text x="127" y="86" font-size="9.5" text-anchor="middle" fill="#555">タッチ</text>
+              <text x="127" y="160" font-size="9.5" text-anchor="middle" fill="#555">指示</text>
+              <line x1="216" y1="118" x2="241" y2="118" stroke="#222" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+              <path d="M60 148 V203 H240" fill="none" stroke="#222" stroke-width="1.6" marker-end="url(#ao)"/>
+              <text x="150" y="197" font-size="10.5" text-anchor="middle" fill="#222">音声 WAV（HTTP）</text>
+            </svg>
+            <div class="cap"><b>図 1</b>　全体構成。判断はすべてサーバが行う</div>
+          </div>
+          <div class="photo">
+            <img src="module.png" alt="機材モジュールの試作機">
+            <div class="cap"><b>図 2</b>　試作機</div>
+          </div>
+        </div>
+        <div class="ai" style="margin-top:3mm">
+          <p><b>割当：</b>作業者ごとのベイズ線形回帰による Thompson Sampling [1] で、速く終えられそうな人を予測する。資格は候補を絞る制約として扱う。</p>
+          <p><b>音声登録：</b>Whisper [2] の文字起こしから、Gemma 3 がタスクの各欄を取り出す。</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================================================== 4 流れ -->
+  <section class="block">
+    <h2><span class="n">4</span>現場での利用の流れ<small>図 3　LCD の実際の画面</small></h2>
+    <div class="body">
+      <div class="flow">
+        <div class="stp">
+          <h4><i>a</i>タッチ</h4>
+          <div class="lcd"><img src="screens/05-menu_idle.png" alt=""></div>
+          <p>常に同じ 3 項目。使用中なら断る。</p>
+        </div>
+        <div class="stp">
+          <h4><i>b</i>誘導</h4>
+          <div class="lcd"><img src="screens/12-guide_ask.png" alt=""></div>
+          <p>他の機材の優先タスクへ誘導する。</p>
+        </div>
+        <div class="stp">
+          <h4><i>c</i>タスク提示</h4>
+          <div class="lcd"><img src="screens/15-task_ask.png" alt=""></div>
+          <p>1 件ずつ提示し、「はい」で着手。</p>
+        </div>
+        <div class="stp">
+          <h4><i>d</i>タスク登録</h4>
+          <div class="lcd"><img src="screens/09-rec_wait.png" alt=""></div>
+          <p>押している間だけ録音する。</p>
+        </div>
+        <div class="stp">
+          <h4><i>e</i>作業終了</h4>
+          <div class="lcd"><img src="screens/22-felt.png" alt=""></div>
+          <p>完了を記録し、体感難易度を回答。</p>
+        </div>
+        <div class="mgr">
+          <h4>管理画面</h4>
+          <img src="screen_dashboard.png" alt="管理画面のダッシュボード">
+          <ul class="plain">
+            <li>4 秒ごとに更新され、機材の状況が一目で分かる</li>
+            <li>割当は手動でも AI でも行える</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================== 5・6 -->
+  <div class="row" style="grid-template-columns: 1.6fr 1fr;">
+    <section class="block">
+      <h2><span class="n">5</span>ユースケースと得られる効果</h2>
+      <div class="body">
+        <table class="t uc">
+          <caption>表 2　現場での使われ方と、1 章の課題に対する効果</caption>
+          <thead><tr><th></th><th>場面</th><th>使い方</th><th>効果</th></tr></thead>
+          <tbody>
+            <tr><td class="who" rowspan="5">作業者</td><th>機材を使う</th><td>空いている機材でタッチ</td><td>ゴースト予約が起きない</td></tr>
+            <tr><th>仕事を探す</th><td>タッチで重要な順に出る</td><td>探す・尋ねる手間が減る</td></tr>
+            <tr><th>至急の仕事</th><td>他の機材へ誘導される</td><td>重要なタスクを忘れない</td></tr>
+            <tr><th>作業を終える</th><td>再タッチで完了を記録</td><td>報告が要らない</td></tr>
+            <tr><th>仕事に気づく</th><td>ボタンを押して話す</td><td>その場でタスクにできる</td></tr>
+            <tr><td class="who" rowspan="2">管理者</td><th>現場の確認</th><td>管理画面で状況を見る</td><td>見に行かなくてよい</td></tr>
+            <tr><th>割り振り</th><td>手動か AI で決める</td><td>偏りを防ぐ</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="block">
+      <h2><span class="n">6</span>動作検証</h2>
+      <div class="body">
+        <table class="t">
+          <caption>表 3　自動テストによる動作確認</caption>
+          <thead><tr><th>確認した内容</th><th>結果</th></tr></thead>
+          <tbody>
+            <tr><td>他機材への誘導</td><td>移動元・先に表示</td></tr>
+            <tr><td>使用中の機材</td><td>メニュー前に拒否</td></tr>
+            <tr><td>無資格の作業者</td><td>候補に出さない</td></tr>
+            <tr><td>タッチの連打</td><td>処理は 1 回のみ</td></tr>
+            <tr class="total"><td>全体（11 本）</td><td>179 項目すべて合格</td></tr>
+          </tbody>
+        </table>
+        <p class="cap">一時 DB を使い、実際のコードのまま検証した。</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================================================== 7 研究 -->
+  <section class="research">
+    <h2><span class="n">7</span>今後の研究：登録データから語彙を組み立てる音声タスク登録</h2>
+    <div class="cols">
+      <div class="col">
+        <h3>7.1　課題：現場の専門語が崩れる</h3>
+        <p class="sm">Whisper には現場の語彙をヒントとして与えている。</p>
+        <table class="t" style="margin-top:1.5mm">
+          <caption>表 4　語彙ヒントの有無（実機マイク、同一録音、抜粋）</caption>
+          <thead><tr><th>ヒントあり</th><th>ヒントなし</th></tr></thead>
+          <tbody>
+            <tr><td>旋盤の切粉清掃、至急</td><td>旋盤の<span class="err">接吻</span>清掃<span class="err">支給</span></td></tr>
+            <tr><td>治具Bの芯出し</td><td><span class="err">チグ</span>Bの<span class="err">新出し</span></td></tr>
+            <tr><td>振れが出ています。</td><td><span class="err">フレ</span>が出ています</td></tr>
+          </tbody>
+        </table>
+        <p class="sm" style="margin-top:2.5mm"><b>ヒントは 224 トークンまで</b>で、既に 116 を使っている。全語彙は入らず、人手での保守も難しい。</p>
+        <div class="tokbar"><div class="used">使用中 116</div><div class="rest">残り 108</div></div>
+      </div>
+
+      <div class="col">
+        <h3>7.2　現状：文字起こしからタスクを登録</h3>
+        <table class="t" style="margin-top:1mm">
+          <caption>表 5　作業指示の文から登録されたタスク（gemma3:4b）</caption>
+          <thead><tr><th>入力文</th><th>タスク名</th><th>優先度</th><th class="num">数量</th><th>資格</th></tr></thead>
+          <tbody>
+            <tr><td>旋盤の切粉清掃、至急をお願いします。</td><td>旋盤の切粉清掃</td><td>至急</td><td class="num">1</td><td>―</td></tr>
+            <tr><td>製品Cの外形加工20個、明日までにお願いします。</td><td>製品Cの外形加工</td><td>高</td><td class="num">20</td><td>―</td></tr>
+            <tr><td>フォークリフトで資材置き場から鋼材を運んでおいてください</td><td>資材置き場から鋼材の運搬</td><td>通常</td><td class="num">1</td><td>フォークリフト運転</td></tr>
+            <tr><td>フレームの溶接をお願いします。10本です</td><td>フレームの溶接</td><td>通常</td><td class="num">10</td><td>アーク溶接</td></tr>
+          </tbody>
+        </table>
+        <p class="cap">各欄は正しく取れている。精度を左右するのは前段の文字起こしである。</p>
+      </div>
+    </div>
+
+    <div class="cols3">
+      <div class="col">
+        <h3>7.3　提案</h3>
+        <div class="prop">
+          <div>
+        <svg viewBox="0 0 400 200" style="width:100%; display:block" font-family="Yu Gothic, sans-serif">
+          <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#222"/></marker></defs>
+          <rect x="120" y="2" width="160" height="46" fill="#EEE" stroke="#222" stroke-width="1.8"/>
+          <text x="200" y="22" font-size="16.1" font-weight="700" text-anchor="middle" fill="#222">登録データ</text>
+          <text x="200" y="39" font-size="11" text-anchor="middle" fill="#555">機材名・過去のタスク名</text>
+          <rect x="250" y="77" width="146" height="46" fill="#fff" stroke="#222" stroke-width="1.8"/>
+          <text x="323" y="97" font-size="16.1" font-weight="700" text-anchor="middle" fill="#222">語彙を自動構成</text>
+          <text x="323" y="114" font-size="11" text-anchor="middle" fill="#555">タッチした機材・人で絞る</text>
+          <rect x="120" y="152" width="160" height="46" fill="#fff" stroke="#222" stroke-width="1.8"/>
+          <text x="200" y="172" font-size="16.1" font-weight="700" text-anchor="middle" fill="#222">音声認識</text>
+          <text x="200" y="189" font-size="11" text-anchor="middle" fill="#555">Whisper ＋ 語彙のヒント</text>
+          <rect x="4" y="77" width="146" height="46" fill="#fff" stroke="#222" stroke-width="1.8"/>
+          <text x="77" y="97" font-size="16.1" font-weight="700" text-anchor="middle" fill="#222">管理者が直す</text>
+          <text x="77" y="114" font-size="11" text-anchor="middle" fill="#555">普段どおりタスク名を修正</text>
+          <path d="M282 25 H330 V74" fill="none" stroke="#222" stroke-width="1.8" marker-end="url(#ar)"/>
+          <path d="M330 126 V175 H284" fill="none" stroke="#222" stroke-width="1.8" marker-end="url(#ar)"/>
+          <path d="M116 175 H70 V126" fill="none" stroke="#222" stroke-width="1.8" marker-end="url(#ar)"/>
+          <path d="M70 74 V25 H116" fill="none" stroke="#222" stroke-width="1.8" marker-end="url(#ar)"/>
+        </svg>
+        <p class="cap"><b>図 4</b>　修正のたびに語彙が育つ循環</p>
+          </div>
+          <div>
+        <p class="sm">登録データ（機材名・過去のタスク名）から語彙を自動で組み立てる。</p>
+        <ol class="novel">
+          <li><span>タッチで話者と機材が確定している点を、語彙の選択に使う</span></li>
+          <li><span>管理者がタスク名を直すだけで語彙が育つ</span></li>
+        </ol>
+        <p class="xs muted" style="margin-top:1mm">関連研究 [3]–[6]</p>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <h3>7.4　評価計画</h3>
+        <div class="evals">
+          <div class="ev"><div class="id">E1</div><p>語彙なし／固定語彙／自動構成を同じ音声で比較</p></div>
+          <div class="ev"><div class="id">E2</div><p>語の数と、誤挿入との釣り合いを調べる</p></div>
+          <div class="ev"><div class="id">E3</div><p>運用につれ正解率が上がるかを見る</p></div>
+          <div class="ev"><div class="id">E4</div><p>工場の騒音を重ねて E1 を再実施</p></div>
+        </div>
+        <p class="metric">指標は<b>タスクの各欄が正しく登録された割合</b>とする。</p>
+        <h3 style="margin-top:3.5mm">7.5　課題と今後</h3>
+        <ul class="plain sm">
+          <li>現場での運用・多人数での同時利用は未検証</li>
+          <li>評価用の音声を複数の話者から集める</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="refs">
+    <h2>参考文献</h2>
+    <ol>
+      <li>本多淳也, 中村篤祥, 『バンディット問題の理論とアルゴリズム』, 講談社, 2016.</li>
+      <li>河原達也, 三村正人, 「大規模事前学習モデルに基づく音声認識」, 日本音響学会誌, 79(9), pp. 455–460, 2023.</li>
+      <li>周藤唯, M. Shakeel, Y. Peng, 渡部晋治, 「動的な語彙拡張を用いた End-to-end 音声認識の文脈適応」, 人工知能学会第二種研究会資料, SIG-Challenge-066-05, 2024.</li>
+    </ol>
+    <ol start="4">
+      <li>佐藤文一, 吉永直樹, 豊田正史, 喜連川優, 「プロンプトと複数の音声認識候補による青空文庫振り仮名注釈付き音声コーパスの再構築」, 言語処理学会第 31 回年次大会, B8-5, 2025.</li>
+      <li>後藤真孝, 緒方淳, 江渡浩一郎, 「PodCastle: ユーザ貢献により性能が向上する音声情報検索システム」, 人工知能学会論文誌, 25(1), 2010.</li>
+      <li>石川開, 隅田英一郎, 「テキストデータを使った音声認識誤りの訂正」, 自然言語処理, 7(4), pp. 205–227, 2000.</li>
+    </ol>
+  </footer>
+</div>
+</body>
+</html>
