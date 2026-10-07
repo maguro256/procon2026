@@ -214,5 +214,6 @@ def open_display():
         # 32MHzだと初期化コマンドが通らず画面が白いままになった。全面書き換えは
         # 8MHzでも0.15秒程度で、この用途には十分速い。
         speed_hz=int(os.environ.get("GEMMBA_LCD_SPEED", "8000000")),
-        rotation=int(os.environ.get("GEMMBA_LCD_ROTATION", "90")),
+        # 270 = 90 の上下反転。筐体への取り付け向きに合わせて 2026-10-07 に 90 から変えた
+        rotation=int(os.environ.get("GEMMBA_LCD_ROTATION", "270")),
     )

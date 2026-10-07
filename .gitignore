@@ -28,3 +28,9 @@ raspi/.touch_calibration.json
 #   .venv-voice/Scripts/python -m pip install -r voice/requirements.txt
 .venv-voice/
 gemmba.db.bak-*
+
+# PlatformIO のビルド成果物
+esp32/.pio/
+
+# ESP32 の Wi-Fi パスワード
+esp32/include/secrets.h

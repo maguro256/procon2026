@@ -1,7 +1,9 @@
 import paho.mqtt.client as mqtt
+import faulthandler
 import json
 import os
 import queue
+import signal
 import socket
 import sys
 import threading
@@ -1574,6 +1576,8 @@ def send_to_host_tag_id(tag_id):
 
 
 def main():
+    # 固まったときの調査用。`kill -USR1 <PID>` で全スレッドの現在位置をログ（journal）に出す
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     init_display()
     init_leds()
     set_led("offline")
