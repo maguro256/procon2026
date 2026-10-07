@@ -283,6 +283,12 @@ BTN_LABELS = ("◀ 前へ", "● 決定", "次へ ▶")
 # 「はい/いいえ」なら big、「タスク実行」のような長い選択肢は自動で小さくなる。
 ROLE_PX = {"big": 28, "title": 25, "body": 20, "chip": 17, "small": 14}
 CHIP_ROLES = ("big", "body", "chip", "small")
+# 本文と問いかけも同じ考え方。収まらない行は、まず文字を小さくして1行に収める。
+# … で詰めるのは一番小さくしても入らないときだけ（「溶接ブース #1 に至急のタスク」
+# のように、機材名が入る行は 25px だと切れやすい）。
+TITLE_ROLES = ("title", "body", "chip")
+BODY_ROLES = ("body", "chip", "small")
+QUESTION_ROLES = ("body", "chip")
 
 # フォントは1つでは足りない。Raspberry Pi OS 標準の DroidSansFallbackFull は
 # 日本語を持つ代わりに ASCII のグリフが無く、'A' や '0' が豆腐(□)になる。逆に
@@ -460,7 +466,9 @@ def _draw_body(d, W, top, bottom, lines, center=False):
     y = top + max(0, (bottom - top - total) // 2) if center else top
     for i, line in enumerate(lines[:shown]):
         role = "title" if i == 0 else "body"
-        _draw_text(d, PAD, y, _fit(str(line), role, W - PAD * 2), role,
+        text, used = _fit_role(str(line), TITLE_ROLES if i == 0 else BODY_ROLES, W - PAD * 2)
+        # 小さくした行は、元の大きさの行の高さの中で上下中央に置く
+        _draw_text(d, PAD, y + (ROLE_PX[role] - ROLE_PX[used]) // 2, text, used,
                    FG_COLOR if i == 0 else SUB_COLOR)
         y += steps[i]
     return y
@@ -476,7 +484,8 @@ def _draw_choices(d, W, top, bottom, choice, state):
     accent = LED_COLORS.get(state, LED_COLORS["offline"])
 
     if choice.get("text"):
-        _draw_text(d, PAD, top, _fit(choice["text"], "body", W - PAD * 2), "body", FG_COLOR)
+        text, used = _fit_role(choice["text"], QUESTION_ROLES, W - PAD * 2)
+        _draw_text(d, PAD, top + (ROLE_PX["body"] - ROLE_PX[used]) // 2, text, used, FG_COLOR)
         top += 30
 
     gap = 6
@@ -534,6 +543,17 @@ def _compose(lines, state, size=None, choice=None, badge=None):
         _draw_body(d, W, top, H - 28, list(lines)[:4], center=True)
         _draw_footer(d, W, H)
     return img
+
+
+def _fit_role(text, roles, max_width):
+    """
+    roles を大きい順に試し、1行に収まる一番大きい文字で (text, role) を返す。
+    どれでも入らなければ一番小さい文字で … 詰めにする。
+    """
+    for role in roles:
+        if _text_width(text, role) <= max_width:
+            return text, role
+    return _fit(text, roles[-1], max_width), roles[-1]
 
 
 def _fit(text, role, max_width):
