@@ -67,28 +67,9 @@
   </main>
 </div>
 
-{# モジュールが応答待ちのとき、管理画面から代わりに答えられるようにする。
-   物理ボタン（B-2）が付くまでの操作手段で、本来は現場で作業者が答える。 #}
-<div class="modal-backdrop" id="confirmModal" hidden>
-  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
-    <div class="modal-head">
-      <span class="modal-badge badge-wait">応答待ち</span>
-      {# タスクの選択・誘導・完了後の難易度など、モジュールが答えを待っている場面すべてで出る #}
-      <h4 id="confirmModalTitle">モジュールの確認</h4>
-    </div>
-    <dl class="modal-facts">
-      <dt>機材</dt><dd id="confirmWhere"></dd>
-      <dt>作業者</dt><dd id="confirmWho"></dd>
-    </dl>
-    <div class="confirm-body" id="confirmLines"></div>
-    <p class="confirm-question" id="confirmText"></p>
-    {# 中身は openConfirm() が組み立てる。Yes/No のときと、選択肢（難易度など）のときがある #}
-    <div class="modal-actions" id="confirmActions"></div>
-    <p class="text-muted modal-note">
-      モジュールに物理ボタンが付くまでの代替操作です。機材の画面にも同じ内容が出ています。
-    </p>
-  </div>
-</div>
+{# モジュールで操作があったことだけを右上に小さく知らせる。答えるのは現場のモジュール側。
+   <main> の差し替えで消えないよう、.flashes とは別に <main> の外に置く #}
+<div class="module-toasts" id="moduleToasts" role="status" aria-live="polite"></div>
 
 {# 削除・再起動など取り消せない操作の確認。data-confirm を付けたフォームで出る。
    ブラウザ標準の confirm() は見た目が OS 任せで、何が消えるのかが読みにくいため #}
@@ -219,60 +200,44 @@
     if (e.key === "Escape" && !modal.hidden) close();
   });
 
-  // ---- モジュールの応答待ち（タスクの選択） ----
-  const cModal = document.getElementById("confirmModal");
-  const cWhere = document.getElementById("confirmWhere");
-  const cWho = document.getElementById("confirmWho");
-  const cLines = document.getElementById("confirmLines");
-  const cText = document.getElementById("confirmText");
-  const cActions = document.getElementById("confirmActions");
-  let pendingId = null;
+  // ---- モジュールでの操作の通知 ----
+  // タッチ後の選択などはモジュール側で答えるので、ここでは右上に小さく知らせるだけ。
+  // 一度出した応答待ちは画面を移っても出し直さない（タグ登録と同じく sessionStorage に残す）
+  const toastBox = document.getElementById("moduleToasts");
+  const TOASTED_KEY = "gemmba.toastedConfirms";
+  const TOAST_MS = 5000;
+  let toasted;
+  try { toasted = new Set(JSON.parse(sessionStorage.getItem(TOASTED_KEY)) || []); }
+  catch (e) { toasted = new Set(); }
 
-  function addButton(label, primary, body) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn " + (primary ? "btn-primary" : "btn-secondary");
-    b.textContent = label;
-    b.addEventListener("click", () => answer(body));
-    cActions.appendChild(b);
+  function dismissToast(t) {
+    if (t.classList.contains("is-leaving")) return;
+    t.classList.add("is-leaving");
+    setTimeout(() => t.remove(), 200);
   }
 
-  function openConfirm(c) {
-    pendingId = c.request_id;
-    cWhere.textContent = c.equipment_name || c.device_id;
-    cWho.textContent = c.worker_name || "-";
-    cLines.innerHTML = "";
-    (c.lines || []).forEach(function (line) {
-      const p = document.createElement("p");
-      p.textContent = line;
-      cLines.appendChild(p);
-    });
-    cText.textContent = c.text || "";
-    // options があれば選択肢（難易度フィードバックなど）、無ければ従来の Yes/No
-    cActions.innerHTML = "";
-    const options = c.options;
-    if (options && options.length) {
-      options.forEach((label, i) => addButton(label, false, { index: i }));
-    } else {
-      addButton("いいえ", false, { answer: false });
-      addButton("はい", true, { answer: true });
-    }
-    cModal.hidden = false;
-  }
-
-  async function answer(body) {
-    if (!pendingId) return;
-    const id = pendingId;
-    pendingId = null;
-    cModal.hidden = true;
-    try {
-      await fetch("/api/confirm/" + id, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch (e) { /* 応答待ちが時間切れになっただけ。次の周期で整合する */ }
-    poll();
+  function showToast(c) {
+    toasted.add(c.request_id);
+    try { sessionStorage.setItem(TOASTED_KEY, JSON.stringify([...toasted].slice(-50))); }
+    catch (e) { /* 保存できなくても、このページの中では二度出さない */ }
+    const t = document.createElement("div");
+    t.className = "module-toast";
+    const body = document.createElement("div");
+    const where = document.createElement("strong");
+    where.textContent = c.equipment_name || c.device_id;
+    const what = document.createElement("span");
+    what.textContent = [c.worker_name && c.worker_name + " さん", c.text].filter(Boolean).join(" · ") || "操作がありました";
+    body.append(where, what);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "flash-close";
+    x.setAttribute("aria-label", "閉じる");
+    x.textContent = "×";
+    x.addEventListener("click", () => dismissToast(t));
+    t.append(body, x);
+    toastBox.appendChild(t);
+    while (toastBox.children.length > 3) toastBox.firstChild.remove();
+    setTimeout(() => dismissToast(t), TOAST_MS);
   }
 
   async function poll() {
@@ -285,18 +250,9 @@
       return;  // app.py の再起動中など。次の周期で拾い直す
     }
 
-    // 応答待ちを先に出す。現場が機材の前で待っているので、タグ登録より急ぐ。
-    // /test では仮想モジュールの画面そのもので答えるので、その分の代替ポップアップは出さない
+    // /test では仮想モジュールの画面そのものが見えているので、その分は知らせない
     const confirms = (data.confirms || []).filter(c => !({{ 'true' if request.endpoint == 'test_page' else 'false' }} && c.virtual));
-    if (pendingId && !confirms.some(c => c.request_id === pendingId)) {
-      pendingId = null;            // 時間切れか、機材側で答えられた
-      cModal.hidden = true;
-    }
-    if (cModal.hidden && confirms.length) {
-      openConfirm(confirms[0]);
-      return;                      // 応答待ちの間はタグ登録を割り込ませない
-    }
-    if (!cModal.hidden) return;
+    confirms.filter(c => !toasted.has(c.request_id)).forEach(showToast);
 
     setUnlinked(data.unlinked_workers || []);
     const tags = data.tags || [];

@@ -627,6 +627,10 @@ def add_equipment():
             row = conn.execute("SELECT id, name, module_id FROM equipment WHERE id = ?",
                                (cur.lastrowid,)).fetchone()
             module_id = _ensure_module_id(conn, row)
+        if hostname:
+            # 紐付けフォームと同じ後始末。INSERT だけだと未登録一覧に残り、
+            # 次のハートビートまでオフライン表示のままになる
+            _bind_module(conn, cur.lastrowid, hostname)
         flash(f"機材「{name}」を登録しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("その機材コードは既に使われています", "error")
@@ -675,6 +679,9 @@ def _bind_module(conn, eq_id, hostname):
     elif not hostname:
         conn.execute("UPDATE equipment SET online = 0 WHERE id = ?", (eq_id,))
     conn.commit()
+    if pending:
+        # 向こうは「未登録のモジュールです」等を出したまま。待機画面を送っておく
+        _sync_module_state(hostname, eq_id)
 
 
 @app.route("/equipment/<int:eq_id>/delete", methods=["POST"])
@@ -2076,11 +2083,17 @@ def _pick_guidance(conn, equipment, tasks, has_candidates):
     others = [t for t in tasks if t.get("equipment_id") not in (None, equipment["id"])]
     # 優先度の高い順。同順位は API が返した順（＝登録の古い順）のまま
     others.sort(key=lambda t: PRIORITY_RANK.get(t.get("priority"), 9))
+    # この機材で一番急ぐタスクの順位。これより急ぐものだけを誘導する。見ないと、
+    # 至急タスクのある機材へ誘導した先で「高」のタスクへ誘導し返す往復が起きる
+    here_best = min((PRIORITY_RANK.get(t.get("priority"), 9) for t in tasks
+                     if t.get("equipment_id") in (None, equipment["id"])), default=9)
 
     for task in others:
         # 優先度が高くないタスクは、この機材でやることが無いときだけ誘導する。
         # そうでないと、ここで作業できるのに毎回よそへ歩かされることになる。
         if task.get("priority") not in GUIDE_PRIORITIES and has_candidates:
+            continue
+        if has_candidates and PRIORITY_RANK.get(task.get("priority"), 9) >= here_best:
             continue
         row = conn.execute(
             """SELECT id, name, module_id, hostname, status, online

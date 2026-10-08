@@ -72,6 +72,16 @@ check("自機材は対象外",
       pick([T(1, 1, "urgent", "旋盤A 緊急")], True),
       (None, None))
 
+# 7. ここに至急があるなら、他機材の「高」へは誘導しない（誘導先で誘導し返す往復を防ぐ）
+check("ここの方が急ぐなら誘導しない",
+      pick([T(1, 1, "urgent", "旋盤A 至急"), T(2, 2, "high", "プレスB 高")], True),
+      (None, None))
+
+# 8. ここが「高」でも、他機材が至急なら誘導する
+check("他機材の方が急ぐなら誘導する",
+      pick([T(1, 1, "high", "旋盤A 高"), T(2, 2, "urgent", "プレスB 至急")], True),
+      ("プレスB 至急", "プレスB"))
+
 # --- 誘導の一連の流れ（confirm と通知を差し替えて観測する）
 sent = []
 app._notify_briefly = lambda d, m, lines, led, sec=6: sent.append((d, m, lines, led, sec))
