@@ -1,0 +1,54 @@
+{
+  "_comment": "一通りの動作をデモするためのデータセット。python demo_reset.py でいつでもこの状態に戻せる。モジュールID(hostname)は sim.py / 実機の GEMMBA_DEVICE_ID と同じ pi01〜pi04。期限や実績の日時は投入した日を基準に作り直すので、いつ戻しても古びない。",
+
+  "workers": [
+    { "name": "村上 健一",   "years_of_service": 14.0, "role": "supervisor", "permissions": ["forklift", "crane"],    "nfc_tag_id": "012e5524f1494191", "_demo": "実機カードA。作業主任者なのでプレス資格あり → 旋盤でタッチするとプレス機の至急タスクへ誘導される" },
+    { "name": "小林 美咲",   "years_of_service": 7.5,  "role": "leader",     "permissions": ["welding"],             "nfc_tag_id": "aa3a4b7e",         "_demo": "実機カードB。班長（検査資格つき）＋溶接" },
+    { "name": "橋本 大輔",   "years_of_service": 4.0,  "role": "member",     "permissions": ["welding", "electric"], "nfc_tag_id": "DEMO-0003" },
+    { "name": "渡辺 さくら", "years_of_service": 2.0,  "role": "member",     "permissions": ["inspection"],          "nfc_tag_id": "DEMO-0004",        "_demo": "検査台 #1 で作業中の状態から始まる" },
+    { "name": "加藤 翼",     "years_of_service": 0.5,  "role": "member",     "permissions": [],                      "nfc_tag_id": "DEMO-0005",        "_demo": "資格なしの新人。基本の流れ（タッチ→タスク実行→作業終了）のデモ向き。誘導が出ない" },
+    { "name": "山口 理恵",   "years_of_service": 9.0,  "role": "manager",    "permissions": [],                      "nfc_tag_id": "DEMO-0006",        "_demo": "管理者。全権限を持つ" },
+    { "name": "松本 拓也",   "years_of_service": 1.0,  "role": "member",     "permissions": [],                      "nfc_tag_id": null,               "_demo": "ICタグ未紐付け。未登録カードをタッチ → 管理画面でこの人に紐付けるデモ用" }
+  ],
+
+  "equipment": [
+    { "name": "旋盤 #1",           "hostname": "pi01", "status": "idle" },
+    { "name": "プレス機 #1",       "hostname": "pi02", "status": "idle" },
+    { "name": "検査台 #1",         "hostname": "pi03", "status": "idle" },
+    { "name": "レーザー加工機 #1", "hostname": "pi04", "status": "maintenance", "_demo": "メンテ中。タッチすると「この機材は使用できません」" },
+    { "name": "溶接ブース #1",     "hostname": null,   "status": "idle",        "_demo": "モジュール未設置。誘導先・AI割当の対象としてだけ使う" }
+  ],
+
+  "tasks": [
+    { "title": "旋盤 #1 段取り替え",   "description": "次ロット用に治具を交換",         "difficulty": 2, "priority": "high",   "quantity": 1,  "deadline_in_days": 1,  "equipment_name": "旋盤 #1",       "required_permissions": [] },
+    { "title": "製品A ロット21 旋削",  "description": "図面 A-110。1個あたり約2分",     "difficulty": 2, "priority": "normal", "quantity": 30, "deadline_in_days": 3,  "equipment_name": "旋盤 #1",       "required_permissions": [] },
+    { "title": "製品D 面取り仕上げ",   "description": "バリ取り後、外観検査まで",       "difficulty": 3, "priority": "normal", "quantity": 45, "deadline_in_days": 3,  "equipment_name": null,            "required_permissions": [] },
+    { "title": "製品B 追加注文プレス", "description": "急ぎの追加注文分",               "difficulty": 3, "priority": "urgent", "quantity": 8,  "deadline_in_days": 0,  "equipment_name": "プレス機 #1",   "required_permissions": ["press"] },
+    { "title": "プレス機 #1 定期メンテ", "description": "潤滑・各部点検・電装確認",     "difficulty": 1, "priority": "low",    "quantity": 1,  "deadline_in_days": 7,  "equipment_name": "プレス機 #1",   "required_permissions": ["electric"] },
+    { "title": "試作E 初品確認",       "description": "寸法測定して記録票に記入",       "difficulty": 5, "priority": "high",   "quantity": 2,  "deadline_in_days": 1,  "equipment_name": "検査台 #1",     "required_permissions": ["inspection"],
+      "in_progress": { "worker": "渡辺 さくら", "started_minutes_ago": 40 } },
+    { "title": "製品C 完成検査",       "description": "抜き取り20個。測定値を記録",     "difficulty": 3, "priority": "normal", "quantity": 20, "deadline_in_days": 2,  "equipment_name": "検査台 #1",     "required_permissions": ["inspection"] },
+    { "title": "フレーム溶接",         "description": "治具Fに固定して4辺を溶接",       "difficulty": 4, "priority": "high",   "quantity": 12, "deadline_in_days": 2,  "equipment_name": "溶接ブース #1", "required_permissions": ["welding"] },
+    { "title": "資材置場からの搬入",   "description": "パレット3枚。所定位置へ",        "difficulty": 1, "priority": "high",   "quantity": 3,  "deadline_in_days": 0,  "equipment_name": null,            "required_permissions": ["forklift"] },
+    { "title": "月次 棚卸し補助",      "description": "検査台まわりの在庫を数える",     "difficulty": 1, "priority": "low",    "quantity": 1,  "deadline_in_days": 10, "equipment_name": null,            "required_permissions": [] }
+  ],
+
+  "_history_comment": "過去の完了タスクと作業実績(work_logs)。ダッシュボードとAI割当(WariAthena)の学習材料になる。所要時間は勤続年数と難易度から作る（ベテランほど難しい作業が速い）。",
+  "history": {
+    "days": 14,
+    "count": 40,
+    "today": 3,
+    "seed": 2026,
+    "templates": [
+      { "title": "製品A ロット{n} 旋削",   "difficulty": 2, "equipment_name": "旋盤 #1",       "required_permissions": [],             "quantity": [10, 30] },
+      { "title": "旋盤 #1 段取り替え",     "difficulty": 2, "equipment_name": "旋盤 #1",       "required_permissions": [],             "quantity": [1, 1] },
+      { "title": "製品B ロット{n} プレス", "difficulty": 3, "equipment_name": "プレス機 #1",   "required_permissions": ["press"],      "quantity": [5, 20] },
+      { "title": "製品C ロット{n} 完成検査", "difficulty": 3, "equipment_name": "検査台 #1",   "required_permissions": ["inspection"], "quantity": [10, 20] },
+      { "title": "試作{n} 初品確認",       "difficulty": 5, "equipment_name": "検査台 #1",     "required_permissions": ["inspection"], "quantity": [1, 3] },
+      { "title": "フレーム溶接 ロット{n}", "difficulty": 4, "equipment_name": "溶接ブース #1", "required_permissions": ["welding"],    "quantity": [4, 12] },
+      { "title": "製品D ロット{n} 面取り", "difficulty": 3, "equipment_name": null,            "required_permissions": [],             "quantity": [10, 40] },
+      { "title": "資材搬入",               "difficulty": 1, "equipment_name": null,            "required_permissions": ["forklift"],   "quantity": [1, 3] },
+      { "title": "工具の点検・清掃",       "difficulty": 1, "equipment_name": null,            "required_permissions": [],             "quantity": [1, 1] }
+    ]
+  }
+}
