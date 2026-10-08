@@ -1,5 +1,5 @@
 @echo off
-rem Build poster.tex -> poster.pdf (A1 layout), then poster_a0.tex -> poster_a0.pdf (A0, for printing).
+rem Build the 1-page poster (poster.tex -> poster_a0.pdf) and the 2-page poster (poster2_p1.tex, poster2_p2.tex -> poster2_a0.pdf), A0 for printing.
 rem Double-click this file, or press Ctrl+Shift+B in VS Code.
 rem Packages are downloaded on the first run only; later runs work offline.
 rem Pass "nopause" to skip the pause at the end (used by the VS Code task).
@@ -17,15 +17,17 @@ if not "%TECTONIC%"=="tectonic" if not exist "%TECTONIC%" (
   goto :end
 )
 
-"%TECTONIC%" -X compile poster.tex
-set "RC=%ERRORLEVEL%"
-if "%RC%"=="0" (
-  "%TECTONIC%" -X compile poster_a0.tex
-  set "RC=%ERRORLEVEL%"
+rem 1-page version: poster.tex -> poster_a0.pdf
+rem 2-page version: poster2_p1.tex + poster2_p2.tex -> poster2_a0.pdf
+for %%F in (poster poster_a0 poster2_p1 poster2_p2 poster2_a0) do (
+  "%TECTONIC%" -X compile %%F.tex || (set "RC=1" & goto :report)
 )
+set "RC=0"
+
+:report
 echo.
 if "%RC%"=="0" (
-  echo OK: poster_a0.pdf updated. Print this one on A0.
+  echo OK: poster_a0.pdf ^(1 page^) and poster2_a0.pdf ^(2 pages^) updated. Print these on A0.
 ) else (
   echo FAILED: see the "error: poster.tex:LINE" message above.
 )
