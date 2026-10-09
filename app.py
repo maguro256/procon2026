@@ -672,10 +672,12 @@ def auto_assign(task_id):
         conn.close()
         flash("タスクが見つかりません", "error")
         return _back_to("tasks")
+    # 割り当てると状態が 'assigned' に上書きされる。作業中のタスクは着手済みの人から
+    # 取り上げることになり、機材は元の人のまま使用中で残り食い違う。完了済みのタスクは
+    # 未完了に戻ってしまう。どちらも断る
     if task["status"] in ("in_progress", "done"):
-        # 着手済みの人から取り上げると、機材は元の人のまま使用中で残り食い違う
         conn.close()
-        flash("作業中・完了のタスクは割り当て直せません", "error")
+        flash(f"「{task['title']}」は{STATUS_LABELS[task['status']]}のため、AIで割り当て直せません", "error")
         return _back_to("tasks")
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)

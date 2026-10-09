@@ -4,7 +4,7 @@
 {% block content %}
 
 {% set online_n = equipment|selectattr('online')|list|length %}
-{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+{% set inuse_n = equipment|selectattr('status', 'equalto', 'working')|list|length %}
 <div class="page-top">
   <header class="page-head list-head">
     <h1>機材</h1>
@@ -75,7 +75,7 @@
       {% if e.last_seen %}<span class="lrow-note">最終通信 <span class="mono">{{ e.last_seen[5:16]|replace('-', '/') }}</span></span>{% endif %}
       {%- endif -%}
     </span>
-    <span><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
+    <span><span class="badge badge-{{ icons.status_class(e.status) }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
     <span class="lrow-stack">
       {%- if e.worker_name or e.task_title %}
       <span>{{ e.worker_name or '—' }}</span>

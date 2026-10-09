@@ -147,7 +147,7 @@
     </div>
   </details>
   <form id="delete-w-{{ w.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_worker', worker_id=w.id) }}"
-        data-confirm="{{ w.name }} さんを削除しますか？担当中のタスクは未割当に戻ります。" data-confirm-ok="削除する"></form>
+        data-confirm="{{ w.name }} さんを削除しますか？担当中・作業中のタスクは未着手に戻り、使用中の機材は空きに戻ります。" data-confirm-ok="削除する"></form>
 </div>
 {% endmacro %}
 

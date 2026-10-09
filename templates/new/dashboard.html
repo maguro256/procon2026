@@ -6,7 +6,7 @@
 <div data-live-refresh="4000">
 {% set today = now[:10] %}
 {% set idle_n = equipment|selectattr('status', 'equalto', 'idle')|list|length %}
-{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+{% set inuse_n = equipment|selectattr('status', 'equalto', 'working')|list|length %}
 
 {# 期限の表示。年は省いて「10/10」、今日なら「（今日）」を添える #}
 {% macro short_date(d, today) -%}
@@ -58,7 +58,7 @@
     {% for e in equipment %}
     {# モジュールを紐付けてあるのに繋がっていない機材。タッチしても何も起きない #}
     {% set offline = e.hostname and not e.online %}
-    <div class="eqg-row {{ 'status-idle' if e.status == 'idle' else 'status-inuse' }}{{ ' is-offline' if offline }}" data-key="eq-{{ e.id }}">
+    <div class="eqg-row status-{{ icons.status_class(e.status) }}{{ ' is-offline' if offline }}" data-key="eq-{{ e.id }}">
       <span class="status-lamp" title="{{ icons.status_label(e.status) }}">{{ icons.status_icon(e.status) }}</span>
       <span class="eqg-name">
         <span class="card-title">{{ e.name }}</span>
@@ -66,18 +66,18 @@
         <span class="eqg-offline" title="モジュールと通信できません{% if e.last_seen %}（最終通信 {{ e.last_seen }}）{% endif %}"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れ・タッチ不可</span>
         {% endif %}
       </span>
-      <span><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
+      <span><span class="badge badge-{{ icons.status_class(e.status) }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
       <span class="eqg-worker{{ ' is-empty' if not e.worker_name }}">{{ e.worker_name or '—' }}</span>
       <span class="eqg-task{{ ' is-empty' if not e.task_title }}">
         {% if e.task_title %}
         <span class="strong">{{ e.task_title }}</span>
         <span class="eqg-task-meta">×{{ e.task_quantity or 1 }}{% if e.task_deadline %}・期限 {{ short_date(e.task_deadline, today) }}{% if e.task_deadline < today %} <span class="badge badge-overdue">期限切れ</span>{% endif %}{% endif %}</span>
-        {% elif e.status != 'idle' %}
+        {% elif e.status == 'working' %}
         <span class="text-muted">フリー利用</span>
         {% else %}—{% endif %}
       </span>
       <span class="eqg-elapsed">
-        {% if e.status != 'idle' and e.since %}<span class="elapsed" data-since="{{ e.since }}" title="{{ e.since }} から"></span>{% endif %}
+        {% if e.status == 'working' and e.since %}<span class="elapsed" data-since="{{ e.since }}" title="{{ e.since }} から"></span>{% endif %}
       </span>
     </div>
     {% else %}
