@@ -309,7 +309,10 @@
   }
 
   poll();
-  setInterval(poll, 2000);
+  // 裏に回ったタブでは取りに行かない。見ていない画面にポップアップを出しても
+  // 誰も答えられないので、表示に戻ったときにすぐ取り直せば足りる
+  setInterval(() => { if (!document.hidden) poll(); }, 2000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 
   // ---- <main> の差し替え（フォーム送信・自動保存・自動更新・絞り込みで共通） ----
   // 行ごとに data-key を付けておくと、差し替えの前後で中身が変わった行だけを

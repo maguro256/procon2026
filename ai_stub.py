@@ -215,14 +215,21 @@ def _unit_estimates(model: dict) -> list:
     return [s or fill for s in model.get("unit_seconds", [None] * TASK_COUNT)]
 
 
-def estimate_seconds(task: dict, work_logs: list) -> float:
-    """そのタスクに標準的にかかる時間の見積もり（難易度ごとの平均 × 数量）"""
-    units = _unit_estimates(_get_model(work_logs)) if _AI_READY else [DEFAULT_UNIT_SECONDS] * TASK_COUNT
+def _units_for(work_logs: list) -> list:
+    return _unit_estimates(_get_model(work_logs)) if _AI_READY else [DEFAULT_UNIT_SECONDS] * TASK_COUNT
+
+
+def _estimate(task: dict, units: list) -> float:
     try:
         quantity = max(int(task.get("quantity") or 1), 1)
     except (TypeError, ValueError):
         quantity = 1
     return units[_task_type(task.get("difficulty"))] * quantity
+
+
+def estimate_seconds(task: dict, work_logs: list) -> float:
+    """そのタスクに標準的にかかる時間の見積もり（難易度ごとの平均 × 数量）"""
+    return _estimate(task, _units_for(work_logs))
 
 
 def workloads(open_tasks: list, work_logs: list, now=None) -> dict:
@@ -234,11 +241,14 @@ def workloads(open_tasks: list, work_logs: list, now=None) -> dict:
 
     now = now or datetime.now()
     loads: dict = {}
+    # 見積もりの元はループの外で1回だけ取る。タスクごとに estimate_seconds を
+    # 呼ぶと、そのたびに実績全件を舐めてキャッシュの鍵を作り直すことになる
+    units = _units_for(work_logs) if open_tasks else None
     for t in open_tasks:
         wid = t.get("assigned_worker_id")
         if not wid:
             continue
-        remaining = estimate_seconds(t, work_logs)
+        remaining = _estimate(t, units)
         if t.get("status") == "in_progress" and t.get("started_at"):
             try:
                 started = datetime.strptime(t["started_at"], "%Y-%m-%d %H:%M:%S")
@@ -360,7 +370,37 @@ def invalidate_cache() -> None:
     _get_model の cache_key（件数と最大id）が変わらず、そのままだと
     モジュール側から届いたフィードバックが学習に反映されない。
     api_work_log_feedback からもこれを呼んでキャッシュを捨てる。
+    下の cached_logs が持っている読み込み済みの実績も一緒に捨てる。
     """
     global _cache_key
     with _lock:
         _cache_key = None
+        _logs_cache["key"] = None
+        _logs_cache["logs"] = None
+        _logs_cache["gen"] += 1
+
+
+# ---------------------------------------------------------------- 実績の読み込みキャッシュ
+# app.py はタッチのたびに実績を全件 JOIN して渡していた。学習結果をキャッシュから
+# 使えるときでも読み込みだけは毎回走るので、実績が増えるほどタッチが遅くなる。
+# 呼び出し側が安い鍵（件数・最大id）を渡し、変わっていなければ前回の読み込みを返す。
+_logs_cache: dict = {"key": None, "logs": None, "gen": 0}
+
+
+def cached_logs(key, load) -> list:
+    """
+    key が前回と同じなら前回 load() した実績を返す。返したリストは共有なので
+    呼び出し側で書き換えないこと。invalidate_cache() で捨てられる。
+    """
+    with _lock:
+        if key is not None and _logs_cache["key"] == key:
+            return _logs_cache["logs"]
+        gen = _logs_cache["gen"]
+    logs = load()
+    with _lock:
+        # 読み込んでいる間に invalidate_cache() が呼ばれたら、この結果は古いかも
+        # しれないので覚えない（返すのは構わない。呼ばれる前の状態としては正しい）
+        if _logs_cache["gen"] == gen:
+            _logs_cache["key"] = key
+            _logs_cache["logs"] = logs
+    return logs

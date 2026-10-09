@@ -168,8 +168,17 @@ AI_LOG_SQL = """
 
 
 def _ai_logs(conn):
-    """ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す"""
-    return [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()]
+    """
+    ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す。
+
+    実績の件数と最大idが前回と同じなら、全件の読み込みは省いて前回の結果を返す
+    （タッチのたびに全件 JOIN していた）。既存の行や JOIN 先が変わる操作
+    （難易度フィードバック・作業者/タスクの編集・削除）では ai_stub.invalidate_cache()
+    を呼んで捨てること。返したリストは共有なので書き換えない。
+    """
+    key = tuple(conn.execute("SELECT COUNT(*), MAX(id) FROM work_logs").fetchone())
+    return ai_stub.cached_logs(
+        key, lambda: [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()])
 
 
 def _like_escape(text):
@@ -967,6 +976,11 @@ def api_next_task(nfc_tag_id):
         ORDER BY created_at, id
     """, (w["id"],)).fetchall()]
     logs = _ai_logs(conn)
+    # タッチされた機材（?module_id=）。機材指定の無いタスクを「この機材でやったら」で評価する
+    eq_row = None
+    if request.args.get("module_id"):
+        eq_row = conn.execute("SELECT id FROM equipment WHERE module_id = ?",
+                              (request.args["module_id"],)).fetchone()
     conn.close()
     # 着手済みは投げ出させないよう先頭に固定する。ここは権限で落とさない。
     # 作業中に資格が取り消されても、完了して機材を解放する経路は残す必要がある。
@@ -974,13 +988,6 @@ def api_next_task(nfc_tag_id):
     # 未着手の候補は権限（D-2）を満たすものだけ。この1行でモジュール側の
     # 候補提示（C-1/C-2）と他機材への誘導（C-3）の両方に効く。
     rest = perms.eligible_tasks(w, [t for t in rows if t["status"] != "in_progress"])
-    # タッチされた機材（?module_id=）。機材指定の無いタスクを「この機材でやったら」で評価する
-    eq_row = None
-    if request.args.get("module_id"):
-        conn = db.get_db()
-        eq_row = conn.execute("SELECT id FROM equipment WHERE module_id = ?",
-                              (request.args["module_id"],)).fetchone()
-        conn.close()
     here_id = eq_row["id"] if eq_row else None
     ranked = ai_stub.rank_tasks(dict(w), rest, logs, equipment_id=here_id)
     # sort は安定なので、同じ組・同じ優先度の中では AI の並びがそのまま残る

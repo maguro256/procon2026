@@ -386,7 +386,10 @@
   });
 
   poll();
-  setInterval(poll, 500);
+  // 裏に回ったタブでは取りに行かない（0.5秒ごとなので、開きっぱなしのタブが積もると効く）。
+  // 戻ってきたらすぐ取り直す
+  setInterval(() => { if (!document.hidden) poll(); }, 500);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 })();
 </script>
 {% endblock %}
