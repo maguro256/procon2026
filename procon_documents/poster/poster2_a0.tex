@@ -1,0 +1,16 @@
+% poster2_p1.pdf・poster2_p2.pdf（A1 で組んだ版面）を、A0 縦（841 × 1189 mm）の 2 ページにする。
+% ベクターのまま拡大するので、文字や図は粗くならない。
+% 先に poster2_p1.tex・poster2_p2.tex をビルドしておくこと（build_poster.bat が順にビルドする）
+\documentclass{article}
+\usepackage[paperwidth=841mm,paperheight=1189mm,margin=0mm]{geometry}
+\usepackage{graphicx}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\topskip}{0pt}
+\newcommand{\page}[1]{%
+  \makebox[\linewidth][c]{\raisebox{-\height}[0pt][0pt]{%
+    \includegraphics[height=1189mm,keepaspectratio]{#1}}}\newpage}
+\begin{document}
+\page{poster2_p1.pdf}
+\page{poster2_p2.pdf}
+\end{document}

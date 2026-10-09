@@ -75,26 +75,50 @@ class RewardConverter:
         self.learningdata[choicetask]=(prev_avg*(current_count-1)+reward)/current_count
 
 class workerBelief:
+    """
+    ベイズ線形回帰の事後分布。精度行列 A = Σ⁻¹ と b = A·μ の形で持つ。
+
+        A ← A + xxᵀ/σ²,  b ← b + r·x/σ²
+
+    以前は update のたびに逆行列を3回取っていたが、この形なら更新は足し算だけで
+    済む。μ と Σ は読まれたときに1回だけ逆行列を取って作る（結果は同じ）。
+    ai_stub は実績を全件再生して組み立て直すので、ここが再学習の速さを決める。
+    """
     def __init__(self,dim=3+TASK_COUNT):
         # dim は文脈ベクトルの次元。単体シミュレーションは既定の8次元、
         # ai_stub.py は権限・機材の one-hot を足した次元で作る
-        self.mu=np.zeros(dim)
-        self.sigma=np.eye(dim)*100
         self.sigma_obs2=0.1
+        self._A=np.eye(dim)/100     # 事前分布 Σ=100·I の精度
+        self._b=np.zeros(dim)       # 事前分布 μ=0
+        self._mu=None
+        self._sigma=None
+
+    def _solve(self):
+        if self._sigma is None:
+            self._sigma=np.linalg.inv(self._A)
+            self._mu=self._sigma@self._b
+
+    @property
+    def mu(self):
+        self._solve()
+        return self._mu
+
+    @property
+    def sigma(self):
+        self._solve()
+        return self._sigma
 
     def sample_theta(self):
         return np.random.multivariate_normal(self.mu,self.sigma)
 
     def predict(self,x,theta):
         return float(np.dot(theta,x))  #x,thetaは同じ次元なら何次元でもよい
-    
+
     def update(self,x,reward):
-        x=np.array(x)
-        sigma_inv_new=np.linalg.inv(self.sigma)+(1/self.sigma_obs2)*(np.outer(x,x))
-        sigma_new=np.linalg.inv(sigma_inv_new)
-        mu_new=sigma_new@(np.linalg.inv(self.sigma)@self.mu+(1/self.sigma_obs2)*x*reward)
-        self.mu=mu_new
-        self.sigma=sigma_new
+        x=np.asarray(x,dtype=float)
+        self._A+=np.outer(x,x)/self.sigma_obs2
+        self._b+=x*(reward/self.sigma_obs2)
+        self._mu=self._sigma=None
         
 
 class AssignmentEngine:

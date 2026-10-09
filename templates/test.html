@@ -162,6 +162,27 @@
     return html;
   }
 
+  // 実機（raspi._fit_role / CHIP_ROLES）と同じく、収まらない行は大きい順に文字を
+  // 小さくして1行に収める。一番小さくしても入らないときだけ CSS の … に任せる。
+  // 選択肢チップは、実機と同じく全部を同じ大きさにそろえる。
+  const FIT_PX = {
+    "lcd-title": [25, 20, 17], "lcd-sub": [20, 17, 14], "lcd-question": [20, 17],
+    "lcd-chip": [28, 20, 17, 14],
+  };
+  function fitScreen(screen) {
+    const fits = e => e.scrollWidth <= e.clientWidth;
+    for (const [cls, sizes] of Object.entries(FIT_PX)) {
+      const els = [...screen.querySelectorAll("." + cls)];
+      const groups = cls === "lcd-chip" ? [els] : els.map(e => [e]);
+      for (const group of groups) {
+        for (const px of sizes) {
+          group.forEach(e => { e.style.fontSize = `calc(${px} * var(--u))`; });
+          if (group.every(fits)) break;
+        }
+      }
+    }
+  }
+
   function createCard(id) {
     const el = tpl.content.firstElementChild.cloneNode(true);
     el.dataset.device = id;
@@ -247,7 +268,9 @@
 
   function update(card, m) {
     const el = card.el;
-    el.querySelector(".vm-screen").innerHTML = screenHtml(m);
+    const screen = el.querySelector(".vm-screen");
+    screen.innerHTML = screenHtml(m);
+    fitScreen(screen);
     el.querySelector(".vm-lamp").classList.toggle("is-red", m.led === "working");
 
     const eq = m.equipment;
@@ -363,7 +386,10 @@
   });
 
   poll();
-  setInterval(poll, 500);
+  // 裏に回ったタブでは取りに行かない（0.5秒ごとなので、開きっぱなしのタブが積もると効く）。
+  // 戻ってきたらすぐ取り直す
+  setInterval(() => { if (!document.hidden) poll(); }, 500);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 })();
 </script>
 {% endblock %}

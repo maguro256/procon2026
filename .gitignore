@@ -34,3 +34,6 @@ esp32/.pio/
 
 # ESP32 の Wi-Fi パスワード
 esp32/include/secrets.h
+
+slides/node_modules/
+slides/~$*

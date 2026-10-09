@@ -183,13 +183,40 @@ def _relax_work_logs(conn):
     print(f"[db] migrate: work_logs の task_id / worker_id を NULL 可にしました（{n}件そのまま）")
 
 
+# 一覧画面の相関サブクエリが毎行テーブルを全走査しないための索引。
+# migrate() の _relax_work_logs は work_logs を作り直す（索引も消える）ので、
+# SCHEMA ではなく migrate の後に張る。
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_work_logs_task ON work_logs(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(assigned_worker_id, status);
+"""
+
+
+def backup_to(dst):
+    """
+    DBを dst へ丸ごと写す。WAL では本体ファイルに未反映の更新が -wal 側に
+    残っているので、ファイルのコピー（shutil.copy2）だと最新の内容が抜ける。
+    """
+    src = get_db()
+    out = sqlite3.connect(dst)
+    try:
+        src.backup(out)
+    finally:
+        out.close()
+        src.close()
+
+
 def init_db(seed: bool = True):
     # サンプル投入は「DBファイルが存在しなかった初回」に限る。テーブルが空か
     # どうかで判定すると、意図的に全削除した後の起動でサンプルが復活してしまう。
     first_run = not DB_PATH.exists()
     conn = get_db()
+    # WAL にすると読み込み（管理画面のポーリング）と書き込み（MQTTの死活・タッチ）が
+    # 互いを待たなくなる。設定はDBファイルに残るので、一度当てれば以後ずっと有効
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     migrate(conn)
+    conn.executescript(INDEXES)
     # 初回のみサンプルデータを投入（動作確認用。不要なら seed=False で呼ぶ）
     if seed and first_run:
         conn.executescript("""

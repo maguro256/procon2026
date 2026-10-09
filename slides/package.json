@@ -1,0 +1,6 @@
+{
+  "name": "gemmba-slides",
+  "private": true,
+  "scripts": { "build": "node build_slides.js" },
+  "dependencies": { "jszip": "^3.10.1", "pptxgenjs": "^4.0.1" }
+}

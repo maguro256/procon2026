@@ -1,0 +1,25 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "レジュメをPDFにする",
+            "type": "process",
+            "command": "${workspaceFolder}\\resume\\build.bat",
+            "args": ["nopause"],
+            "options": { "cwd": "${workspaceFolder}\\resume" },
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "clear": true },
+            "problemMatcher": {
+                "owner": "latex",
+                "fileLocation": ["relative", "${workspaceFolder}\\resume"],
+                "pattern": {
+                    "regexp": "^(error|warning): (.+\\.tex):(\\d+): (.*)$",
+                    "severity": 1,
+                    "file": 2,
+                    "line": 3,
+                    "message": 4
+                }
+            }
+        }
+    ]
+}

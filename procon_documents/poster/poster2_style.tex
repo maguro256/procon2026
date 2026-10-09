@@ -1,0 +1,162 @@
+% poster2_p1.tex / poster2_p2.tex（A0 2 枚版）で共有する設定。poster.tex（1 枚版）の設定を元に、文字を大きくしたもの
+% 寸法・文字サイズは A1 のときの値（poster2_a0.tex で 1.414 倍して A0 にする）
+\usepackage{xeCJK}
+\setCJKmainfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Regular.otf}
+\setCJKsansfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Regular.otf}
+\setmainfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf]
+\setsansfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf]
+\xeCJKsetup{CJKspace=false}
+
+\usepackage{amsmath,amssymb,bm}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{array}
+\usepackage{fontawesome5}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\graphicspath{{../../resume/}{../../}}
+
+\setlist{nosep,leftmargin=1.0em,itemsep=4pt}
+\renewcommand{\labelitemi}{\textcolor{blue}{\textbullet}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2pt}
+
+% ---------------------------------------------------------------- 色（DESIGN.md とロゴに合わせる）
+\definecolor{navy}{HTML}{164A86}     % ロゴの文字色
+\definecolor{blue}{HTML}{0093C4}     % blue-deep
+\definecolor{skytint}{HTML}{E3F7FF}
+\definecolor{yellow}{HTML}{FFDB4F}
+\definecolor{yellowdeep}{HTML}{C99A00}
+\definecolor{yellowtint}{HTML}{FFF6DA}
+\definecolor{ink}{HTML}{232323}
+\definecolor{ink2}{HTML}{5E584C}
+\definecolor{paper}{HTML}{F1EFE8}    % ロゴの背景色
+\definecolor{card}{HTML}{F6F3EA}
+\definecolor{good}{HTML}{1C7A45}
+\definecolor{goodtint}{HTML}{E3F4E9}
+\definecolor{orange}{HTML}{E2612B}
+
+\definecolorstyle{gemmba}{
+  \colorlet{colorOne}{navy}\colorlet{colorTwo}{blue}\colorlet{colorThree}{yellow}
+}{
+  \colorlet{backgroundcolor}{paper}
+  \colorlet{framecolor}{paper}
+  \colorlet{titlefgcolor}{navy}
+  \colorlet{titlebgcolor}{paper}
+  \colorlet{blocktitlebgcolor}{white}
+  \colorlet{blocktitlefgcolor}{navy}
+  \colorlet{blockbodybgcolor}{white}
+  \colorlet{blockbodyfgcolor}{ink}
+  \colorlet{innerblocktitlebgcolor}{white}
+  \colorlet{innerblocktitlefgcolor}{navy}
+  \colorlet{innerblockbodybgcolor}{white}
+  \colorlet{innerblockbodyfgcolor}{ink}
+  \colorlet{notefgcolor}{ink}
+  \colorlet{notebgcolor}{skytint}
+  \colorlet{noteframecolor}{blue}
+}
+\usecolorstyle{gemmba}
+\usetitlestyle{Filled}
+\usebackgroundstyle{Default}
+
+% ブロック：白いカード。見出しは中央、黄色の下線
+\defineblockstyle{gemblock}{
+  titlewidthscale=1, bodywidthscale=1, titlecenter,
+  titleoffsetx=0pt, titleoffsety=0pt, bodyoffsetx=0mm, bodyoffsety=0mm,
+  bodyverticalshift=0mm, roundedcorners=10, linewidth=0pt,
+  titleinnersep=3mm, bodyinnersep=6mm
+}{
+  \ifBlockHasTitle
+    \draw[draw=none, fill=white, rounded corners=\blockroundedcorners]
+      (blockbody.south west) rectangle (blocktitle.north east);
+  \else
+    \draw[draw=none, fill=white, rounded corners=\blockroundedcorners]
+      (blockbody.south west) rectangle (blockbody.north east);
+  \fi
+}
+\useblockstyle{gemblock}
+
+
+% ---------------------------------------------------------------- タイトル（2 枚とも同じ帯。右上にページ番号）
+% \posttitle{ページの主題}{n/2}
+\newcommand{\posttitle}[2]{%
+  \settitle{%
+    \begin{minipage}[c]{0.36\linewidth}
+      \includegraphics[width=0.95\linewidth]{logo.png}
+    \end{minipage}\hfill
+    \begin{minipage}[c]{0.62\linewidth}
+      \raggedright\color{navy}
+      {\fontsize{66pt}{70pt}\selectfont\bfseries 中小企業向けのDX推進システム}\par\vspace{10pt}
+      {\fontsize{36pt}{40pt}\selectfont\bfseries\color{blue}#1}\quad
+      {\fontsize{26pt}{30pt}\selectfont\bfseries\color{white}\colorbox{navy}{\,#2\,}}\par\vspace{10pt}
+      {\fontsize{24pt}{28pt}\selectfont\color{ink2}明石工業高等専門学校\quad 小笠原\,悠太\quad 増永\,惺真\qquad 指導教員：野村\,隼人}
+    \end{minipage}}}
+
+% ---------------------------------------------------------------- 部品
+% ブロック見出し：文字幅に合わせた黄色の下線
+\newcommand{\bt}[1]{\tikz[baseline=(t.base)]{%
+  \node[inner sep=0, font=\fontsize{48pt}{54pt}\selectfont\bfseries, text=navy] (t) {#1};
+  \fill[yellow] ([xshift=-6mm, yshift=-16pt]t.south west) rectangle ([xshift=6mm, yshift=-6pt]t.south east);}}
+\newcommand{\sm}{\fontsize{20pt}{25pt}\selectfont}
+\newcommand{\capt}[1]{{\centering\fontsize{20pt}{25pt}\selectfont\color{ink2}#1\par}}
+\newcommand{\head}[1]{{\fontsize{32pt}{38pt}\selectfont\bfseries\color{navy}#1}\par\vspace{10pt}}
+\newcommand{\hl}[1]{\textcolor{blue}{\textbf{#1}}}
+\newcommand{\bl}{\fontsize{24pt}{31pt}\selectfont}   % 本文・箇条書き
+\newcommand{\tb}{\fontsize{25pt}{30pt}\selectfont}   % 表
+\renewcommand{\arraystretch}{1.45}
+\setlist{nosep,leftmargin=1.0em,itemsep=7pt}
+
+% 写真：img/<ファイル名> があれば表示、無ければ「ここに写真」の枠を描く
+%   \photo{ファイル名}{幅}{高さ}{何の写真か}
+\newcommand{\photo}[4]{%
+  \IfFileExists{img/#1}{%
+    \tikz{\node[inner sep=0] {\includegraphics[width=#2,height=#3,keepaspectratio]{img/#1}};}}{%
+    \tikz{\draw[dashed, line width=2pt, draw=ink2!55, fill=card, rounded corners=8pt]
+            (0,0) rectangle (#2,#3);
+          \node[align=center, text=ink2, font=\fontsize{20pt}{25pt}\selectfont]
+            at ($(0,0)!0.5!(#2,#3)$)
+            {{\fontsize{36pt}{36pt}\selectfont\faCamera}\\[4pt]#4\\{\fontsize{15pt}{18pt}\selectfont img/\detokenize{#1}}};}}}
+% 管理画面のスクリーンショット（細い枠つき）
+\newcommand{\shot}[2]{\fcolorbox{ink2!40}{white}{\includegraphics[width=#1]{img/#2}}}
+
+% メリット：短い見出し＋補足 1 行。項目内は詰め、項目の間を空ける
+\newcommand{\merit}[2]{% 見出し, 補足
+  {\bfseries\fontsize{30pt}{36pt}\selectfont #1\par}
+  \vspace{3pt}
+  {\fontsize{23pt}{28pt}\selectfont\color{ink2}#2\par}
+  \vspace{14pt}}
+
+% 囲み（淡い色の地のカード）\tint{地の色}{中身}
+\newcommand{\tint}[2]{\coloredbox[bgcolor=#1, fgcolor=ink, framecolor=#1, roundedcorners=8, linewidth=0pt]{#2}}
+
+\tikzset{
+  box/.style={draw=navy, line width=3pt, rounded corners=8pt, fill=white,
+    align=flush center, inner sep=9pt, text=ink},
+  aibox/.style={draw=blue, line width=3.5pt, rounded corners=8pt, fill=skytint,
+    align=flush center, inner sep=9pt, text=ink},
+  ybox/.style={draw=yellowdeep, line width=3.5pt, rounded corners=8pt, fill=yellowtint,
+    align=flush center, inner sep=9pt, text=ink},
+  gbox/.style={draw=good, line width=3.5pt, rounded corners=8pt, fill=goodtint,
+    align=flush center, inner sep=9pt, text=ink},
+  obox/.style={draw=orange, line width=3.5pt, rounded corners=8pt, fill=orange!8,
+    align=flush center, inner sep=9pt, text=ink},
+  arr/.style={-{Stealth[length=18pt,width=17pt]}, line width=4pt, color=navy!70},
+  dbl/.style={{Stealth[length=15pt,width=14pt]}-{Stealth[length=15pt,width=14pt]},
+    line width=3.5pt, color=navy!70},
+  lab/.style={font=\fontsize{20pt}{24pt}\selectfont, text=ink, align=left},
+  elab/.style={font=\fontsize{19pt}{22pt}\selectfont, text=ink2},
+  slab/.style={font=\fontsize{17pt}{20pt}\selectfont, text=ink2},   % 矢印が短いところのラベル
+}
+
+\pgfplotsset{
+  gem/.style={
+    axis lines=left, axis line style={ink2, line width=1.2pt},
+    tick style={ink2, line width=1.2pt},
+    tick label style={font=\fontsize{20pt}{22pt}\selectfont, color=ink},
+    label style={font=\fontsize{20pt}{23pt}\selectfont, color=ink2},
+    every axis plot/.append style={line width=3.5pt},
+  },
+}
+
+\colorlet{orangetint}{orange!8}

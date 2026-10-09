@@ -39,6 +39,9 @@ from voice import intent
 
 app = Flask(__name__)
 app.secret_key = "dev-secret-change-me"  # flash用。本番では変更する
+# 受け付けるリクエスト本体の上限。一番大きいのは /api/voice の WAV
+# （16kHz・2ch・最長30秒で約2MB）。上限が無いと巨大な送信でメモリを食い潰せる
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 # Flask のデバッグモード（自動リロード＋ブラウザ上のデバッガ）。**既定は OFF。**
 # host=0.0.0.0 で配信しているので、ON のままだと LAN 内の誰でもデバッガから
@@ -165,8 +168,17 @@ AI_LOG_SQL = """
 
 
 def _ai_logs(conn):
-    """ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す"""
-    return [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()]
+    """
+    ai_stub に渡す学習データ。呼び出し側は開いた conn をそのまま渡す。
+
+    実績の件数と最大idが前回と同じなら、全件の読み込みは省いて前回の結果を返す
+    （タッチのたびに全件 JOIN していた）。既存の行や JOIN 先が変わる操作
+    （難易度フィードバック・作業者/タスクの編集・削除）では ai_stub.invalidate_cache()
+    を呼んで捨てること。返したリストは共有なので書き換えない。
+    """
+    key = tuple(conn.execute("SELECT COUNT(*), MAX(id) FROM work_logs").fetchone())
+    return ai_stub.cached_logs(
+        key, lambda: [dict(r) for r in conn.execute(AI_LOG_SQL).fetchall()])
 
 
 def _like_escape(text):
@@ -196,6 +208,25 @@ def _safe_int(value, default):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_float(value, default):
+    """_safe_int の小数版（勤続年数）。"abc" や "nan" で500にしない"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return f if f == f and abs(f) != float("inf") else default
+
+
+def _valid_priority(value, default="normal"):
+    """未知の優先度は並び替え（PRIORITY_RANK）や表示で浮くので既定値に寄せる"""
+    return value if value in PRIORITY_LABELS else default
+
+
+def _row_exists(conn, table, row_id):
+    """外部キーの参照先があるか。無い id で書くと IntegrityError で500になる"""
+    return conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is not None
 
 
 @app.context_processor
@@ -291,7 +322,7 @@ def add_worker():
     try:
         conn.execute(
             "INSERT INTO workers (name, years_of_service, role, permissions, nfc_tag_id) VALUES (?, ?, ?, ?, ?)",
-            (name, float(years or 0), role, held, nfc),
+            (name, _safe_float(years, 0.0), role, held, nfc),
         )
         conn.commit()
         _forget_tag(nfc)
@@ -351,11 +382,14 @@ def update_worker(worker_id):
     try:
         conn.execute(
             "UPDATE workers SET years_of_service = ?, role = ?, permissions = ?, nfc_tag_id = ? WHERE id = ?",
-            (float(f.get("years_of_service") or 0), f.get("role") or perms.DEFAULT_ROLE,
+            (_safe_float(f.get("years_of_service"), 0.0), f.get("role") or perms.DEFAULT_ROLE,
              perms.dump(f.getlist("permissions")), nfc, worker_id),
         )
         conn.commit()
         _forget_tag(nfc)
+        # 勤続年数は学習の文脈ベクトルに入っている。ログの件数は変わらないので
+        # AI のキャッシュは自分では気づけない
+        ai_stub.invalidate_cache()
         flash(f"{row['name']} さんの役職・権限・ICタグを更新しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に別の作業者が使っています", "error")
@@ -458,6 +492,11 @@ def add_task():
         flash("タスク名を入力してください", "error")
         return redirect(url_for("tasks"))
     conn = db.get_db()
+    equipment_id = f.get("equipment_id") or None
+    if equipment_id and not _row_exists(conn, "equipment", equipment_id):
+        conn.close()
+        flash("指定された機材が見つかりません", "error")
+        return redirect(url_for("tasks"))
     conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
                             quantity, deadline, equipment_id)
@@ -466,11 +505,11 @@ def add_task():
             title,
             f.get("description", "").strip(),
             _safe_int(f.get("difficulty"), 3),
-            f.get("priority", "normal"),
+            _valid_priority(f.get("priority")),
             perms.dump(f.getlist("required_permissions")),
             _safe_int(f.get("quantity"), 1) or 1,
             f.get("deadline") or None,
-            f.get("equipment_id") or None,
+            equipment_id,
         ),
     )
     conn.commit()
@@ -492,9 +531,13 @@ def update_task(task_id):
 
     worker_id = f.get("assigned_worker_id") or None
     equipment_id = f.get("equipment_id") or None
-    priority = f.get("priority", task["priority"])
+    priority = _valid_priority(f.get("priority"), task["priority"])
     quantity = _safe_int(f.get("quantity") or task["quantity"], 1) or 1
     deadline = f.get("deadline") or None
+    if equipment_id and not _row_exists(conn, "equipment", equipment_id):
+        conn.close()
+        flash("指定された機材が見つかりません", "error")
+        return _back_to("tasks")
 
     # 必要権限（D-2）。チェックボックスは未チェックだと POST に現れないので、
     # フォームに含まれていたことを隠しフィールドで見分ける。含まれない経路から
@@ -508,7 +551,11 @@ def update_task(task_id):
     # に対して行うので、必要権限を外すのと同時に割り当てる操作は通る。
     if worker_id:
         cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
-        lacking = perms.missing(cand, {"required_permissions": required_perms}) if cand else []
+        if not cand:
+            conn.close()
+            flash("指定された作業者が見つかりません", "error")
+            return _back_to("tasks")
+        lacking = perms.missing(cand, {"required_permissions": required_perms})
         if lacking:
             conn.close()
             flash(f"{cand['name']} さんは権限が足りないため割り当てできません"
@@ -526,6 +573,8 @@ def update_task(task_id):
     )
     conn.commit()
     conn.close()
+    # 数量・必要権限は過去の実績の再生にも使われる（AI_LOG_SQL が tasks を JOIN している）
+    ai_stub.invalidate_cache()
     flash("タスクを更新しました", "ok")
     return _back_to("tasks")
 
@@ -748,6 +797,8 @@ def _detach_work_logs(conn, column, value):
     n = conn.execute(f"SELECT COUNT(*) FROM work_logs WHERE {column} = ?", (value,)).fetchone()[0]
     if n:
         conn.execute(f"UPDATE work_logs SET {column} = NULL WHERE {column} = ?", (value,))
+        # 実績の中身が変わった。件数と最大idは同じなので、明示的に捨てる
+        ai_stub.invalidate_cache()
     return n
 
 
@@ -932,6 +983,11 @@ def api_next_task(nfc_tag_id):
         ORDER BY created_at, id
     """, (w["id"],)).fetchall()]
     logs = _ai_logs(conn)
+    # タッチされた機材（?module_id=）。機材指定の無いタスクを「この機材でやったら」で評価する
+    eq_row = None
+    if request.args.get("module_id"):
+        eq_row = conn.execute("SELECT id FROM equipment WHERE module_id = ?",
+                              (request.args["module_id"],)).fetchone()
     conn.close()
     # 着手済みは投げ出させないよう先頭に固定する。ここは権限で落とさない。
     # 作業中に資格が取り消されても、完了して機材を解放する経路は残す必要がある。
@@ -939,13 +995,6 @@ def api_next_task(nfc_tag_id):
     # 未着手の候補は権限（D-2）を満たすものだけ。この1行でモジュール側の
     # 候補提示（C-1/C-2）と他機材への誘導（C-3）の両方に効く。
     rest = perms.eligible_tasks(w, [t for t in rows if t["status"] != "in_progress"])
-    # タッチされた機材（?module_id=）。機材指定の無いタスクを「この機材でやったら」で評価する
-    eq_row = None
-    if request.args.get("module_id"):
-        conn = db.get_db()
-        eq_row = conn.execute("SELECT id FROM equipment WHERE module_id = ?",
-                              (request.args["module_id"],)).fetchone()
-        conn.close()
     here_id = eq_row["id"] if eq_row else None
     ranked = ai_stub.rank_tasks(dict(w), rest, logs, equipment_id=here_id)
     # sort は安定なので、同じ組・同じ優先度の中では AI の並びがそのまま残る
@@ -993,11 +1042,22 @@ def api_start_task(task_id):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     started_at = task["started_at"] or now
-    conn.execute(
+    # 他の人が先に着手していたら断る。候補を見せてから「はい」が押されるまで
+    # 最大25秒あり、その間に別の機材で同じタスクに着手されうる。上書きすると
+    # 先の人の機材が作業中のまま残り、実績も後の人に付いてしまう。
+    # SELECT した後の判定では同時のリクエストを防げないので、UPDATE の条件で見る
+    cur = conn.execute(
         """UPDATE tasks SET status = 'in_progress', assigned_worker_id = ?, equipment_id = ?,
-           started_at = ? WHERE id = ?""",
-        (worker["id"], equipment["id"], started_at, task_id),
+           started_at = ? WHERE id = ? AND status != 'done'
+             AND (status != 'in_progress' OR assigned_worker_id = ?)""",
+        (worker["id"], equipment["id"], started_at, task_id, worker["id"]),
     )
+    if cur.rowcount == 0:
+        conn.rollback()
+        conn.close()
+        print(f"[{data.get('module_id')}] {worker['name']}: 着手済み・完了済みのため拒否 "
+              f"task={task['title']}")
+        return jsonify({"error": "already taken"}), 409
     conn.execute(
         """UPDATE equipment SET status = 'working', current_worker_id = ?, current_task_id = ?,
            updated_at = datetime('now','localtime') WHERE id = ?""",
@@ -1023,7 +1083,7 @@ def api_create_task():
             data["title"],
             data.get("description", ""),
             _safe_int(data.get("difficulty"), 3),
-            data.get("priority", "normal"),
+            _valid_priority(data.get("priority")),
             perms.dump(data.get("required_permissions")),
             _safe_int(data.get("quantity"), 1) or 1,
             data.get("deadline"),
@@ -1037,7 +1097,7 @@ def api_create_task():
 
 @app.route("/api/tasks/<int:task_id>/complete", methods=["POST"])
 def api_complete_task(task_id):
-    """モジュールの完了タッチ。所要時間を記録し、AIの学習フックを呼ぶ"""
+    """モジュールの完了タッチ。所要時間を記録し、AIの学習結果を作り直させる"""
     conn = db.get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not task:
@@ -1059,8 +1119,10 @@ def api_complete_task(task_id):
             (task_id, task["assigned_worker_id"], task["equipment_id"], task["started_at"], now, duration),
         )
         work_log_id = cur.lastrowid
-        ai_stub.update_model(dict(task), task["assigned_worker_id"], duration or 0, _ai_logs(conn))
     conn.commit()
+    # 実績が増えたので次の割り当てで再学習させる。update_model は渡したログを
+    # 使わないので、ここで全件を読み込む必要はない
+    ai_stub.invalidate_cache()
     conn.close()
     # work_log_id は、この直後に現場で答えてもらう難易度フィードバックの宛先。
     # 先に完了させるのは、所要時間に「答えるのを待った時間」を混ぜないため。
@@ -1186,18 +1248,34 @@ def _stt_ensure():
 
 
 def _transcribe(path):
-    """録音を文字にする。戻り値: テキスト / None（失敗）"""
-    with _stt_lock:
-        if _stt_ensure() is None:
+    """
+    録音を文字にする。戻り値: テキスト / None（失敗）
+
+    **ロック待ちも含めて VOICE_TIMEOUT 以内に必ず返す。** 起動時の準備
+    （start_stt_warmup）はモデルのダウンロード中ずっとロックを握るので、
+    素直に待つと RECORD_* の予算を超え、モジュールが先に諦めた後で
+    タスクが立つ（＝録り直しで同じタスクが2件）。
+    """
+    deadline = time.monotonic() + VOICE_TIMEOUT
+    if not _stt_lock.acquire(timeout=VOICE_TIMEOUT):
+        print("[voice] 文字起こしの準備中・処理中のため時間内に受け付けられませんでした")
+        return None
+    try:
+        proc = _stt["proc"]
+        if proc is None or proc.poll() is not None:
+            # 起こし直すとモデルの読み込み（手元に無ければダウンロード）を待つことになり、
+            # 予算に収まらない。裏で起こしておき、今回は諦める
+            print("[voice] 文字起こしが起動していません。準備を始めたので、少し待ってから録り直してください")
+            start_stt_warmup()
             return None
         try:
-            _stt["proc"].stdin.write(path + "\n")
-            _stt["proc"].stdin.flush()
+            proc.stdin.write(path + "\n")
+            proc.stdin.flush()
         except (OSError, ValueError) as e:
             print(f"[voice] 文字起こしへ送れません: {e}")
             _stt_kill()
             return None
-        res = _stt_reply(VOICE_TIMEOUT)
+        res = _stt_reply(max(1.0, deadline - time.monotonic()))
         if res is None:
             # どこまで進んだか分からない。次の依頼に前回の答えが混ざらないよう畳む
             print("[voice] 文字起こしが時間内に終わりませんでした")
@@ -1207,16 +1285,17 @@ def _transcribe(path):
             print(f"[voice] 文字起こしに失敗: {res['error']}")
             return None
         return (res.get("text") or "").strip()
+    finally:
+        _stt_lock.release()
 
 
 def start_stt_warmup():
     """
     起動時に文字起こしの常駐を起こしておく（E-2）。
 
-    _transcribe() も必要になれば自分で起こすので、これが無くても動く。ただし
-    その場合、**最初の録音だけ**がモデルの読み込み（手元に無ければ数GBの
-    ダウンロード）を丸ごと被り、VOICE_TIMEOUT を使い切って「聞き取れません
-    でした」になりかねない。先に済ませておけばそれが起きない。
+    _transcribe() は常駐が居なければこれを呼んで裏で起こすが、その録音自体は
+    諦める（モデルの読み込みを待つと VOICE_TIMEOUT に収まらないため）。
+    先に済ませておけば、最初の録音から使える。
 
     起動を止めないよう別スレッドで走らせる。失敗しても録音の時点で作り直せる
     ので、ここでは警告を出すだけにする。
@@ -1979,10 +2058,22 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
             _notify_briefly(device_id, module_id, ["応答がありませんでした", "もう一度タッチしてください"], "idle")
             return
         if answer:
-            res = requests.post(
-                f"{SELF_URL}/api/tasks/{task['id']}/start",
-                json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
-            )
+            try:
+                res = requests.post(
+                    f"{SELF_URL}/api/tasks/{task['id']}/start",
+                    json={"nfc_tag_id": tag_id, "module_id": module_id}, timeout=HTTP_TIMEOUT,
+                )
+            except requests.RequestException as e:
+                print(f"[{module_id}] {worker['name']}: 着手の記録に失敗: {e}")
+                _notify_briefly(device_id, module_id,
+                                ["着手できませんでした", "もう一度タッチしてください"], "error")
+                return
+            if res.status_code == 409:
+                # 確認している間に、他の人が別の機材で着手した
+                print(f"[{module_id}] {worker['name']}: 他の人が着手済み（{task['title']}）")
+                _notify_briefly(device_id, module_id,
+                                ["他の人が着手済みです", task["title"]], "error")
+                return
             # 権限不足(403)など。候補は絞ってあるので通常は起きないが、承認の間に
             # 権限や必要権限が変わることはある。作業中画面を出すとロックした様に見える
             if res.status_code != 200:
@@ -2007,10 +2098,16 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
         worker_name=worker["name"],
     )
     if answer:
-        requests.post(
-            f"{SELF_URL}/api/equipment/{module_id}/status",
-            json={"status": "working", "nfc_tag_id": tag_id}, timeout=HTTP_TIMEOUT,
-        )
+        try:
+            requests.post(
+                f"{SELF_URL}/api/equipment/{module_id}/status",
+                json={"status": "working", "nfc_tag_id": tag_id}, timeout=HTTP_TIMEOUT,
+            ).raise_for_status()
+        except requests.RequestException as e:
+            print(f"[{module_id}] {worker['name']}: フリー利用の記録に失敗: {e}")
+            _notify_briefly(device_id, module_id,
+                            ["開始できませんでした", "もう一度タッチしてください"], "error")
+            return
         print(f"[{module_id}] {worker['name']} started free-use")
         _notify(device_id, [f"{worker['name']} さん", "フリー利用中", "終了時にもう一度タッチ"], "free")
     else:
@@ -2152,19 +2249,29 @@ def _end_session(device_id, module_id, worker, equipment):
     work_log_id = None
     task_title = None
     if task_id:
-        res = requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
-        if res.ok:
-            work_log_id = res.json().get("work_log_id")
-            task_title = res.json().get("title")
-        print(f"[{module_id}] {worker['name']} completed task #{task_id}")
+        # 完了の記録に失敗しても、下の機材の解放までは必ず進める。ここで例外が
+        # 抜けると機材が「作業中」のまま残り、本人以外は誰も使えなくなる
+        try:
+            res = requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
+            if res.ok:
+                work_log_id = res.json().get("work_log_id")
+                task_title = res.json().get("title")
+                print(f"[{module_id}] {worker['name']} completed task #{task_id}")
+            else:
+                print(f"[{module_id}] {worker['name']}: 完了の記録に失敗 ({res.status_code}) task #{task_id}")
+        except requests.RequestException as e:
+            print(f"[{module_id}] {worker['name']}: 完了の記録に失敗: {e} task #{task_id}")
     else:
         print(f"[{module_id}] {worker['name']} ended free-use")
     # 先に機材を解放する。難易度を答えている間ずっと塞がっていると、
     # 次の人が待たされるうえ、答えなかった場合に解放が漏れる
-    requests.post(
-        f"{SELF_URL}/api/equipment/{module_id}/status",
-        json={"status": "idle"}, timeout=HTTP_TIMEOUT,
-    )
+    try:
+        requests.post(
+            f"{SELF_URL}/api/equipment/{module_id}/status",
+            json={"status": "idle"}, timeout=HTTP_TIMEOUT,
+        ).raise_for_status()
+    except requests.RequestException as e:
+        print(f"[{module_id}] 機材の解放に失敗: {e}")
     if work_log_id:
         _ask_felt_difficulty(device_id, module_id, worker, equipment, work_log_id, task_title)
     # 「お疲れさまでした」だけを見せてから待機画面へ戻す。タッチの案内を
