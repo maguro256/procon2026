@@ -150,8 +150,10 @@ PRIORITY_LABELS = {"urgent": "至急", "high": "高", "normal": "通常", "low":
 # 完了直後に現場で答えてもらう体感難易度。順番がそのままモジュールの選択肢の並びになる
 FELT_CODES = ["easy", "normal", "hard"]
 FELT_LABELS = {"easy": "簡単", "normal": "普通", "hard": "難しい"}
-STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "in_progress": "作業中", "done": "完了"}
-EQ_STATUS_LABELS = {"idle": "空き", "working": "稼働中", "stopped": "停止", "maintenance": "メンテ中"}
+STATUS_LABELS = {"todo": "未着手", "assigned": "割当済", "gathering": "集合待ち",
+                 "in_progress": "作業中", "done": "完了"}
+EQ_STATUS_LABELS = {"idle": "空き", "working": "稼働中", "stopped": "停止", "maintenance": "メンテ中",
+                    "gathering": "集合待ち"}
 
 # WariAthena の文脈ベクトルには work_logs だけでは足りない（難易度・数量・必要権限と
 # 勤続年数が要る）ので tasks / workers を結合して渡す。作業者やタスクが消されたログも
@@ -163,8 +165,22 @@ AI_LOG_SQL = """
     FROM work_logs l
     LEFT JOIN tasks   t ON t.id = l.task_id
     LEFT JOIN workers w ON w.id = l.worker_id
+    -- 複数人タスクの実績は学習に使わない。所要時間は全員で同じ値になり、1人の速さを
+    -- 表していないため（人数で割っても、手分けできる作業かどうかで意味が変わる）
+    WHERE COALESCE(t.required_workers, 1) = 1
     ORDER BY l.completed_at, l.id
 """
+
+
+def _team_names_sql(task_expr):
+    """
+    複数人タスクのメンバー全員の名前（「山田 太郎・佐藤 花子」）を返す相関サブクエリ。
+    メンバーのいない（1人で行う）タスクでは NULL になるので、COALESCE で担当者名に
+    落とせば、どの画面も担当者の欄をそのまま使える
+    """
+    return f"""(SELECT GROUP_CONCAT(name, '・') FROM (
+                   SELECT mw.name FROM task_members m JOIN workers mw ON mw.id = m.worker_id
+                   WHERE m.task_id = {task_expr} ORDER BY m.joined_at, m.rowid))"""
 
 
 def _ai_logs(conn):
@@ -217,6 +233,14 @@ def _safe_float(value, default):
     except (TypeError, ValueError):
         return default
     return f if f == f and abs(f) != float("inf") else default
+
+
+MAX_TEAM = 10   # 必要人数の上限。打ち間違い（100人など）で永遠にそろわないタスクを作らせない
+
+
+def _team_size_input(value, default=1):
+    """フォームやJSONの必要人数。1〜MAX_TEAM に収める"""
+    return min(max(_safe_int(value, default) or default, 1), MAX_TEAM)
 
 
 def _valid_priority(value, default="normal"):
@@ -292,8 +316,9 @@ def _demo_state():
 # ---------------------------------------------------------------- 画面
 
 # 機材ごとの使用状況（使用状況ダッシュボードと工場掲示用ダッシュボードで共通）
-EQUIPMENT_BOARD_SQL = """
-    SELECT e.*, w.name AS worker_name, t.title AS task_title,
+EQUIPMENT_BOARD_SQL = f"""
+    SELECT e.*, COALESCE({_team_names_sql('e.current_task_id')}, w.name) AS worker_name,
+           t.title AS task_title,
            t.quantity AS task_quantity, t.deadline AS task_deadline,
            t.priority AS task_priority,
            -- 使い始めた時刻。タスクがあれば着手時刻、フリー利用なら機材の最終更新
@@ -305,8 +330,8 @@ EQUIPMENT_BOARD_SQL = """
 """
 
 # 要対応: 至急、または期限切れ・今日が期限の未完了タスク（同じく両方のダッシュボードで共通）
-ATTENTION_SQL = """
-    SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
+ATTENTION_SQL = f"""
+    SELECT t.*, COALESCE({_team_names_sql('t.id')}, w.name) AS worker_name, e.name AS equipment_name,
            CASE WHEN t.deadline < date('now','localtime') THEN 'overdue'
                 WHEN t.deadline = date('now','localtime') THEN 'today' END AS due
     FROM tasks t
@@ -561,6 +586,10 @@ def update_worker(worker_id):
 @app.route("/workers/<int:worker_id>/delete", methods=["POST"])
 def delete_worker(worker_id):
     conn = db.get_db()
+    # 本人がリーダーの複数人タスクを未着手に戻すので、ほかのメンバーも外す（下の UPDATE の前に）
+    conn.execute("""DELETE FROM task_members WHERE task_id IN (
+                        SELECT id FROM tasks WHERE assigned_worker_id = ? AND status = 'in_progress')""",
+                 (worker_id,))
     # 本人が使っていた機材は空きに戻す。担当者だけ外すと「誰かが使用中」のまま残る
     released = _release_equipment(conn, "current_worker_id", worker_id)
     # 割当済・作業中のタスクは未着手からやり直す。作業中のまま担当者だけ空にすると、
@@ -629,7 +658,8 @@ def tasks():
 
     conn = db.get_db()
     rows = conn.execute(f"""
-        SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
+        SELECT t.*, COALESCE({_team_names_sql('t.id')}, w.name) AS worker_name,
+               e.name AS equipment_name,
                l.felt_difficulty AS felt_difficulty
         FROM tasks t
         LEFT JOIN workers w   ON w.id = t.assigned_worker_id
@@ -691,18 +721,20 @@ def add_task():
         flash("指定された機材が見つかりません", "error")
         return redirect(url_for("tasks"))
     required_perms = perms.dump(f.getlist("required_permissions"))
+    team = _team_size_input(f.get("required_workers"))
     # 担当者の指定（D-3）。指定したタスクは本人にしか提示されず、AI割当でも変わらない
     worker_id = f.get("assigned_worker_id") or None
     if worker_id:
-        cand, error = _check_designee(conn, worker_id, required_perms)
+        cand, error = _check_designee(conn, worker_id, required_perms, team)
         if error:
             conn.close()
             flash(error, "error")
             return redirect(url_for("tasks"))
     conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
-                            quantity, deadline, equipment_id, assigned_worker_id, status, designated)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            quantity, deadline, equipment_id, assigned_worker_id, status, designated,
+                            required_workers)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             title,
             f.get("description", "").strip(),
@@ -715,6 +747,7 @@ def add_task():
             worker_id,
             "assigned" if worker_id else "todo",
             1 if worker_id else 0,
+            team,
         ),
     )
     conn.commit()
@@ -723,14 +756,17 @@ def add_task():
     return redirect(url_for("tasks"))
 
 
-def _check_designee(conn, worker_id, required_perms):
+def _check_designee(conn, worker_id, required_perms, team=1):
     """
     担当者に指定してよいか。戻り値: (作業者row, エラー文 or None)
-    手で指定するときも権限は無視できない（無資格の人に提示されてしまう）
+    手で指定するときも権限は無視できない（無資格の人に提示されてしまう）。
+    複数人タスク（team >= 2）は、権限は加わる人の誰かが持っていればよいので見ない
     """
     cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
     if not cand:
         return None, "指定された作業者が見つかりません"
+    if team > 1:
+        return cand, None
     lacking = perms.missing(cand, {"required_permissions": required_perms})
     if lacking:
         return cand, (f"{cand['name']} さんは権限が足りないため割り当てできません"
@@ -751,18 +787,25 @@ def update_task(task_id):
 
     worker_id = f.get("assigned_worker_id") or None
     equipment_id = f.get("equipment_id") or None
+    team = task["required_workers"] or 1
+    if "required_workers" in f:
+        team = _team_size_input(f.get("required_workers"), team)
     # 作業中・完了のタスクは担当者と機材を動かさない。機材は着手した人のまま使用中で、
     # 完了時の実績も task の担当者で記録するので、ここで変えると両者が食い違う。
+    # 集合待ち（複数人タスク）も同じで、人数を変えると集まっている人と食い違う。
     # 画面では欄を無効にしてあり送られてこない。送られてきて違っていれば断る
-    locked = task["status"] in ("in_progress", "done")
+    locked = task["status"] in ("in_progress", "done", "gathering")
     if locked:
-        changed = [label for key, label in (("assigned_worker_id", "担当者"), ("equipment_id", "機材"))
+        changed = [label for key, label in (("assigned_worker_id", "担当者"), ("equipment_id", "機材"),
+                                            ("required_workers", "必要人数"))
                    if key in f and str(f.get(key) or "") != str(task[key] or "")]
         if changed:
             conn.close()
-            flash(f"作業中のタスクは{'・'.join(changed)}を変更できません", "error")
+            flash(f"{STATUS_LABELS.get(task['status'], task['status'])}のタスクは"
+                  f"{'・'.join(changed)}を変更できません", "error")
             return _back_to("tasks")
         worker_id, equipment_id = task["assigned_worker_id"], task["equipment_id"]
+        team = task["required_workers"] or 1
     priority = _valid_priority(f.get("priority"), task["priority"])
     quantity = _safe_int(f.get("quantity") or task["quantity"], 1) or 1
     deadline = f.get("deadline") or None
@@ -783,7 +826,7 @@ def update_task(task_id):
     # に対して行うので、必要権限を外すのと同時に割り当てる操作は通る。
     # 作業中のタスクは見ない（api_next_task と同じく、着手済みの人から取り上げない）
     if worker_id and not locked:
-        _, error = _check_designee(conn, worker_id, required_perms)
+        _, error = _check_designee(conn, worker_id, required_perms, team)
         if error:
             conn.close()
             flash(error, "error")
@@ -801,10 +844,11 @@ def update_task(task_id):
     designated = task["designated"] if same_worker else (1 if worker_id else 0)
     conn.execute(
         """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?, priority = ?, status = ?,
-           quantity = ?, deadline = ?, required_permissions = ?, ai_note = ?, designated = ?
+           quantity = ?, deadline = ?, required_permissions = ?, ai_note = ?, designated = ?,
+           required_workers = ?
            WHERE id = ?""",
         (worker_id, equipment_id, priority, status, quantity, deadline, required_perms, ai_note,
-         designated, task_id),
+         designated, team, task_id),
     )
     conn.commit()
     conn.close()
@@ -826,7 +870,7 @@ def auto_assign(task_id):
     # 割り当てると状態が 'assigned' に上書きされる。作業中のタスクは着手済みの人から
     # 取り上げることになり、機材は元の人のまま使用中で残り食い違う。完了済みのタスクは
     # 未完了に戻ってしまう。どちらも断る
-    if task["status"] in ("in_progress", "done"):
+    if task["status"] in ("in_progress", "done", "gathering"):
         conn.close()
         flash(f"「{task['title']}」は{STATUS_LABELS[task['status']]}のため、AIで割り当て直せません", "error")
         return _back_to("tasks")
@@ -1034,9 +1078,10 @@ def add_recurring():
         flash("指定された機材が見つかりません", "error")
         return _back_to("tasks")
     required_perms = perms.dump(f.getlist("required_permissions"))
+    team = _team_size_input(f.get("required_workers"))
     worker_id = f.get("worker_id") or None
     if worker_id:
-        _, error = _check_designee(conn, worker_id, required_perms)
+        _, error = _check_designee(conn, worker_id, required_perms, team)
         if error:
             conn.close()
             flash(error, "error")
@@ -1047,13 +1092,13 @@ def add_recurring():
     conn.execute(
         """INSERT INTO recurring_tasks (title, description, difficulty, priority, required_permissions,
                                         quantity, equipment_id, worker_id, frequency, weekdays,
-                                        month_day, deadline_days, last_run)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        month_day, deadline_days, last_run, required_workers)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (title, f.get("description", "").strip(), _safe_int(f.get("difficulty"), 3),
          _valid_priority(f.get("priority")), required_perms, _safe_int(f.get("quantity"), 1) or 1,
          equipment_id, worker_id, frequency, weekdays if frequency == "weekly" else "",
          month_day if frequency == "monthly" else None,
-         max(_safe_int(f.get("deadline_days"), 0), 0), yesterday))
+         max(_safe_int(f.get("deadline_days"), 0), 0), yesterday, team))
     conn.commit()
     conn.close()
     # 今日が予定日なら、その場で今日の分を作る（翌日まで待たせない）
@@ -1121,8 +1166,9 @@ def delete_recurring(rule_id):
 @app.route("/equipment")
 def equipment():
     conn = db.get_db()
-    rows = conn.execute("""
-        SELECT e.*, w.name AS worker_name, t.title AS task_title,
+    rows = conn.execute(f"""
+        SELECT e.*, COALESCE({_team_names_sql('e.current_task_id')}, w.name) AS worker_name,
+               t.title AS task_title,
                COALESCE(t.started_at, e.updated_at) AS since
         FROM equipment e
         LEFT JOIN workers w ON w.id = e.current_worker_id
@@ -1344,6 +1390,9 @@ def _close_session(eq_id, outcome="done", ended_at=None):
         task = conn.execute("SELECT * FROM tasks WHERE id = ?", (eq["current_task_id"],)).fetchone()
     result = {"equipment": eq["name"], "worker": eq["worker_name"],
               "task": task["title"] if task else None, "duration_sec": None, "work_log_id": None}
+    members = _team_members(conn, task["id"]) if task and perms.team_size(task) > 1 else []
+    if len(members) > 1:
+        result["worker"] = "・".join(m["name"] for m in members)
     if task and task["status"] == "in_progress":
         if outcome == "done":
             duration = None
@@ -1352,12 +1401,13 @@ def _close_session(eq_id, outcome="done", ended_at=None):
                                 - datetime.strptime(task["started_at"], "%Y-%m-%d %H:%M:%S")).total_seconds())
             conn.execute("UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
                          (ended_at, task["id"]))
-            if task["assigned_worker_id"]:
+            # 複数人タスクは全員に実績を残す
+            for wid in _log_worker_ids(task, members):
                 cur = conn.execute(
                     """INSERT INTO work_logs (task_id, worker_id, equipment_id, started_at, completed_at, duration_sec)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (task["id"], task["assigned_worker_id"], eq_id, task["started_at"], ended_at, duration))
-                result["work_log_id"] = cur.lastrowid
+                    (task["id"], wid, eq_id, task["started_at"], ended_at, duration))
+                result["work_log_id"] = result["work_log_id"] or cur.lastrowid
             result["duration_sec"] = duration
         else:
             # 中断。担当者を指定したタスクは本人に残し、そうでなければ誰でも拾えるよう戻す
@@ -1367,6 +1417,7 @@ def _close_session(eq_id, outcome="done", ended_at=None):
                                      THEN 'assigned' ELSE 'todo' END,
                        assigned_worker_id = CASE WHEN designated = 1 THEN assigned_worker_id END
                    WHERE id = ?""", (task["id"],))
+            conn.execute("DELETE FROM task_members WHERE task_id = ?", (task["id"],))
     conn.execute(
         """UPDATE equipment SET status = 'idle', current_worker_id = NULL, current_task_id = NULL,
            updated_at = datetime('now','localtime') WHERE id = ?""", (eq_id,))
@@ -1447,12 +1498,17 @@ def _release_equipment(conn, column, value):
     current_task_id か current_worker_id。戻した機材の行（戻す前）を返すので、
     commit した後に _resync_released() でモジュールの画面も戻す。
     """
-    rows = conn.execute(f"SELECT * FROM equipment WHERE status = 'working' AND {column} = ?",
+    rows = conn.execute(f"SELECT * FROM equipment WHERE status IN ('working', 'gathering') AND {column} = ?",
                         (value,)).fetchall()
+    for r in rows:
+        # 集合待ちならタスクも集合前に戻す。機材だけ空けると、タスクが集合待ちのまま残る
+        if r["status"] == "gathering" and r["current_task_id"]:
+            _reset_gathering_task(conn, r["current_task_id"])
     if rows:
         conn.execute(
             f"""UPDATE equipment SET status = 'idle', current_worker_id = NULL, current_task_id = NULL,
-                updated_at = datetime('now','localtime') WHERE status = 'working' AND {column} = ?""",
+                updated_at = datetime('now','localtime')
+                WHERE status IN ('working', 'gathering') AND {column} = ?""",
             (value,))
     return rows
 
@@ -1469,6 +1525,239 @@ def _released_note(rows):
     return f"使用中だった {'・'.join(r['name'] for r in rows)} を空きに戻しました" if rows else ""
 
 
+# ------------------------------------------------ 複数人タスク（集合待ち）
+# required_workers >= 2 のタスクは、最初の人（リーダー）が着手を選ぶと機材が「集合待ち」になり、
+# 同じ機材で残りの人がタッチして加わる。**ちょうど必要人数**がそろった時点で作業開始になる。
+# 必要権限はメンバーの誰か1人が持っていればよい（permissions.team_missing）。
+# そろわないまま GATHER_TIMEOUT_SEC が過ぎたら取り消し、機材とタスクを集合前に戻す。
+# 作業終了はメンバーの誰がタッチしてもよく、全員分の実績が残る。
+GATHER_TIMEOUT_SEC = int(os.environ.get("GEMMBA_GATHER_TIMEOUT_SEC", 180))
+
+
+def _now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _team_members(conn, task_id):
+    """複数人タスクのメンバー（加わった順）。workers の行。1人で行うタスクは空"""
+    return conn.execute("""
+        SELECT w.*, m.joined_at FROM task_members m JOIN workers w ON w.id = m.worker_id
+        WHERE m.task_id = ? ORDER BY m.joined_at, m.rowid""", (task_id,)).fetchall()
+
+
+def _log_worker_ids(task, members):
+    """完了の実績を残す相手。複数人タスクはメンバー全員、そうでなければ担当者"""
+    if members:
+        return [m["id"] for m in members]
+    return [task["assigned_worker_id"]] if task["assigned_worker_id"] else []
+
+
+def _gathering(conn, eq_id):
+    """集合待ちの機材とそのタスク。集合待ちでなければ None"""
+    return conn.execute("""
+        SELECT e.id AS eq_id, e.name AS eq_name, e.module_id, e.hostname, e.online,
+               e.current_worker_id AS leader_id, e.updated_at AS since,
+               t.id AS task_id, t.title, t.priority, t.required_permissions, t.required_workers,
+               t.quantity, t.deadline, w.name AS leader_name
+        FROM equipment e
+        JOIN tasks t ON t.id = e.current_task_id
+        LEFT JOIN workers w ON w.id = e.current_worker_id
+        WHERE e.id = ? AND e.status = 'gathering'""", (eq_id,)).fetchone()
+
+
+def _other_gathering(conn, worker_id, task_id=None):
+    """task_id 以外の集合待ちに加わっていれば、そのタスクと機材。2か所で同時に待たせない"""
+    return conn.execute("""
+        SELECT t.id, t.title, e.name AS eq_name FROM task_members m
+        JOIN tasks t ON t.id = m.task_id
+        LEFT JOIN equipment e ON e.current_task_id = t.id
+        WHERE m.worker_id = ? AND t.status = 'gathering' AND t.id IS NOT ?""",
+        (worker_id, task_id)).fetchone()
+
+
+def _reset_gathering_task(conn, task_id):
+    """集合待ちのタスクを集合前（割当済 / 未着手）に戻し、集まっていた人を外す。commit は呼び出し側"""
+    conn.execute("""UPDATE tasks SET status = CASE WHEN assigned_worker_id IS NOT NULL
+                                                  THEN 'assigned' ELSE 'todo' END
+                    WHERE id = ? AND status = 'gathering'""", (task_id,))
+    conn.execute("DELETE FROM task_members WHERE task_id = ?", (task_id,))
+
+
+def _begin_gathering(conn, task, worker, equipment):
+    """
+    api_start_task の複数人タスク版。リーダーだけが加わった集合待ちにする。
+    commit / rollback まで行う。戻り値: (応答の dict, HTTPステータス)
+    """
+    busy = _other_gathering(conn, worker["id"], task["id"])
+    if busy:
+        conn.rollback()
+        return {"error": "already gathering", "equipment": busy["eq_name"], "title": busy["title"]}, 409
+    now = _now_str()
+    # 候補を見せてから「はい」が押されるまでの間に、他の人が着手・集合を始めていたら断る
+    cur = conn.execute("UPDATE tasks SET status = 'gathering' WHERE id = ? AND status IN ('todo', 'assigned')",
+                       (task["id"],))
+    if cur.rowcount == 0:
+        conn.rollback()
+        return {"error": "already taken"}, 409
+    cur = conn.execute(
+        """UPDATE equipment SET status = 'gathering', current_worker_id = ?, current_task_id = ?,
+           updated_at = ? WHERE id = ? AND status = 'idle'""",
+        (worker["id"], task["id"], now, equipment["id"]))
+    if cur.rowcount == 0:
+        conn.rollback()
+        return {"error": "equipment busy"}, 409
+    conn.execute("DELETE FROM task_members WHERE task_id = ?", (task["id"],))
+    conn.execute("INSERT INTO task_members (task_id, worker_id, joined_at) VALUES (?, ?, ?)",
+                 (task["id"], worker["id"], now))
+    conn.commit()
+    _schedule_gathering_timeout(equipment["id"], now)
+    return {"ok": True, "gathering": True, "have": 1, "need": perms.team_size(task)}, 200
+
+
+def _join_gathering(eq_id, worker_id):
+    """
+    集合待ちに1人加える。ちょうど必要人数になったら、その場で作業開始にする。
+    戻り値: (結果, 情報の dict)。結果は
+        "joined"     … 加わった（まだそろっていない）
+        "started"    … 加わってそろったので作業開始
+        "already"    … もう加わっている
+        "full"       … 既にそろっている
+        "busy"       … 別の機材の集合待ちに加わっている
+        "permission" … 最後の1人なのに、加わっても必要権限が足りない
+        "gone"       … 集合待ちが終わっていた（時間切れ・取り消し）
+    """
+    conn = db.get_db()
+    try:
+        # 読んでから書くまでの間に、時間切れの取り消しや別の参加が割り込まないようにする
+        conn.execute("BEGIN IMMEDIATE")
+        g = _gathering(conn, eq_id)
+        if not g:
+            return "gone", {}
+        members = _team_members(conn, g["task_id"])
+        need = perms.team_size(g)
+        info = {"title": g["title"], "need": need, "have": len(members), "leader": g["leader_name"]}
+        if any(m["id"] == worker_id for m in members):
+            return "already", info
+        if len(members) >= need:
+            return "full", info
+        busy = _other_gathering(conn, worker_id, g["task_id"])
+        if busy:
+            return "busy", dict(info, elsewhere=busy["eq_name"])
+        worker = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
+        if not worker:
+            return "gone", info
+        team = list(members) + [worker]
+        lacking = perms.team_missing(team, g)
+        if lacking and len(team) == need:
+            return "permission", dict(info, missing=perms.labels(lacking))
+        now = _now_str()
+        conn.execute("INSERT INTO task_members (task_id, worker_id, joined_at) VALUES (?, ?, ?)",
+                     (g["task_id"], worker_id, now))
+        info["have"] = len(team)
+        info["names"] = [m["name"] for m in team]
+        if len(team) < need:
+            conn.commit()
+            return "joined", info
+        # そろった。担当者はリーダー（最初にタッチした人）にする
+        conn.execute("""UPDATE tasks SET status = 'in_progress', assigned_worker_id = ?, equipment_id = ?,
+                        started_at = ? WHERE id = ?""", (g["leader_id"], eq_id, now, g["task_id"]))
+        conn.execute("UPDATE equipment SET status = 'working', updated_at = ? WHERE id = ?", (now, eq_id))
+        conn.commit()
+        return "started", info
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
+
+def _cancel_gathering(eq_id, since=None):
+    """
+    集合待ちを取り消し、機材を空きに、タスクを集合前に戻す。
+    since を渡すと、その時刻に始まった集合待ちのときだけ取り消す（時間切れのタイマー用。
+    一度取り消した後に同じ機材で始まった、次の集合待ちを巻き込まない）。
+    戻り値: 取り消した集合待ち / 取り消さなかったら None
+    """
+    conn = db.get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        g = _gathering(conn, eq_id)
+        if not g or (since and g["since"] != since):
+            return None
+        _reset_gathering_task(conn, g["task_id"])
+        conn.execute("""UPDATE equipment SET status = 'idle', current_worker_id = NULL, current_task_id = NULL,
+                        updated_at = datetime('now','localtime') WHERE id = ?""", (eq_id,))
+        conn.commit()
+        return g
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
+
+def _leave_gathering(eq_id, worker_id):
+    """集合待ちから1人抜ける。リーダーが抜けると集合待ちごと取り消す。
+    戻り値: "left" / "cancelled" / None（集合待ちではなかった）"""
+    conn = db.get_db()
+    try:
+        g = _gathering(conn, eq_id)
+        if not g:
+            return None
+        if g["leader_id"] != worker_id:
+            conn.execute("DELETE FROM task_members WHERE task_id = ? AND worker_id = ?",
+                         (g["task_id"], worker_id))
+            conn.commit()
+            return "left"
+    finally:
+        conn.close()
+    return "cancelled" if _cancel_gathering(eq_id) else None
+
+
+def _schedule_gathering_timeout(eq_id, since):
+    timer = threading.Timer(GATHER_TIMEOUT_SEC, _gathering_timed_out, (eq_id, since))
+    timer.daemon = True
+    timer.start()
+
+
+def _gathering_timed_out(eq_id, since):
+    """そろわないまま時間が過ぎた。取り消して、モジュールにその旨を出す"""
+    g = _cancel_gathering(eq_id, since)
+    if not g:
+        return
+    print(f"[{g['module_id']}] 「{g['title']}」は人数がそろわなかったため集合待ちを取り消しました")
+    device_id = _device_id_of(g)
+    if not device_id or not (g["online"] or device_id in _virtual_modules):
+        return
+    with _touch_busy_lock:
+        if device_id in _touch_busy:
+            # 誰かが参加を操作している。その操作が「集合待ちは終わっています」を出す
+            return
+    _notify_briefly(device_id, g["module_id"],
+                    ["人数がそろいませんでした", g["title"], "集合待ちを取り消しました"], "idle", sec=8)
+
+
+def cancel_stale_gatherings(now=None):
+    """
+    時間切れを過ぎた集合待ちを取り消す。タイマーは app.py を再起動すると消えるので、
+    見回り（start_background_jobs）でも拾う。取り消した機材の id を返す
+    """
+    now = now or datetime.now()
+    conn = db.get_db()
+    try:
+        rows = conn.execute("SELECT id, updated_at FROM equipment WHERE status = 'gathering'").fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        try:
+            since = datetime.strptime(r["updated_at"], "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            since = None
+        if since is None or (now - since).total_seconds() >= GATHER_TIMEOUT_SEC:
+            _gathering_timed_out(r["id"], r["updated_at"])
+            out.append(r["id"])
+    return out
+
+
 # ------------------------------------------------ API（モジュール/AI連携用）
 # ESP32 側からはここを HTTP で叩く想定。WebSocket 化する場合もこの層を置き換えるだけでよい。
 
@@ -1477,10 +1766,16 @@ def api_get_equipment_status(module_id):
     """モジュールからの状態確認。タッチ時にハード側が「開始/終了/ロック中」を判定するために使う"""
     conn = db.get_db()
     eq = conn.execute("SELECT * FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
-    conn.close()
     if not eq:
+        conn.close()
         return jsonify({"error": "unknown module_id"}), 404
-    return jsonify(dict(eq))
+    body = dict(eq)
+    # 複数人タスクのメンバー。リーダー（current_worker_id）以外も「この機材の使用者」として扱う
+    body["member_ids"] = [r["worker_id"] for r in conn.execute(
+        "SELECT worker_id FROM task_members WHERE task_id = ?", (eq["current_task_id"],))] \
+        if eq["current_task_id"] else []
+    conn.close()
+    return jsonify(body)
 
 
 @app.route("/api/equipment/<module_id>/status", methods=["POST"])
@@ -1643,7 +1938,7 @@ def api_next_task(nfc_tag_id):
         return jsonify({"error": "unknown tag"}), 404
     rows = [dict(r) for r in conn.execute("""
         SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id,
-               required_permissions, assigned_worker_id, designated
+               required_permissions, assigned_worker_id, designated, required_workers
         FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
@@ -1698,8 +1993,10 @@ def api_start_task(task_id):
         conn.close()
         return jsonify({"error": "unknown worker or module_id"}), 404
 
-    # 候補は api_next_task で絞ってあるが、このAPIは単体でも叩けるので二重に見る（D-2）
-    lacking = perms.missing(worker, task)
+    # 候補は api_next_task で絞ってあるが、このAPIは単体でも叩けるので二重に見る（D-2）。
+    # 複数人タスクは、そろう時点でメンバー全体で見る（_join_gathering）
+    team = perms.team_size(task)
+    lacking = perms.missing(worker, task) if team == 1 else []
     if lacking:
         conn.close()
         print(f"[{data.get('module_id')}] {worker['name']}: 権限不足で着手を拒否 "
@@ -1713,6 +2010,14 @@ def api_start_task(task_id):
         conn.close()
         print(f"[{data.get('module_id')}] {worker['name']}: 担当者指定のため着手を拒否 task={task['title']}")
         return jsonify({"error": "designated to another worker"}), 403
+
+    if team > 1:
+        body, code = _begin_gathering(conn, task, worker, equipment)
+        conn.close()
+        if code == 200:
+            print(f"[{data.get('module_id')}] {worker['name']}: 「{task['title']}」の集合待ちを開始"
+                  f"（{team}人）")
+        return jsonify(body), code
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     started_at = task["started_at"] or now
@@ -1751,8 +2056,8 @@ def api_create_task():
     conn = db.get_db()
     cur = conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
-                            quantity, deadline)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            quantity, deadline, required_workers)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             data["title"],
             data.get("description", ""),
@@ -1761,6 +2066,7 @@ def api_create_task():
             perms.dump(data.get("required_permissions")),
             _safe_int(data.get("quantity"), 1) or 1,
             data.get("deadline"),
+            _team_size_input(data.get("required_workers")),
         ),
     )
     conn.commit()
@@ -1771,7 +2077,12 @@ def api_create_task():
 
 @app.route("/api/tasks/<int:task_id>/complete", methods=["POST"])
 def api_complete_task(task_id):
-    """モジュールの完了タッチ。所要時間を記録し、AIの学習結果を作り直させる"""
+    """
+    モジュールの完了タッチ。所要時間を記録し、AIの学習結果を作り直させる。
+    body の worker_id（任意）は終了をタッチした人。複数人タスクでは全員に実績を残し、
+    返す work_log_id（難易度フィードバックの宛先）はこの人の分にする
+    """
+    data = request.get_json(silent=True) or {}
     conn = db.get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not task:
@@ -1785,14 +2096,17 @@ def api_complete_task(task_id):
              - datetime.strptime(task["started_at"], "%Y-%m-%d %H:%M:%S")).total_seconds()
         )
     conn.execute("UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?", (now, task_id))
+    members = _team_members(conn, task_id) if perms.team_size(task) > 1 else []
+    toucher = _safe_int(data.get("worker_id"), None)
     work_log_id = None
-    if task["assigned_worker_id"]:
+    for wid in _log_worker_ids(task, members):
         cur = conn.execute(
             """INSERT INTO work_logs (task_id, worker_id, equipment_id, started_at, completed_at, duration_sec)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (task_id, task["assigned_worker_id"], task["equipment_id"], task["started_at"], now, duration),
+            (task_id, wid, task["equipment_id"], task["started_at"], now, duration),
         )
-        work_log_id = cur.lastrowid
+        if work_log_id is None or wid == toucher:
+            work_log_id = cur.lastrowid
     conn.commit()
     # 実績が増えたので次の割り当てで再学習させる。update_model は渡したログを
     # 使わないので、ここで全件を読み込む必要はない
@@ -2387,7 +2701,9 @@ def _sync_module_state(device_id, eq_id):
     """
     conn = db.get_db()
     row = conn.execute("""
-        SELECT e.name, e.status, w.name AS worker_name, t.title AS task_title
+        SELECT e.name, e.status, w.name AS worker_name, t.title AS task_title,
+               t.required_workers AS need,
+               (SELECT COUNT(*) FROM task_members m WHERE m.task_id = e.current_task_id) AS have
         FROM equipment e
         LEFT JOIN workers w ON w.id = e.current_worker_id
         LEFT JOIN tasks t   ON t.id = e.current_task_id
@@ -2396,8 +2712,16 @@ def _sync_module_state(device_id, eq_id):
     conn.close()
     if not row:
         return
-    if row["status"] == "working":
-        lines = [f"{row['worker_name'] or '?'} さん 使用中", row["task_title"] or "フリー利用"]
+    if row["status"] == "gathering":
+        need = row["need"] or 1
+        lines = [row["task_title"] or "?", f"{row['have']}/{need}人 集合待ち",
+                 f"あと{max(need - row['have'], 0)}人 社員証をタッチ"]
+        led = "gathering"
+    elif row["status"] == "working":
+        who = f"{row['worker_name'] or '?'} さん"
+        if row["have"] > 1:
+            who += f" 他{row['have'] - 1}名"
+        lines = [f"{who} 使用中", row["task_title"] or "フリー利用"]
         led = "working" if row["task_title"] else "free"
         # 見込みを大きく超えている。終了のタッチを忘れて立ち去った可能性が高いので、
         # 機材の前を通った人（本人を含む）に分かるよう画面で促す
@@ -2601,8 +2925,14 @@ def _handle_touch(device_id, module_id, tag_id):
                          EQ_STATUS_LABELS.get(equipment["status"], equipment["status"])], "error")
         return
 
-    # 排他制御。他人が使っている機材には、メニューを出す前に断る
-    if equipment["status"] == "working" and equipment["current_worker_id"] != worker["id"]:
+    # 複数人タスクの集合待ち。メニューは出さず、参加（メンバーなら取り消し）を尋ねる
+    if equipment["status"] == "gathering":
+        _gathering_touch(device_id, module_id, worker, equipment)
+        return
+
+    # 排他制御。他人が使っている機材には、メニューを出す前に断る。
+    # 複数人タスクのメンバーは「他人」ではない（誰でも作業終了できる）
+    if equipment["status"] == "working" and not _uses_equipment(worker, equipment):
         print(f"[{module_id}] locked by another worker; rejecting {worker['name']}")
         _notify_briefly(device_id, module_id,
                         ["他の人が使用中です", f"{worker['name']} さんは使用できません"], "working")
@@ -2625,6 +2955,88 @@ def _handle_touch(device_id, module_id, tag_id):
     _show_menu(device_id, module_id, tag_id, worker, equipment, tasks)
 
 
+def _uses_equipment(worker, equipment):
+    """この人が機材の使用者か。複数人タスクならメンバー全員が使用者"""
+    return (equipment.get("current_worker_id") == worker["id"]
+            or worker["id"] in (equipment.get("member_ids") or []))
+
+
+JOIN_TIMEOUT = 25     # 「この作業に参加しますか？」の応答待ち秒数
+
+
+def _gathering_touch(device_id, module_id, worker, equipment):
+    """
+    集合待ちの機材でのタッチ。
+    - まだ加わっていない人 → 参加するか尋ねる。最後の1人ならそこで作業開始
+    - 加わっている人       → 取り消すか尋ねる（リーダーなら集合待ちごと取り消す）
+    """
+    conn = db.get_db()
+    try:
+        g = _gathering(conn, equipment["id"])
+        members = _team_members(conn, g["task_id"]) if g else []
+    finally:
+        conn.close()
+    if not g:
+        _sync_module_state(device_id, equipment["id"])
+        return
+    need = perms.team_size(g)
+    status_line = f"{len(members)}/{need}人 集合待ち"
+
+    if any(m["id"] == worker["id"] for m in members):
+        is_leader = g["leader_id"] == worker["id"]
+        answer = request_confirm(
+            device_id, "集合待ちを取り消しますか？" if is_leader else "参加を取り消しますか？",
+            lines=[g["title"], status_line],
+            timeout=JOIN_TIMEOUT, equipment_name=equipment.get("name"), worker_name=worker["name"],
+        )
+        if not answer:
+            _sync_module_state(device_id, equipment["id"])
+            return
+        result = _leave_gathering(equipment["id"], worker["id"])
+        print(f"[{module_id}] {worker['name']}: 「{g['title']}」の"
+              + ("集合待ちを取り消し" if result == "cancelled" else "参加を取り消し"))
+        if result == "cancelled":
+            _notify_briefly(device_id, module_id, ["集合待ちを取り消しました", g["title"]], "idle", sec=4)
+        else:
+            _notify_pause(device_id, ["参加を取り消しました", g["title"]], "gathering")
+            _sync_module_state(device_id, equipment["id"])
+        return
+
+    # 別の機材で使用中のまま来た（終了のタッチ忘れ）なら、先に片付けるか尋ねる
+    if _ask_forgotten_session(device_id, module_id, worker, equipment) is None:
+        return
+    answer = request_confirm(
+        device_id, "この作業に参加しますか？",
+        lines=[f"{g['leader_name'] or '?'} さんの作業", g["title"], status_line],
+        timeout=JOIN_TIMEOUT, equipment_name=equipment.get("name"), worker_name=worker["name"],
+    )
+    if answer is None:
+        _notify_briefly(device_id, module_id, ["応答がありませんでした", "もう一度タッチしてください"], "gathering")
+        return
+    if not answer:
+        _sync_module_state(device_id, equipment["id"])
+        return
+
+    result, info = _join_gathering(equipment["id"], worker["id"])
+    print(f"[{module_id}] {worker['name']}: 「{g['title']}」への参加 → {result}")
+    if result == "started":
+        _notify(device_id, [f"{info['need']}人そろいました", info["title"],
+                            "・".join(info["names"]), "終了時にもう一度タッチ"], "working")
+    elif result == "joined":
+        _notify_pause(device_id, ["参加しました", f"あと{info['need'] - info['have']}人です"], "gathering")
+        _sync_module_state(device_id, equipment["id"])
+    elif result == "permission":
+        _notify_briefly(device_id, module_id,
+                        ["権限を持つ人が必要です", "・".join(info["missing"])], "error")
+    elif result == "busy":
+        _notify_briefly(device_id, module_id,
+                        ["別の集合待ちに参加中です", info.get("elsewhere") or ""], "error")
+    elif result == "full":
+        _notify_briefly(device_id, module_id, ["人数はそろっています"], "error")
+    else:   # gone / already
+        _notify_briefly(device_id, module_id, ["集合待ちは終わっています"], "idle")
+
+
 FORGOT_TIMEOUT = 25   # 「〇〇で作業中のままです。終了しますか？」の応答待ち秒数
 
 
@@ -2638,17 +3050,23 @@ def _ask_forgotten_session(device_id, module_id, worker, equipment):
     戻り値: 終わらせた機材の数 / None = 無応答（呼び出し側は何もせず終える）
     """
     conn = db.get_db()
+    # 複数人タスクのメンバーとして使用中の機材も含める（終了すると全員分が終わる）
     others = conn.execute("""
-        SELECT e.id, e.name, t.title AS task_title FROM equipment e
+        SELECT e.id, e.name, t.title AS task_title, t.required_workers FROM equipment e
         LEFT JOIN tasks t ON t.id = e.current_task_id
-        WHERE e.status = 'working' AND e.current_worker_id = ? AND e.id != ?
-        ORDER BY e.updated_at""", (worker["id"], equipment["id"])).fetchall()
+        WHERE e.status = 'working' AND e.id != ?
+          AND (e.current_worker_id = ?
+               OR EXISTS (SELECT 1 FROM task_members m
+                          WHERE m.task_id = e.current_task_id AND m.worker_id = ?))
+        ORDER BY e.updated_at""", (equipment["id"], worker["id"], worker["id"])).fetchall()
     conn.close()
     closed = 0
     for other in others:
         answer = request_confirm(
             device_id, "前の作業を終了しますか？",
-            lines=[f"{other['name']} が", "使用中のままです", other["task_title"] or "フリー利用"],
+            lines=[f"{other['name']} が", "使用中のままです",
+                   (other["task_title"] or "フリー利用")
+                   + (f"（{other['required_workers']}人作業）" if (other["required_workers"] or 1) > 1 else "")],
             timeout=FORGOT_TIMEOUT,
             equipment_name=equipment.get("name"), worker_name=worker["name"],
         )
@@ -2694,7 +3112,7 @@ def _show_menu(device_id, module_id, tag_id, worker, equipment, tasks):
     while True:
         # 状態はメニューを出すたびに取り直す。着手した直後に戻ってくる場合がある
         working_here = (equipment.get("status") == "working"
-                        and equipment.get("current_worker_id") == worker["id"])
+                        and _uses_equipment(worker, equipment))
         index = request_choice(
             device_id, "どうしますか？", MENU_OPTIONS,
             timeout=MENU_TIMEOUT,
@@ -2763,6 +3181,9 @@ def _task_lines(task):
     # 管理者が本人を名指ししたタスク（D-3）。「なぜ自分に」が画面で分かるようにする
     if task.get("designated"):
         detail = "あなたが担当 / " + detail
+    # 複数人タスク。「はい」で始まるのではなく集合待ちになることを先に知らせる
+    if perms.team_size(task) > 1:
+        detail = f"{perms.team_size(task)}人作業 / " + detail
     return [task["title"], detail]
 
 
@@ -2778,6 +3199,10 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
     """
     candidates = [t for t in tasks if t.get("equipment_id") in (None, equipment["id"])][:MAX_CHOICES]
     total = len(candidates)
+
+    # 人手を待っている集合待ちが他の機材にあれば、まずそちらへ呼ぶ
+    if _guide_to_gathering(device_id, module_id, worker, equipment):
+        return
 
     # 他機材に先にやるべきタスクがあれば、ロックする前に尋ねる（C-3）。着手して
     # からでは、移動しても この機材が塞がったままになる。
@@ -2808,6 +3233,12 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
                                 ["着手できませんでした", "もう一度タッチしてください"], "error")
                 return
             if res.status_code == 409:
+                body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+                if body.get("error") == "already gathering":
+                    print(f"[{module_id}] {worker['name']}: 別の集合待ちに参加中（{body.get('title')}）")
+                    _notify_briefly(device_id, module_id,
+                                    ["別の集合待ちに参加中です", body.get("equipment") or ""], "error")
+                    return
                 # 確認している間に、他の人が別の機材で着手した
                 print(f"[{module_id}] {worker['name']}: 他の人が着手済み（{task['title']}）")
                 _notify_briefly(device_id, module_id,
@@ -2821,6 +3252,10 @@ def _start_session(device_id, module_id, tag_id, worker, equipment, tasks):
                 print(f"[{module_id}] {worker['name']}: 着手に失敗 ({res.status_code}) {reason}")
                 _notify_briefly(device_id, module_id,
                                 ["このタスクには権限が必要です", reason], "error")
+                return
+            if res.json().get("gathering"):
+                # 複数人タスク。残りの人を待つ画面にする（そろうと _gathering_touch が開始する）
+                _sync_module_state(device_id, equipment["id"])
                 return
             print(f"[{module_id}] {worker['name']} started task: {task['title']}")
             _notify(device_id,
@@ -2942,6 +3377,59 @@ def _pick_guidance(conn, equipment, tasks, has_candidates):
     return None, None
 
 
+def _pick_gathering(conn, worker, equipment):
+    """
+    この人が加われる、他の機材の集合待ちを1件選ぶ（始まりの古い順）。
+    最後の1枠に必要権限が足りないなら、それを補える人だけを呼ぶ。
+    戻り値: (集合待ち, いまの人数) / 該当なしなら (None, 0)
+    """
+    rows = conn.execute("""SELECT id FROM equipment WHERE status = 'gathering' AND id != ?
+                           ORDER BY updated_at""", (equipment["id"],)).fetchall()
+    for r in rows:
+        g = _gathering(conn, r["id"])
+        if not g:
+            continue
+        members = _team_members(conn, g["task_id"])
+        need = perms.team_size(g)
+        if len(members) >= need or any(m["id"] == worker["id"] for m in members):
+            continue
+        if len(members) + 1 == need and perms.team_missing(list(members) + [worker], g):
+            continue
+        return g, len(members)
+    return None, 0
+
+
+def _guide_to_gathering(device_id, module_id, worker, equipment):
+    """
+    他の機材で人手を待っている集合待ちがあれば、そちらへ移動するか尋ねる。
+    戻り値 True = 誘導した。呼び出し側はこの機材で何もせず終了する
+    """
+    conn = db.get_db()
+    try:
+        g, have = _pick_gathering(conn, worker, equipment)
+        if g and _other_gathering(conn, worker["id"]):
+            g = None   # 自分も別の集合待ちに加わっている
+    finally:
+        conn.close()
+    if not g:
+        return False
+    need = perms.team_size(g)
+    answer = request_confirm(
+        device_id, f"{g['eq_name']} へ移動しますか？",
+        lines=[f"{g['eq_name']} で人手を待っています", g["title"], f"{have}/{need}人 集合待ち"],
+        timeout=GUIDE_TIMEOUT,
+        equipment_name=equipment.get("name"), worker_name=worker["name"],
+    )
+    if not answer:
+        print(f"[{module_id}] {worker['name']}: 集合待ちへの誘導を辞退（{g['eq_name']} / {g['title']}）")
+        return False
+    print(f"[{module_id}] {worker['name']} を {g['eq_name']} の集合待ちへ誘導: {g['title']}")
+    _notify_briefly(device_id, module_id,
+                    [f"{g['eq_name']} へ移動してください", g["title"],
+                     "移動先で社員証をタッチ"], "guide", sec=GUIDE_NOTICE_SEC)
+    return True
+
+
 def _guide_to_other_equipment(device_id, module_id, worker, equipment, tasks, has_candidates):
     """
     他機材に先にやるべきタスクがあれば、そちらへ移動するか尋ねる（C-3）。
@@ -2991,7 +3479,8 @@ def _end_session(device_id, module_id, worker, equipment):
         # 完了の記録に失敗しても、下の機材の解放までは必ず進める。ここで例外が
         # 抜けると機材が「作業中」のまま残り、本人以外は誰も使えなくなる
         try:
-            res = requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete", timeout=HTTP_TIMEOUT)
+            res = requests.post(f"{SELF_URL}/api/tasks/{task_id}/complete",
+                                json={"worker_id": worker["id"]}, timeout=HTTP_TIMEOUT)
             if res.ok:
                 work_log_id = res.json().get("work_log_id")
                 task_title = res.json().get("title")
@@ -3585,6 +4074,7 @@ def start_background_jobs():
             try:
                 run_recurring()
                 check_forgotten_sessions()
+                cancel_stale_gatherings()
             except Exception as e:   # 見回りを止めない
                 print(f"[background] 見回りで例外: {e}")
             time.sleep(BACKGROUND_INTERVAL_SEC)

@@ -99,9 +99,9 @@
 <script>
 (function () {
   // raspi.py の LED_LABELS / LED_COLORS と揃えること
-  const LED_LABELS = { idle: "空き", working: "作業中", free: "フリー利用中", guide: "移動してください",
+  const LED_LABELS = { idle: "空き", working: "作業中", free: "フリー利用中", guide: "移動してください", gathering: "集合待ち",
                        recording: "タスク登録中", error: "使用不可", offline: "オフライン" };
-  const LED_COLORS = { idle: "#2EA043", working: "#E08A1E", free: "#2F6DCC", guide: "#7E3FB8",
+  const LED_COLORS = { idle: "#2EA043", working: "#E08A1E", free: "#2F6DCC", guide: "#7E3FB8", gathering: "#14919B",
                        recording: "#C2379A", error: "#C83232", offline: "#5A5A5A" };
   const EQ_LABELS = {{ E|tojson }};
   const STORE_KEY = "gemmba.test.modules";

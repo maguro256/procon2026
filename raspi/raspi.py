@@ -249,7 +249,7 @@ client.on_message = on_message
 
 LED_LABELS = {
     "idle": "空き", "working": "作業中", "free": "フリー利用中",
-    "guide": "移動してください", "recording": "タスク登録中",
+    "guide": "移動してください", "gathering": "集合待ち", "recording": "タスク登録中",
     "error": "使用不可", "offline": "オフライン",
 }
 
@@ -258,6 +258,8 @@ LED_COLORS = {
     "working": (0xE0, 0x8A, 0x1E),
     "free":    (0x2F, 0x6D, 0xCC),
     "guide":   (0x7E, 0x3F, 0xB8),   # C-3 の誘導中。他のどの状態とも見間違えない紫
+    # 複数人タスクの集合待ち。残りの人がタッチしに来るのを待っている
+    "gathering": (0x14, 0x91, 0x9B),
     # 音声でのタスク登録中(E-2)。機材を使う状態ではないので、空き(緑)・作業中(橙)・
     # フリー利用(青)のどれとも重ならない色にしてある
     "recording": (0xC2, 0x37, 0x9A),

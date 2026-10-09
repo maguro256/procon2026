@@ -27,6 +27,9 @@
     <div class="field"><label>数量</label>
       <input class="input" type="number" name="quantity" min="1" value="1">
     </div>
+    <div class="field"><label title="2人以上にすると、最初の人がタッチした後、同じ機材で残りの人がタッチしてそろった時点で作業開始になります">必要人数</label>
+      <input class="input" type="number" name="required_workers" min="1" max="10" value="1">
+    </div>
     <div class="field"><label>期限</label>
       <input class="input" type="date" name="deadline">
     </div>
@@ -148,6 +151,9 @@
       </div>
       <div class="field"><label>数量</label>
         <input class="input" type="number" name="quantity" min="1" value="1">
+      </div>
+      <div class="field"><label title="2人以上にすると、最初の人がタッチした後、同じ機材で残りの人がタッチしてそろった時点で作業開始になります">必要人数</label>
+        <input class="input" type="number" name="required_workers" min="1" max="10" value="1">
       </div>
       <div class="field span-all"><label>補足（任意）</label>
         <input class="input" type="text" name="description" placeholder="点検項目・注意点など">
@@ -272,7 +278,7 @@
     <div class="task-tools">
       {# 作業中は割り当て直さない（着手した人の機材が使用中のまま食い違う）。
          担当者を指定したタスクも出さない（指定を外すまでAIでは変えない） #}
-      {% if t.status != 'in_progress' and not (t.designated and t.assigned_worker_id) %}
+      {% if t.status not in ('in_progress', 'gathering') and not (t.designated and t.assigned_worker_id) %}
       <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
       {% endif %}
       <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">{{ trash_icon() }}</button>
@@ -282,7 +288,7 @@
     <span class="{{ 'strong' if t.worker_name else 'unassigned' }}">担当 {{ t.worker_name or '未割当' }}</span>
     {% if t.designated and t.worker_name %}<span class="tag tag-accent-2" title="管理者が指定した担当者です。この人にだけ提示され、AI割当では変わりません">指定</span>{% endif %}
     　・　機材 {{ t.equipment_name or 'なし' }}
-    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
+    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}{% if (t.required_workers or 1) > 1 %}　・　{{ t.required_workers }}人作業{% endif %}　・　期限 {{ t.deadline or 'なし' }}
     {% if t.description %}　・　{{ t.description }}{% endif %}
   </div>
   {% if perms.parse(t.required_permissions) %}
@@ -292,10 +298,10 @@
   <details class="task-edit">
     <summary>担当者・内容を変更</summary>
     {# data-autosave: 変えた瞬間に保存する（base.html）。「更新」ボタンも残してある #}
-    {% set locked = t.status == 'in_progress' %}
+    {% set locked = t.status in ('in_progress', 'gathering') %}
     <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions" data-autosave>
       {% if locked %}
-      <p class="text-muted span-all">作業中のため、担当者と機材は完了するまで変更できません。</p>
+      <p class="text-muted span-all">{{ S[t.status] }}のため、担当者・機材・必要人数は変更できません。</p>
       {% endif %}
       <div class="field"><label title="ここで選んだ人は「指定」になり、その人にだけ提示されます">担当者（選ぶと指定）</label>
         <select class="input" name="assigned_worker_id" title="担当者" {{ 'disabled' if locked }}>
@@ -314,6 +320,9 @@
       </div>
       <div class="field"><label>数量</label>
         <input class="input" type="number" name="quantity" title="数量" min="1" value="{{ t.quantity }}">
+      </div>
+      <div class="field"><label>必要人数</label>
+        <input class="input" type="number" name="required_workers" title="必要人数" min="1" max="10" value="{{ t.required_workers or 1 }}" {{ 'disabled' if locked }}>
       </div>
       <div class="field"><label>期限</label>
         <input class="input" type="date" name="deadline" title="期限" value="{{ t.deadline or '' }}">
@@ -358,7 +367,7 @@
   <div class="task-meta">
     担当 {{ t.worker_name or '—' }}　・　完了 {{ t.completed_at or '—' }}
     {% if t.equipment_name %}　・　機材 {{ t.equipment_name }}{% endif %}
-    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}
+    　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}{% if (t.required_workers or 1) > 1 %}　・　{{ t.required_workers }}人作業{% endif %}
     {# 完了直後に機材の画面で本人が答えた体感。設定値の難易度とは別物 #}
     {% if t.felt_difficulty %}　・　<span class="felt" title="完了後に作業者が答えた体感難易度">体感「{{ F[t.felt_difficulty] }}」</span>{% endif %}
   </div>

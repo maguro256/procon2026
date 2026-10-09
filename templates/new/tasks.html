@@ -32,6 +32,9 @@
         <div class="field"><label>数量</label>
           <input class="input" type="number" name="quantity" min="1" value="1">
         </div>
+        <div class="field"><label title="2人以上にすると、最初の人がタッチした後、同じ機材で残りの人がタッチしてそろった時点で作業開始になります">必要人数</label>
+          <input class="input" type="number" name="required_workers" min="1" max="10" value="1">
+        </div>
         <div class="field"><label>期限</label>
           <input class="input" type="date" name="deadline">
         </div>
@@ -134,6 +137,9 @@
         </div>
         <div class="field"><label>数量</label>
           <input class="input" type="number" name="quantity" min="1" value="1">
+        </div>
+        <div class="field"><label title="2人以上にすると、最初の人がタッチした後、同じ機材で残りの人がタッチしてそろった時点で作業開始になります">必要人数</label>
+          <input class="input" type="number" name="required_workers" min="1" max="10" value="1">
         </div>
         <div class="field span-all"><label>補足（任意）</label>
           <input class="input" type="text" name="description" placeholder="点検項目・注意点など">
@@ -245,7 +251,7 @@
     <span><span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span></span>
     <div class="lrow-main">
       <strong class="lrow-title">{{ t.title }}{% if t.recurring_id %} <span class="tag tag-outline" title="定期タスクから自動で追加されました">定期</span>{% endif %}</strong>
-      <span class="lrow-meta">×{{ t.quantity or 1 }}・難易度 {{ t.difficulty }}{% if t.description %}・{{ t.description }}{% endif %}
+      <span class="lrow-meta">×{{ t.quantity or 1 }}{% if (t.required_workers or 1) > 1 %}・<span title="この人数がそろってから作業を始めます">{{ t.required_workers }}人作業</span>{% endif %}・難易度 {{ t.difficulty }}{% if t.description %}・{{ t.description }}{% endif %}
         {%- if done and t.felt_difficulty %}・<span title="完了後に作業者が答えた体感難易度">体感「{{ F[t.felt_difficulty] }}」</span>{% endif %}</span>
       {{ perm_chips(t.required_permissions) }}
     </div>
@@ -286,10 +292,10 @@
       {% if not done %}
       {# data-autosave: 変えた瞬間に保存する。状態（着手・完了）は現場のタッチでしか変わらない #}
       {# 作業中は担当者と機材を動かさない（機材は着手した人のまま使用中。サーバー側でも断る） #}
-      {% set locked = t.status == 'in_progress' %}
+      {% set locked = t.status in ('in_progress', 'gathering') %}
       <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="lrow-edit-grid" data-autosave>
         {% if locked %}
-        <p class="lrow-edit-note span-all">作業中のため、担当者と機材は完了するまで変更できません。</p>
+        <p class="lrow-edit-note span-all">{{ S[t.status] }}のため、担当者・機材・必要人数は変更できません。</p>
         {% endif %}
         <div class="field"><label title="ここで選んだ人は「指定」になり、その人にだけ提示されます">担当者（選ぶと指定）</label>
           <select class="input" name="assigned_worker_id" {{ 'disabled' if locked }}>
@@ -304,6 +310,9 @@
         </div>
         <div class="field"><label>数量</label>
           <input class="input" type="number" name="quantity" min="1" value="{{ t.quantity }}">
+        </div>
+        <div class="field"><label>必要人数</label>
+          <input class="input" type="number" name="required_workers" min="1" max="10" value="{{ t.required_workers or 1 }}" {{ 'disabled' if locked }}>
         </div>
         <div class="field"><label>期限</label>
           <input class="input" type="date" name="deadline" value="{{ t.deadline or '' }}">
@@ -327,7 +336,7 @@
       <div class="lrow-edit-actions">
         {# 作業中のタスクには出さない。割り当て直すと状態が「割当済」に戻り、着手が消える #}
         {# 担当者を指定したタスクにも出さない（指定を外すまでAIでは変えない） #}
-        {% if not done and t.status != 'in_progress' and not (t.designated and t.assigned_worker_id) %}
+        {% if not done and t.status not in ('in_progress', 'gathering') and not (t.designated and t.assigned_worker_id) %}
         <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai btn-sm">{{ 'AIで割り当て直す' if t.assigned_worker_id else 'AIで割り当て' }}</button>
         {% endif %}
         <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-danger btn-sm">このタスクを削除</button>

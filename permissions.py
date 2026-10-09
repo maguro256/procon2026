@@ -14,6 +14,11 @@ DBの持ち方:
     tasks.required_permissions
                          そのタスクに必要な権限コード。カンマ区切りで
                          **すべて**必要。空なら誰でも着手できる
+    tasks.required_workers
+                         2以上なら複数人タスク。必要権限は**メンバーの誰か1人が
+                         持っていればよい**（権限ごとに判定する）。そのため1人ずつの
+                         判定（allows）では落とさず、人数がそろう時点で
+                         team_missing() でまとめて見る
 
 有効な権限 = 役職由来 ∪ 個別付与。役職を割当に効かせるのはこの経路で、
 作業者側の権限・役職は文脈ベクトルに足していない（役職を特徴量にする案は
@@ -121,11 +126,34 @@ def allows(worker, task) -> bool:
     return not missing(worker, task)
 
 
+def team_size(task) -> int:
+    """タスクに必要な人数。1なら1人で行うタスク"""
+    try:
+        return max(1, int(_get(task, "required_workers", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def team_missing(workers, task) -> list:
+    """メンバーの誰も持っていない必要権限。空リストならこの顔ぶれで着手できる"""
+    have = set()
+    for w in workers:
+        have.update(held(w))
+    return [c for c in required(task) if c not in have]
+
+
 def eligible_workers(workers, task) -> list:
-    """タスクの必要権限を満たす作業者だけを残す。順序は入力のまま"""
+    """
+    タスクの担当者（複数人タスクならリーダー）になれる作業者だけを残す。順序は入力のまま。
+
+    複数人タスクは権限を持たない人もリーダーになれる（持っている人が加われば足りる）。
+    ただし、作業者全体を見ても誰も持っていない権限があれば、誰も候補にしない
+    """
+    if team_size(task) > 1:
+        return list(workers) if not team_missing(workers, task) else []
     return [w for w in workers if allows(w, task)]
 
 
 def eligible_tasks(worker, tasks) -> list:
-    """その作業者が着手できるタスクだけを残す。順序は入力のまま"""
-    return [t for t in tasks if allows(worker, t)]
+    """その作業者が着手できる（複数人タスクなら呼びかけられる）タスクだけを残す。順序は入力のまま"""
+    return [t for t in tasks if team_size(t) > 1 or allows(worker, t)]

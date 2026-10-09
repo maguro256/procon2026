@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS equipment (
     -- 機材コード。**機材そのもの**の識別子で、APIの宛先になる（/api/equipment/<ここ>/…）。
     -- モジュール側の識別子は下の hostname。名前が紛らわしいので画面では「機材コード」と呼ぶ
     module_id TEXT UNIQUE,
-    status TEXT NOT NULL DEFAULT 'idle',        -- idle / working / stopped / maintenance
+    -- idle / working / stopped / maintenance / gathering（複数人タスクの集合待ち）
+    status TEXT NOT NULL DEFAULT 'idle',
+    -- 使用中の人。複数人タスクではリーダー（最初にタッチした人）。全員は task_members
     current_worker_id INTEGER REFERENCES workers(id),
     current_task_id INTEGER REFERENCES tasks(id),
     ip TEXT,
@@ -47,7 +49,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     required_permissions TEXT NOT NULL DEFAULT '',  -- 必要権限。カンマ区切りで全部必要。空なら誰でも可
     quantity INTEGER DEFAULT 1,
     deadline TEXT,                              -- 期限 (YYYY-MM-DD)
-    status TEXT NOT NULL DEFAULT 'todo',        -- todo / assigned / in_progress / done
+    -- todo / assigned / gathering（複数人タスクの集合待ち）/ in_progress / done
+    status TEXT NOT NULL DEFAULT 'todo',
     assigned_worker_id INTEGER REFERENCES workers(id),
     equipment_id INTEGER REFERENCES equipment(id),
     started_at TEXT,
@@ -63,7 +66,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- 定期タスク（recurring_tasks）から自動で作ったタスクなら、その元の id。
     -- 外部キーにしないのは、元の設定を消しても作ったタスクは残すため
     recurring_id INTEGER,
+    -- 作業に必要な人数（ちょうどこの人数）。2以上なら、最初の人がタッチすると集合待ちに
+    -- なり、同じ機材で残りの人がタッチしてそろった時点で作業開始になる
+    required_workers INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 複数人タスク（required_workers >= 2）に加わっている人。集合待ちの間に1人ずつ増え、
+-- 完了後も誰がやったかの記録として残す。1人で行うタスクには行を作らない
+CREATE TABLE IF NOT EXISTS task_members (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    worker_id INTEGER NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+    joined_at TEXT DEFAULT (datetime('now', 'localtime')),
+    PRIMARY KEY (task_id, worker_id)
 );
 
 -- 定期タスクの設定。recurring.py が予定日になると tasks に1件ずつ作る
@@ -75,6 +90,7 @@ CREATE TABLE IF NOT EXISTS recurring_tasks (
     priority TEXT NOT NULL DEFAULT 'normal',
     required_permissions TEXT NOT NULL DEFAULT '',
     quantity INTEGER DEFAULT 1,
+    required_workers INTEGER NOT NULL DEFAULT 1,
     equipment_id INTEGER REFERENCES equipment(id),
     worker_id INTEGER REFERENCES workers(id),   -- 指定する担当者。空なら誰でも
     frequency TEXT NOT NULL DEFAULT 'weekly',   -- daily / weekly / monthly
@@ -134,6 +150,10 @@ MIGRATIONS = {
         "demo": "INTEGER NOT NULL DEFAULT 0",
         "designated": "INTEGER NOT NULL DEFAULT 0",
         "recurring_id": "INTEGER",
+        "required_workers": "INTEGER NOT NULL DEFAULT 1",
+    },
+    "recurring_tasks": {
+        "required_workers": "INTEGER NOT NULL DEFAULT 1",
     },
     "work_logs": {
         # 完了後の難易度フィードバック。既存の実績は答えていないので NULL のまま

@@ -159,6 +159,7 @@ static const StateDef STATES[] = {
     {"working", "作業中", rgb(0xE0, 0x8A, 0x1E)},
     {"free", "フリー利用中", rgb(0x2F, 0x6D, 0xCC)},
     {"guide", "移動してください", rgb(0x7E, 0x3F, 0xB8)},
+    {"gathering", "集合待ち", rgb(0x14, 0x91, 0x9B)},  // 複数人タスクの人がそろうのを待っている
     {"recording", "タスク登録中", rgb(0xC2, 0x37, 0x9A)},
     {"error", "使用不可", rgb(0xC8, 0x32, 0x32)},
     {"offline", "オフライン", rgb(0x5A, 0x5A, 0x5A)},

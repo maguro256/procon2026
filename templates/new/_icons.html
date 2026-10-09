@@ -13,7 +13,7 @@
 {% endmacro %}
 
 {# 機材の状態ラベル。working は画面上「使用中」と呼ぶ（モジュールの表示は app.py の EQ_STATUS_LABELS） #}
-{% macro status_label(status) %}{{ {'idle': '空き', 'stopped': '停止', 'maintenance': 'メンテ中'}.get(status, '使用中') }}{% endmacro %}
+{% macro status_label(status) %}{{ {'idle': '空き', 'stopped': '停止', 'maintenance': 'メンテ中', 'gathering': '集合待ち'}.get(status, '使用中') }}{% endmacro %}
 
 {# badge-* / status-* の接尾辞。停止とメンテ中を使用中に混ぜない #}
 {% macro status_class(status) %}{{ {'idle': 'idle', 'stopped': 'stopped', 'maintenance': 'maint'}.get(status, 'inuse') }}{% endmacro %}

@@ -101,6 +101,14 @@ def open_instance(conn, rule_id):
         (rule_id,)).fetchone()
 
 
+def _team_size(rule):
+    """必要人数。列の無い古い行（テストで手組みした dict など）は1人"""
+    try:
+        return max(1, int(rule["required_workers"] or 1))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 1
+
+
 def create_task(conn, rule, due):
     """設定 rule から、予定日 due のタスクを1件作る。作ったタスクの id を返す"""
     deadline = due + timedelta(days=max(int(rule["deadline_days"] or 0), 0))
@@ -108,12 +116,12 @@ def create_task(conn, rule, due):
     cur = conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
                               quantity, deadline, equipment_id, assigned_worker_id, status,
-                              designated, recurring_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              designated, recurring_id, required_workers)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (rule["title"], rule["description"] or "", rule["difficulty"], rule["priority"],
          rule["required_permissions"] or "", rule["quantity"] or 1, deadline.isoformat(),
          rule["equipment_id"], worker_id, "assigned" if worker_id else "todo",
-         1 if worker_id else 0, rule["id"]))
+         1 if worker_id else 0, rule["id"], _team_size(rule)))
     return cur.lastrowid
 
 
