@@ -17,7 +17,7 @@ import socket
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
@@ -35,6 +35,7 @@ except ImportError:
 import db
 import ai_stub
 import permissions as perms
+import recurring
 from voice import intent
 
 app = Flask(__name__)
@@ -278,6 +279,61 @@ def inject_labels():
 
 # ---------------------------------------------------------------- 画面
 
+# --- 終了のタッチ忘れ（導入先の評価で「タッチを忘れる人がいた」）
+# 作業を終えたのに終了のタッチをしないと、機材が「使用中」のまま残り、次の人が使えない。
+# 見込み時間を大きく超えた使用を「忘れているかもしれない」として、モジュールの画面・
+# 管理画面・掲示用ダッシュボードで知らせる。勝手に終了させはしない（本当に長い作業もある）。
+FORGOT_FACTOR = 2.0   # 見込み時間（ai_stub.estimate_seconds）の何倍を超えたら知らせるか
+# 見込みが短いタスクでも、これより早くは知らせない。デモでは環境変数で縮める
+FORGOT_MIN_SEC = int(os.environ.get("GEMMBA_FORGOT_MIN_SEC", 30 * 60))
+# フリー利用は見込みが無いので、一律この時間で知らせる
+FREE_USE_FORGOT_SEC = int(os.environ.get("GEMMBA_FREE_FORGOT_SEC", 2 * 3600))
+
+
+def _overdue_sessions(conn, now=None):
+    """
+    終了のタッチを忘れていそうな使用中の機材。
+    戻り値: {equipment_id: {"since", "elapsed_sec", "limit_sec"}}
+    """
+    rows = conn.execute("""
+        SELECT e.id, e.current_task_id, t.difficulty, t.quantity,
+               COALESCE(t.started_at, e.updated_at) AS since
+        FROM equipment e
+        LEFT JOIN tasks t ON t.id = e.current_task_id
+        WHERE e.status = 'working'
+    """).fetchall()
+    if not rows:
+        return {}
+    now = now or datetime.now()
+    logs = None
+    out = {}
+    for r in rows:
+        try:
+            since = datetime.strptime(r["since"], "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            continue
+        if r["current_task_id"]:
+            if logs is None:
+                logs = _ai_logs(conn)
+            estimate = ai_stub.estimate_seconds(
+                {"difficulty": r["difficulty"], "quantity": r["quantity"]}, logs)
+            limit = max(FORGOT_MIN_SEC, FORGOT_FACTOR * estimate)
+        else:
+            limit = FREE_USE_FORGOT_SEC
+        elapsed = (now - since).total_seconds()
+        if elapsed > limit:
+            out[r["id"]] = {"since": r["since"], "elapsed_sec": int(elapsed), "limit_sec": int(limit)}
+    return out
+
+
+def _overdue_now():
+    conn = db.get_db()
+    try:
+        return _overdue_sessions(conn)
+    finally:
+        conn.close()
+
+
 @app.route("/")
 def dashboard():
     """機材の使用状況ダッシュボード"""
@@ -317,6 +373,7 @@ def dashboard():
     """).fetchall()
     conn.close()
     return _render("dashboard.html", equipment=equipment, counts=counts, attention=attention,
+                           overdue=_overdue_now(),
                            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
@@ -448,9 +505,12 @@ def delete_worker(worker_id):
     # 割当済・作業中のタスクは未着手からやり直す。作業中のまま担当者だけ空にすると、
     # 誰も完了できないタスクが残る。着手時刻も消さないと次の人の所要時間に混ざる
     reset = conn.execute(
-        """UPDATE tasks SET assigned_worker_id = NULL, status = 'todo', started_at = NULL, ai_note = NULL
+        """UPDATE tasks SET assigned_worker_id = NULL, status = 'todo', started_at = NULL, ai_note = NULL,
+           designated = 0
            WHERE assigned_worker_id = ? AND status IN ('assigned', 'in_progress')""", (worker_id,)).rowcount
     conn.execute("UPDATE tasks SET assigned_worker_id = NULL WHERE assigned_worker_id = ?", (worker_id,))
+    # 定期タスクの担当者指定も外す（以後は誰にでも提示される）
+    conn.execute("UPDATE recurring_tasks SET worker_id = NULL WHERE worker_id = ?", (worker_id,))
     conn.execute("UPDATE equipment SET current_worker_id = NULL WHERE current_worker_id = ?", (worker_id,))
     logs = _detach_work_logs(conn, "worker_id", worker_id)
     conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
@@ -544,7 +604,10 @@ def tasks():
     """).fetchone()
     conn.close()
     filtered = any((q, q_title, q_worker, q_priority, q_status, q_equipment))
+    recurring_rules = _recurring_rules()
     return _render("tasks.html", active_tasks=active_tasks, done_tasks=done_tasks,
+                           recurring_rules=recurring_rules,
+                           FREQ=recurring.FREQUENCIES, WEEKDAYS=recurring.WEEKDAY_LABELS,
                            worker_list=worker_list, equipment_list=equipment_list,
                            q=q, status_counts=status_counts,
                            q_title=q_title, q_worker=q_worker, q_priority=q_priority,
@@ -566,25 +629,52 @@ def add_task():
         conn.close()
         flash("指定された機材が見つかりません", "error")
         return redirect(url_for("tasks"))
+    required_perms = perms.dump(f.getlist("required_permissions"))
+    # 担当者の指定（D-3）。指定したタスクは本人にしか提示されず、AI割当でも変わらない
+    worker_id = f.get("assigned_worker_id") or None
+    if worker_id:
+        cand, error = _check_designee(conn, worker_id, required_perms)
+        if error:
+            conn.close()
+            flash(error, "error")
+            return redirect(url_for("tasks"))
     conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority, required_permissions,
-                            quantity, deadline, equipment_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            quantity, deadline, equipment_id, assigned_worker_id, status, designated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             title,
             f.get("description", "").strip(),
             _safe_int(f.get("difficulty"), 3),
             _valid_priority(f.get("priority")),
-            perms.dump(f.getlist("required_permissions")),
+            required_perms,
             _safe_int(f.get("quantity"), 1) or 1,
             f.get("deadline") or None,
             equipment_id,
+            worker_id,
+            "assigned" if worker_id else "todo",
+            1 if worker_id else 0,
         ),
     )
     conn.commit()
     conn.close()
-    flash(f"タスク「{title}」を登録しました", "ok")
+    flash(f"タスク「{title}」を登録しました" + (f"（担当 {cand['name']} さん）" if worker_id else ""), "ok")
     return redirect(url_for("tasks"))
+
+
+def _check_designee(conn, worker_id, required_perms):
+    """
+    担当者に指定してよいか。戻り値: (作業者row, エラー文 or None)
+    手で指定するときも権限は無視できない（無資格の人に提示されてしまう）
+    """
+    cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
+    if not cand:
+        return None, "指定された作業者が見つかりません"
+    lacking = perms.missing(cand, {"required_permissions": required_perms})
+    if lacking:
+        return cand, (f"{cand['name']} さんは権限が足りないため割り当てできません"
+                      f"（不足: {'・'.join(perms.labels(lacking))}）")
+    return cand, None
 
 
 @app.route("/tasks/<int:task_id>/update", methods=["POST"])
@@ -632,28 +722,28 @@ def update_task(task_id):
     # に対して行うので、必要権限を外すのと同時に割り当てる操作は通る。
     # 作業中のタスクは見ない（api_next_task と同じく、着手済みの人から取り上げない）
     if worker_id and not locked:
-        cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
-        if not cand:
+        _, error = _check_designee(conn, worker_id, required_perms)
+        if error:
             conn.close()
-            flash("指定された作業者が見つかりません", "error")
-            return _back_to("tasks")
-        lacking = perms.missing(cand, {"required_permissions": required_perms})
-        if lacking:
-            conn.close()
-            flash(f"{cand['name']} さんは権限が足りないため割り当てできません"
-                  f"（不足: {'・'.join(perms.labels(lacking))}）", "error")
+            flash(error, "error")
             return _back_to("tasks")
 
     # 着手・完了はNFCタッチ側でしか起きない設計にしてある（画面から done にできると、
     # 所要時間の入っていない実績が混ざる）。ここで動かすのは未着手⇔割当済だけで、
     # AI割当と同じく担当者がいれば割当済にする。
     status = task["status"] if locked else ("assigned" if worker_id else "todo")
-    # 担当者を手で変えたら、AI割当の根拠はもう当てはまらないので消す
-    ai_note = task["ai_note"] if str(task["assigned_worker_id"] or "") == str(worker_id or "") else None
+    # 担当者を手で変えたら、AI割当の根拠はもう当てはまらないので消す。
+    # 手で選んだ担当者は「指定」（D-3）として扱い、AI割当で上書きさせない。
+    # 担当者を変えていなければ、AI割当で決まったものは割当結果のまま残す
+    same_worker = str(task["assigned_worker_id"] or "") == str(worker_id or "")
+    ai_note = task["ai_note"] if same_worker else None
+    designated = task["designated"] if same_worker else (1 if worker_id else 0)
     conn.execute(
         """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?, priority = ?, status = ?,
-           quantity = ?, deadline = ?, required_permissions = ?, ai_note = ? WHERE id = ?""",
-        (worker_id, equipment_id, priority, status, quantity, deadline, required_perms, ai_note, task_id),
+           quantity = ?, deadline = ?, required_permissions = ?, ai_note = ?, designated = ?
+           WHERE id = ?""",
+        (worker_id, equipment_id, priority, status, quantity, deadline, required_perms, ai_note,
+         designated, task_id),
     )
     conn.commit()
     conn.close()
@@ -678,6 +768,12 @@ def auto_assign(task_id):
     if task["status"] in ("in_progress", "done"):
         conn.close()
         flash(f"「{task['title']}」は{STATUS_LABELS[task['status']]}のため、AIで割り当て直せません", "error")
+        return _back_to("tasks")
+    # 担当者を指定したタスクは、管理者の判断を優先する（D-3）
+    if task["designated"] and task["assigned_worker_id"]:
+        conn.close()
+        flash(f"「{task['title']}」は担当者が指定されているため、AIでは割り当て直しません"
+              f"（担当者を「担当者なし」に戻すとAIで割り当てられます）", "error")
         return _back_to("tasks")
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)
@@ -735,20 +831,174 @@ def delete_task(task_id):
     return _back_to("tasks")
 
 
+# ---------------------------------------------------------------- 定期タスク
+# 毎週の点検のように繰り返すタスクを1回登録しておけば、予定日に recurring.py が
+# タスク一覧へ1件ずつ立てる（要件「定期メンテナンス等の習慣的タスクの自動生成」）。
+
+
+def _recurring_rules():
+    """タスク管理画面に出す定期タスクの一覧。次回の予定日と、前回分が残っているかを添える"""
+    conn = db.get_db()
+    rows = conn.execute("""
+        SELECT r.*, w.name AS worker_name, e.name AS equipment_name,
+               (SELECT COUNT(*) FROM tasks t WHERE t.recurring_id = r.id AND t.status != 'done') AS open_n
+        FROM recurring_tasks r
+        LEFT JOIN workers w   ON w.id = r.worker_id
+        LEFT JOIN equipment e ON e.id = r.equipment_id
+        ORDER BY r.active DESC, r.id
+    """).fetchall()
+    conn.close()
+    today = datetime.now().date()
+    out = []
+    for r in rows:
+        nxt = recurring.next_due(r, today)
+        out.append(dict(r, schedule=recurring.describe(r),
+                        next_due=nxt.isoformat() if nxt else None))
+    return out
+
+
+def run_recurring(today=None):
+    """予定日を迎えた定期タスクを作る。作ったタスクの [(id, タスク名)] を返す"""
+    try:
+        conn = db.get_db()
+        try:
+            made = recurring.generate(conn, today)
+            conn.commit()
+        finally:
+            conn.close()
+    except db.sqlite3.OperationalError as e:   # recurring_tasks の無い古いDB（テストの一時DBなど）
+        print(f"[recurring] 定期タスクを確認できませんでした: {e}")
+        return []
+    for task_id, title in made:
+        print(f"[recurring] 定期タスク「{title}」を作りました (#{task_id})")
+    return made
+
+
+@app.route("/recurring/add", methods=["POST"])
+def add_recurring():
+    f = request.form
+    title = f.get("title", "").strip()
+    if not title:
+        flash("タスク名を入力してください", "error")
+        return _back_to("tasks")
+    frequency = f.get("frequency") if f.get("frequency") in recurring.FREQUENCIES else "weekly"
+    weekdays = recurring.dump_weekdays(f.getlist("weekdays"))
+    month_day = _safe_int(f.get("month_day"), 0)
+    if frequency == "weekly" and not weekdays:
+        flash("毎週の場合は曜日を1つ以上選んでください", "error")
+        return _back_to("tasks")
+    if frequency == "monthly" and not 1 <= month_day <= 31:
+        flash("毎月の場合は日にち（1〜31）を入力してください", "error")
+        return _back_to("tasks")
+
+    conn = db.get_db()
+    equipment_id = f.get("equipment_id") or None
+    if equipment_id and not _row_exists(conn, "equipment", equipment_id):
+        conn.close()
+        flash("指定された機材が見つかりません", "error")
+        return _back_to("tasks")
+    required_perms = perms.dump(f.getlist("required_permissions"))
+    worker_id = f.get("worker_id") or None
+    if worker_id:
+        _, error = _check_designee(conn, worker_id, required_perms)
+        if error:
+            conn.close()
+            flash(error, "error")
+            return _back_to("tasks")
+    # last_run を昨日にしておく。空のままだと、登録した時点で過去の予定日
+    # （例: 木曜に登録した「毎週月曜」の今週月曜分）を期限切れで作ってしまう
+    yesterday = (datetime.now().date() - timedelta(days=1)).isoformat()
+    conn.execute(
+        """INSERT INTO recurring_tasks (title, description, difficulty, priority, required_permissions,
+                                        quantity, equipment_id, worker_id, frequency, weekdays,
+                                        month_day, deadline_days, last_run)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (title, f.get("description", "").strip(), _safe_int(f.get("difficulty"), 3),
+         _valid_priority(f.get("priority")), required_perms, _safe_int(f.get("quantity"), 1) or 1,
+         equipment_id, worker_id, frequency, weekdays if frequency == "weekly" else "",
+         month_day if frequency == "monthly" else None,
+         max(_safe_int(f.get("deadline_days"), 0), 0), yesterday))
+    conn.commit()
+    conn.close()
+    # 今日が予定日なら、その場で今日の分を作る（翌日まで待たせない）
+    made = run_recurring()
+    flash(f"定期タスク「{title}」を登録しました"
+          + ("（今日の分をタスク一覧に追加しました）" if made else ""), "ok")
+    return _back_to("tasks")
+
+
+@app.route("/recurring/<int:rule_id>/toggle", methods=["POST"])
+def toggle_recurring(rule_id):
+    """一時停止 / 再開。再開した日より前の予定日の分はさかのぼって作らない"""
+    conn = db.get_db()
+    row = conn.execute("SELECT * FROM recurring_tasks WHERE id = ?", (rule_id,)).fetchone()
+    if not row:
+        conn.close()
+        flash("定期タスクが見つかりません", "error")
+        return _back_to("tasks")
+    active = 0 if row["active"] else 1
+    yesterday = (datetime.now().date() - timedelta(days=1)).isoformat()
+    conn.execute("UPDATE recurring_tasks SET active = ?, last_run = CASE WHEN ? THEN ? ELSE last_run END"
+                 " WHERE id = ?", (active, active, yesterday, rule_id))
+    conn.commit()
+    conn.close()
+    made = run_recurring() if active else []
+    flash(f"定期タスク「{row['title']}」を{'再開' if active else '一時停止'}しました"
+          + ("（今日の分をタスク一覧に追加しました）" if made else ""), "ok")
+    return _back_to("tasks")
+
+
+@app.route("/recurring/<int:rule_id>/run", methods=["POST"])
+def run_recurring_now(rule_id):
+    """予定日を待たずに1件作る（臨時の点検など）。前回分が残っていれば作らない"""
+    conn = db.get_db()
+    row = conn.execute("SELECT * FROM recurring_tasks WHERE id = ?", (rule_id,)).fetchone()
+    if not row:
+        conn.close()
+        flash("定期タスクが見つかりません", "error")
+        return _back_to("tasks")
+    if recurring.open_instance(conn, rule_id) is not None:
+        conn.close()
+        flash(f"「{row['title']}」は前回の分がまだ終わっていないため、作りませんでした", "error")
+        return _back_to("tasks")
+    recurring.create_task(conn, row, datetime.now().date())
+    conn.commit()
+    conn.close()
+    flash(f"「{row['title']}」をタスク一覧に追加しました", "ok")
+    return _back_to("tasks")
+
+
+@app.route("/recurring/<int:rule_id>/delete", methods=["POST"])
+def delete_recurring(rule_id):
+    """設定だけを消す。これまでに作ったタスクは残す（作業中のものもある）"""
+    conn = db.get_db()
+    row = conn.execute("SELECT title FROM recurring_tasks WHERE id = ?", (rule_id,)).fetchone()
+    conn.execute("UPDATE tasks SET recurring_id = NULL WHERE recurring_id = ?", (rule_id,))
+    conn.execute("DELETE FROM recurring_tasks WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+    if row:
+        flash(f"定期タスク「{row['title']}」を削除しました（作成済みのタスクは残しています）", "ok")
+    return _back_to("tasks")
+
+
 @app.route("/equipment")
 def equipment():
     conn = db.get_db()
     rows = conn.execute("""
-        SELECT e.*, w.name AS worker_name, t.title AS task_title
+        SELECT e.*, w.name AS worker_name, t.title AS task_title,
+               COALESCE(t.started_at, e.updated_at) AS since
         FROM equipment e
         LEFT JOIN workers w ON w.id = e.current_worker_id
         LEFT JOIN tasks t   ON t.id = e.current_task_id
         ORDER BY e.id
     """).fetchall()
+    overdue = _overdue_sessions(conn)
     conn.close()
     with _pending_lock:
         pending_modules = dict(_pending_modules)
-    return _render("equipment.html", equipment=rows, pending_modules=pending_modules)
+    return _render("equipment.html", equipment=rows, pending_modules=pending_modules,
+                   overdue=overdue, now=datetime.now().strftime("%Y-%m-%dT%H:%M"))
 
 
 @app.route("/equipment/add", methods=["POST"])
@@ -832,6 +1082,7 @@ def _bind_module(conn, eq_id, hostname):
 def delete_equipment(eq_id):
     conn = db.get_db()
     conn.execute("UPDATE tasks SET equipment_id = NULL WHERE equipment_id = ?", (eq_id,))
+    conn.execute("UPDATE recurring_tasks SET equipment_id = NULL WHERE equipment_id = ?", (eq_id,))
     # 実績は消さない。どの機材だったかは分からなくなるが、所要時間と担当者は
     # WariAthena の学習データなので残す（AI_LOG_SQL が LEFT JOIN しているのはこのため）
     logs = _detach_work_logs(conn, "equipment_id", eq_id)
@@ -879,6 +1130,112 @@ def restart_module(eq_id):
     flash(f"「{eq['name']}」のモジュールを再起動しています"
           + ("（操作中だったので、その操作は中断されます）" if busy else ""), "ok")
     return redirect(url_for("equipment"))
+
+
+def _close_session(eq_id, outcome="done", ended_at=None):
+    """
+    使用中の機材を終わらせる。終了のタッチを忘れたときの後始末で、管理画面の
+    「代わりに終了」と、別の機材でタッチしたときの確認（_ask_forgotten_session）が使う。
+
+    outcome:
+        "done"  … タスクを完了にして実績を残す。所要時間は ended_at まで
+        "abort" … タスクは終わっていない。未着手に戻す（担当者指定なら本人のまま）
+    フリー利用なら、どちらでも機材を空けるだけ。
+    戻り値: 終わらせた内容の dict / 使用中でなければ None
+    """
+    ended_at = ended_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = db.get_db()
+    eq = conn.execute("""
+        SELECT e.*, w.name AS worker_name FROM equipment e
+        LEFT JOIN workers w ON w.id = e.current_worker_id
+        WHERE e.id = ? AND e.status = 'working'""", (eq_id,)).fetchone()
+    if not eq:
+        conn.close()
+        return None
+    task = None
+    if eq["current_task_id"]:
+        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (eq["current_task_id"],)).fetchone()
+    result = {"equipment": eq["name"], "worker": eq["worker_name"],
+              "task": task["title"] if task else None, "duration_sec": None, "work_log_id": None}
+    if task and task["status"] == "in_progress":
+        if outcome == "done":
+            duration = None
+            if task["started_at"]:
+                duration = int((datetime.strptime(ended_at, "%Y-%m-%d %H:%M:%S")
+                                - datetime.strptime(task["started_at"], "%Y-%m-%d %H:%M:%S")).total_seconds())
+            conn.execute("UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+                         (ended_at, task["id"]))
+            if task["assigned_worker_id"]:
+                cur = conn.execute(
+                    """INSERT INTO work_logs (task_id, worker_id, equipment_id, started_at, completed_at, duration_sec)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (task["id"], task["assigned_worker_id"], eq_id, task["started_at"], ended_at, duration))
+                result["work_log_id"] = cur.lastrowid
+            result["duration_sec"] = duration
+        else:
+            # 中断。担当者を指定したタスクは本人に残し、そうでなければ誰でも拾えるよう戻す
+            conn.execute(
+                """UPDATE tasks SET started_at = NULL, ai_note = NULL,
+                       status = CASE WHEN designated = 1 AND assigned_worker_id IS NOT NULL
+                                     THEN 'assigned' ELSE 'todo' END,
+                       assigned_worker_id = CASE WHEN designated = 1 THEN assigned_worker_id END
+                   WHERE id = ?""", (task["id"],))
+    conn.execute(
+        """UPDATE equipment SET status = 'idle', current_worker_id = NULL, current_task_id = NULL,
+           updated_at = datetime('now','localtime') WHERE id = ?""", (eq_id,))
+    conn.commit()
+    conn.close()
+    if result["work_log_id"]:
+        ai_stub.invalidate_cache()
+    _resync_released([eq])
+    return result
+
+
+@app.route("/equipment/<int:eq_id>/finish", methods=["POST"])
+def finish_equipment(eq_id):
+    """
+    終了のタッチを忘れた作業を、管理者が代わりに終わらせる。
+    終わった時刻を入れてもらうのは、所要時間が AI の学習データになるため。
+    忘れていた時間まで作業時間に数えると、その人が遅いと学習してしまう。
+    """
+    f = request.form
+    outcome = "abort" if f.get("outcome") == "abort" else "done"
+    conn = db.get_db()
+    eq = conn.execute("""SELECT e.status, e.name, t.started_at FROM equipment e
+                         LEFT JOIN tasks t ON t.id = e.current_task_id WHERE e.id = ?""",
+                      (eq_id,)).fetchone()
+    conn.close()
+    if not eq or eq["status"] != "working":
+        flash("この機材は使用中ではありません", "error")
+        return _back_to("equipment")
+    now = datetime.now()
+    ended = now
+    if f.get("ended_at"):
+        try:
+            ended = datetime.strptime(f["ended_at"], "%Y-%m-%dT%H:%M")
+        except ValueError:
+            flash("終わった時刻の形式が正しくありません", "error")
+            return _back_to("equipment")
+    if ended > now:
+        flash("終わった時刻に、これから先の時刻は指定できません", "error")
+        return _back_to("equipment")
+    if eq["started_at"] and ended < datetime.strptime(eq["started_at"], "%Y-%m-%d %H:%M:%S"):
+        flash(f"終わった時刻が、始めた時刻（{eq['started_at'][:16]}）より前になっています", "error")
+        return _back_to("equipment")
+    result = _close_session(eq_id, outcome, ended.strftime("%Y-%m-%d %H:%M:%S"))
+    if result is None:
+        flash("この機材は使用中ではありません", "error")
+        return _back_to("equipment")
+    who = f"{result['worker']} さんの" if result["worker"] else ""
+    if not result["task"]:
+        what = "フリー利用を終了しました"
+    elif outcome == "done":
+        what = f"「{result['task']}」を完了にしました"
+    else:
+        what = f"「{result['task']}」を中断し、もう一度着手できる状態に戻しました"
+    print(f"[admin] {result['equipment']}: {who}{what}（代理）")
+    flash(f"{result['equipment']}：{who}{what}。機材は空きに戻りました", "ok")
+    return _back_to("equipment")
 
 
 def _detach_work_logs(conn, column, value):
@@ -1099,7 +1456,7 @@ def api_next_task(nfc_tag_id):
         return jsonify({"error": "unknown tag"}), 404
     rows = [dict(r) for r in conn.execute("""
         SELECT id, title, priority, difficulty, quantity, deadline, status, equipment_id,
-               required_permissions, assigned_worker_id
+               required_permissions, assigned_worker_id, designated
         FROM tasks
         WHERE status IN ('todo', 'assigned', 'in_progress')
           AND (assigned_worker_id = ? OR assigned_worker_id IS NULL)
@@ -1162,6 +1519,13 @@ def api_start_task(task_id):
               f"({'/'.join(lacking)}) task={task['title']}")
         return jsonify({"error": "permission denied", "missing": lacking,
                         "missing_labels": perms.labels(lacking)}), 403
+
+    # 担当者を指定したタスクは本人しか着手できない（D-3）。api_next_task は本人にしか
+    # 出さないが、このAPIは単体でも叩けるので二重に見る
+    if task["designated"] and task["assigned_worker_id"] not in (None, worker["id"]):
+        conn.close()
+        print(f"[{data.get('module_id')}] {worker['name']}: 担当者指定のため着手を拒否 task={task['title']}")
+        return jsonify({"error": "designated to another worker"}), 403
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     started_at = task["started_at"] or now
@@ -1848,6 +2212,10 @@ def _sync_module_state(device_id, eq_id):
     if row["status"] == "working":
         lines = [f"{row['worker_name'] or '?'} さん 使用中", row["task_title"] or "フリー利用"]
         led = "working" if row["task_title"] else "free"
+        # 見込みを大きく超えている。終了のタッチを忘れて立ち去った可能性が高いので、
+        # 機材の前を通った人（本人を含む）に分かるよう画面で促す
+        if eq_id in _overdue_now():
+            lines += ["終わっていたらタッチして", "「作業終了」を選んでください"]
     elif row["status"] in ("stopped", "maintenance"):
         lines = [row["name"], EQ_STATUS_LABELS.get(row["status"], row["status"])]
         led = "error"
@@ -2053,7 +2421,65 @@ def _handle_touch(device_id, module_id, tag_id):
                         ["他の人が使用中です", f"{worker['name']} さんは使用できません"], "working")
         return
 
+    # 別の機材で使用中のまま、こちらへ来た。終了のタッチを忘れている可能性が高い
+    closed = _ask_forgotten_session(device_id, module_id, worker, equipment)
+    if closed is None:
+        return
+    if closed:
+        # 終わらせたタスクが候補（誘導先の判断材料）に残らないよう取り直す
+        try:
+            body = requests.get(f"{SELF_URL}/api/workers/{tag_id}/next_task",
+                                params={"module_id": module_id}, timeout=HTTP_TIMEOUT).json()
+            tasks = body["tasks"] + body.get("elsewhere", [])
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"[{module_id}] 候補の取り直しに失敗: {e}")
+            return
+
     _show_menu(device_id, module_id, tag_id, worker, equipment, tasks)
+
+
+FORGOT_TIMEOUT = 25   # 「〇〇で作業中のままです。終了しますか？」の応答待ち秒数
+
+
+def _ask_forgotten_session(device_id, module_id, worker, equipment):
+    """
+    本人が別の機材を使用中のまま、この機材でタッチした。終了のタッチ忘れの
+    一番よくある形（次の作業へ移った）なので、その場で前の機材を終わらせるか尋ねる。
+
+    - はい   → 前の機材のタスクを完了にして空ける（所要時間は今まで）
+    - いいえ → 2台を同時に使っている。何もせずメニューへ進む
+    戻り値: 終わらせた機材の数 / None = 無応答（呼び出し側は何もせず終える）
+    """
+    conn = db.get_db()
+    others = conn.execute("""
+        SELECT e.id, e.name, t.title AS task_title FROM equipment e
+        LEFT JOIN tasks t ON t.id = e.current_task_id
+        WHERE e.status = 'working' AND e.current_worker_id = ? AND e.id != ?
+        ORDER BY e.updated_at""", (worker["id"], equipment["id"])).fetchall()
+    conn.close()
+    closed = 0
+    for other in others:
+        answer = request_confirm(
+            device_id, "前の作業を終了しますか？",
+            lines=[f"{other['name']} が", "使用中のままです", other["task_title"] or "フリー利用"],
+            timeout=FORGOT_TIMEOUT,
+            equipment_name=equipment.get("name"), worker_name=worker["name"],
+        )
+        if answer is None:
+            print(f"[{module_id}] {worker['name']}: 前の作業の確認で無応答のため中止")
+            _notify_briefly(device_id, module_id,
+                            ["応答がありませんでした", "もう一度タッチしてください"], "idle")
+            return None
+        if not answer:
+            print(f"[{module_id}] {worker['name']}: {other['name']} は使用中のまま続ける")
+            continue
+        result = _close_session(other["id"], "done")
+        if result:
+            closed += 1
+            print(f"[{module_id}] {worker['name']}: 終了タッチ忘れの {other['name']} を終了"
+                  + (f"（{result['task']}）" if result["task"] else "（フリー利用）"))
+            _notify_pause(device_id, [f"{other['name']} を", "終了しました"], "idle")
+    return closed
 
 
 # タッチ後に必ず出るメニュー。**タッチだけでは何も起きない。**
@@ -2147,6 +2573,9 @@ def _task_lines(task):
     detail = f"{task.get('quantity') or 1}個"
     if task.get("deadline"):
         detail += f" / 期限 {task['deadline']}"
+    # 管理者が本人を名指ししたタスク（D-3）。「なぜ自分に」が画面で分かるようにする
+    if task.get("designated"):
+        detail = "あなたが担当 / " + detail
     return [task["title"], detail]
 
 
@@ -2965,6 +3394,63 @@ def api_test_record(device_id):
     return jsonify({"ok": True})
 
 
+# ------------------------------------------------ 定期的な見回り
+BACKGROUND_INTERVAL_SEC = 60   # 見回りの間隔。どちらも分単位の精度で足りる
+
+# 終了のタッチ忘れを知らせ済みの使用: {(equipment_id, 使い始めた時刻)}。
+# 同じ使用について画面を何度も送り直さない（表示中の問い合わせを消してしまう）
+_forgot_notified: set = set()
+
+
+def check_forgotten_sessions():
+    """
+    見込みを大きく超えた使用中の機材を探し、モジュールの画面で終了を促す。
+    操作中のモジュールには送らない（次の見回りで送る）。知らせた機材の id を返す。
+    """
+    conn = db.get_db()
+    try:
+        overdue = _overdue_sessions(conn)
+        rows = {r["id"]: r for r in conn.execute(
+            "SELECT id, name, hostname, module_id, online FROM equipment WHERE status = 'working'")}
+    finally:
+        conn.close()
+    current = {(eq_id, info["since"]) for eq_id, info in overdue.items()}
+    # 終わった使用は忘れる（同じ機材の次の使用を、また知らせられるように）
+    _forgot_notified.intersection_update(current)
+    notified = []
+    for eq_id, info in overdue.items():
+        key = (eq_id, info["since"])
+        eq = rows.get(eq_id)
+        if key in _forgot_notified or eq is None:
+            continue
+        device_id = _device_id_of(eq)
+        if not device_id or not (eq["online"] or device_id in _virtual_modules):
+            continue
+        with _touch_busy_lock:
+            if device_id in _touch_busy:
+                continue
+        _forgot_notified.add(key)
+        print(f"[{device_id}] {eq['name']}: {info['elapsed_sec'] // 60}分 使用中のまま。"
+              f"終了タッチ忘れの可能性を画面に出しました")
+        _sync_module_state(device_id, eq_id)
+        notified.append(eq_id)
+    return notified
+
+
+def start_background_jobs():
+    """定期タスクの生成と、終了タッチ忘れの見回り。起動直後にも1回回す"""
+    def run():
+        while True:
+            try:
+                run_recurring()
+                check_forgotten_sessions()
+            except Exception as e:   # 見回りを止めない
+                print(f"[background] 見回りで例外: {e}")
+            time.sleep(BACKGROUND_INTERVAL_SEC)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 if __name__ == "__main__":
     db.init_db()
     _load_pending()
@@ -2979,4 +3465,5 @@ if __name__ == "__main__":
         start_discovery_responder()
         start_mqtt_bridge()
         start_stt_warmup()
+        start_background_jobs()
     app.run(debug=DEBUG, host="0.0.0.0", port=5000, threaded=True)

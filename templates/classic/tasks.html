@@ -38,6 +38,15 @@
         {% endfor %}
       </select>
     </div>
+    {# 担当者の指定（D-3）。指定するとその人にだけ提示され、AI割当でも変わらない #}
+    <div class="field"><label>担当者を指定（任意）</label>
+      <select class="input" name="assigned_worker_id">
+        <option value="">指定しない（AI・現場で決める）</option>
+        {% for w in worker_list %}
+        <option value="{{ w.id }}">{{ w.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div class="field span-all"><label>補足（任意）</label>
       <input class="input" type="text" name="description" placeholder="顧客案件・注意点など">
     </div>
@@ -46,6 +55,109 @@
     </div>
     <button type="submit" class="btn btn-primary">登録</button>
   </form>
+</section>
+
+{# 定期タスク。予定日になると自動でタスク一覧に1件ずつ追加される（recurring.py） #}
+<section class="form-panel">
+  <h4>定期タスク（毎日・毎週・毎月）</h4>
+  <p class="text-muted">登録しておくと、予定日にタスク一覧へ自動で追加されます。前回の分が終わっていない間は、新しく追加しません。</p>
+  {% if recurring_rules %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>タスク名</th><th>くり返し</th><th>次回</th><th>担当者</th><th>機材</th><th>優先度</th><th></th></tr></thead>
+      <tbody>
+      {% for r in recurring_rules %}
+        <tr class="{{ 'text-muted' if not r.active }}">
+          <td class="strong">{{ r.title }}{% if r.open_n %} <span class="tag tag-outline" title="前回の分が未完了のため、次の予定日まで新しく追加しません">前回分が未完了</span>{% endif %}</td>
+          <td>{{ r.schedule }}{% if r.deadline_days %}<span class="text-muted">（期限 {{ r.deadline_days }}日後）</span>{% endif %}</td>
+          <td class="mono">{{ (r.next_due or '—') if r.active else '停止中' }}</td>
+          <td>{{ r.worker_name or '指定なし' }}</td>
+          <td>{{ r.equipment_name or 'なし' }}</td>
+          <td><span class="badge badge-p-{{ r.priority }}">{{ P[r.priority] }}</span></td>
+          <td class="num row-actions">
+            <form method="post" action="{{ url_for('run_recurring_now', rule_id=r.id) }}">
+              <button type="submit" class="btn btn-sm btn-secondary" title="予定日を待たずに今すぐ1件追加します">今すぐ追加</button>
+            </form>
+            <form method="post" action="{{ url_for('toggle_recurring', rule_id=r.id) }}">
+              <button type="submit" class="btn btn-sm btn-secondary">{{ '一時停止' if r.active else '再開' }}</button>
+            </form>
+            <form method="post" action="{{ url_for('delete_recurring', rule_id=r.id) }}"
+                  data-confirm="定期タスク「{{ r.title }}」を削除しますか？（追加済みのタスクは残ります）" data-confirm-ok="削除する">
+              <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ r.title }} を削除">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
+              </button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <details class="task-edit">
+    <summary>定期タスクを登録</summary>
+    <form method="post" action="{{ url_for('add_recurring') }}" class="task-form-grid">
+      <div class="field"><label>タスク名 *</label>
+        <input class="input" type="text" name="title" placeholder="例：旋盤 週次点検" required>
+      </div>
+      <div class="field"><label>くり返し</label>
+        <select class="input" name="frequency">
+          {% for key, label in FREQ.items() %}
+          <option value="{{ key }}" {{ 'selected' if key == 'weekly' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>日にち（毎月のとき）</label>
+        <input class="input" type="number" name="month_day" min="1" max="31" placeholder="例：1">
+      </div>
+      <div class="field"><label>期限（予定日から何日後）</label>
+        <input class="input" type="number" name="deadline_days" min="0" value="0">
+      </div>
+      <div class="field span-all"><label>曜日（毎週のとき）</label>
+        <div class="perm-checks">
+          {% for d in WEEKDAYS %}
+          <label class="perm-check"><input type="checkbox" name="weekdays" value="{{ loop.index0 }}"><span>{{ d }}</span></label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="field"><label>担当者を指定（任意）</label>
+        <select class="input" name="worker_id">
+          <option value="">指定しない</option>
+          {% for w in worker_list %}
+          <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>機材（任意）</label>
+        <select class="input" name="equipment_id">
+          <option value="">機材なし</option>
+          {% for e in equipment_list %}
+          <option value="{{ e.id }}">{{ e.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>優先度</label>
+        <select class="input" name="priority">
+          {% for key, label in P.items() %}
+          <option value="{{ key }}" {{ 'selected' if key == 'normal' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>難易度（1〜5）</label>
+        <input class="input" type="number" name="difficulty" min="1" max="5" value="3">
+      </div>
+      <div class="field"><label>数量</label>
+        <input class="input" type="number" name="quantity" min="1" value="1">
+      </div>
+      <div class="field span-all"><label>補足（任意）</label>
+        <input class="input" type="text" name="description" placeholder="点検項目・注意点など">
+      </div>
+      <div class="field span-all"><label>必要権限</label>
+        {{ perm_checks('required_permissions', []) }}
+      </div>
+      <button type="submit" class="btn btn-primary">定期タスクを登録</button>
+    </form>
+  </details>
 </section>
 
 <section class="form-panel">
@@ -156,9 +268,11 @@
     <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
     <h3>{{ t.title }}</h3>
     <span class="badge badge-status">{{ S[t.status] }}</span>
+    {% if t.recurring_id %}<span class="tag tag-outline" title="定期タスクから自動で追加されました">定期</span>{% endif %}
     <div class="task-tools">
-      {# 作業中は割り当て直さない（着手した人の機材が使用中のまま食い違う） #}
-      {% if t.status != 'in_progress' %}
+      {# 作業中は割り当て直さない（着手した人の機材が使用中のまま食い違う）。
+         担当者を指定したタスクも出さない（指定を外すまでAIでは変えない） #}
+      {% if t.status != 'in_progress' and not (t.designated and t.assigned_worker_id) %}
       <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
       {% endif %}
       <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">{{ trash_icon() }}</button>
@@ -166,6 +280,7 @@
   </div>
   <div class="task-meta">
     <span class="{{ 'strong' if t.worker_name else 'unassigned' }}">担当 {{ t.worker_name or '未割当' }}</span>
+    {% if t.designated and t.worker_name %}<span class="tag tag-accent-2" title="管理者が指定した担当者です。この人にだけ提示され、AI割当では変わりません">指定</span>{% endif %}
     　・　機材 {{ t.equipment_name or 'なし' }}
     　・　難易度 {{ t.difficulty }}/5　・　数量 {{ t.quantity }}　・　期限 {{ t.deadline or 'なし' }}
     {% if t.description %}　・　{{ t.description }}{% endif %}
@@ -182,7 +297,7 @@
       {% if locked %}
       <p class="text-muted span-all">作業中のため、担当者と機材は完了するまで変更できません。</p>
       {% endif %}
-      <div class="field"><label>担当者</label>
+      <div class="field"><label title="ここで選んだ人は「指定」になり、その人にだけ提示されます">担当者（選ぶと指定）</label>
         <select class="input" name="assigned_worker_id" title="担当者" {{ 'disabled' if locked }}>
           <option value="">担当者なし</option>
           {% for w in worker_list %}

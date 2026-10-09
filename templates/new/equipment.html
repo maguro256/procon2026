@@ -58,6 +58,46 @@
 </details>
 {% endif %}
 
+{# 終了のタッチを忘れた作業を管理者が代わりに終わらせる。所要時間はAIの学習に
+   使うので、終わった時刻を入れてもらう（忘れていた時間を作業時間に数えない） #}
+{% macro finish_form(e) %}
+<form method="post" action="{{ url_for('finish_equipment', eq_id=e.id) }}" class="bind-form"
+      data-confirm="「{{ e.name }}」の作業を代わりに終了しますか？" data-confirm-ok="終了する">
+  {% if e.task_title %}
+  <select class="input" name="outcome" title="タスクの扱い">
+    <option value="done">完了にする</option>
+    <option value="abort">終わっていない（未着手に戻す）</option>
+  </select>
+  {% endif %}
+  <label class="inline-field"><span>終わった時刻</span>
+    <input class="input" type="datetime-local" name="ended_at" value="{{ now }}">
+  </label>
+  <button type="submit" class="btn btn-primary btn-sm">代わりに終了</button>
+</form>
+{% endmacro %}
+
+{% set working = equipment|selectattr('status', 'equalto', 'working')|list %}
+{% if working %}
+{# 見出しを押すと最小化できる。終了タッチ忘れの機材が増えたら開き直す（base.html の applyFolds） #}
+<details class="callout form-panel callout-fold" open data-fold="working-equipment"
+         data-fold-items='{{ overdue|list|tojson }}'>
+  <summary>
+    <h4>使用中の機材（{{ working|length }}台{% if overdue %}・うち終了タッチ忘れの可能性 {{ overdue|length }}台{% endif %}）</h4>
+    <span class="callout-fold-toggle"><span class="when-open">最小化 ▴</span><span class="when-closed">開く ▾</span></span>
+  </summary>
+  <p class="callout-lead">作業が終わっているのに使用中のままの機材は、ここから代わりに終了できます。終わった時刻を入れると、その時刻までを作業時間として記録します。</p>
+  {% for e in working %}
+  <div class="callout-row">
+    <p><strong>{{ e.name }}</strong>
+      <span class="text-muted">— {{ e.worker_name or '?' }} さん・{{ e.task_title or 'フリー利用' }}・{{ e.since[5:16]|replace('-', '/') if e.since else '' }} から</span>
+      {% if e.id in overdue %}<span class="badge badge-overdue" title="見込み時間を大きく超えています">終了タッチ忘れ？（{{ overdue[e.id].elapsed_sec // 60 }}分）</span>{% endif %}
+    </p>
+    {{ finish_form(e) }}
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
+
 {% macro eq_item(e) %}
 {# モジュールを紐付けてあるのに繋がっていない機材。タッチしても何も起きない #}
 {% set offline = e.hostname and not e.online %}

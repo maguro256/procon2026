@@ -44,6 +44,38 @@
   </form>
 </section>
 
+{# 終了のタッチを忘れた作業を管理者が代わりに終わらせる。所要時間はAIの学習に
+   使うので、終わった時刻を入れてもらう（忘れていた時間を作業時間に数えない） #}
+{% set working = equipment|selectattr('status', 'equalto', 'working')|list %}
+{% if working %}
+<section class="form-panel">
+  <h4>使用中の機材（終了のタッチ忘れの対応）</h4>
+  <p class="text-muted">作業が終わっているのに使用中のままの機材は、ここから代わりに終了できます。終わった時刻を入れると、その時刻までを作業時間として記録します。</p>
+  {% for e in working %}
+  <div class="callout-row">
+    <p>
+      <strong>{{ e.name }}</strong>
+      <span class="text-muted">— {{ e.worker_name or '?' }} さん・{{ e.task_title or 'フリー利用' }}・{{ e.since[5:16]|replace('-', '/') if e.since else '' }} から</span>
+      {% if e.id in overdue %}<span class="badge badge-overdue" title="見込み時間を大きく超えています">終了タッチ忘れ？（{{ overdue[e.id].elapsed_sec // 60 }}分）</span>{% endif %}
+    </p>
+    <form method="post" action="{{ url_for('finish_equipment', eq_id=e.id) }}" class="bind-form"
+          data-confirm="「{{ e.name }}」の作業を代わりに終了しますか？" data-confirm-ok="終了する">
+      {% if e.task_title %}
+      <select class="input" name="outcome" title="タスクの扱い">
+        <option value="done">完了にする</option>
+        <option value="abort">終わっていない（未着手に戻す）</option>
+      </select>
+      {% endif %}
+      <label class="text-muted">終わった時刻
+        <input class="input input-sm" type="datetime-local" name="ended_at" value="{{ now }}">
+      </label>
+      <button type="submit" class="btn btn-primary btn-sm">代わりに終了</button>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
 <h3 class="section-title">登録済み機材（{{ equipment|length }}台）</h3>
 <details class="tech-toggle">
   <summary>詳しい設定（最終通信を表示）</summary>
