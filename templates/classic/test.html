@@ -26,7 +26,7 @@
   <p class="form-note text-muted" id="vmAddError" hidden></p>
   <p class="form-note text-muted">
     機材を選ぶと、そのモジュールIDで機材に紐付けてから起動します。実機と同じIDにすると、起動している間は実機の代わりにこちらへ指示が届きます。
-    ブラウザのキーボードでも操作できます（← → で選択、Enter で決定）。
+    ブラウザのキーボードでも操作できます（← → で選択、Enter で決定）。決定ボタンを2秒押し続けると長押し（集合待ちの取り消し）になります。
   </p>
 </section>
 
@@ -203,8 +203,23 @@
       try { await api(moduleUrl(id), "DELETE"); } catch (e) { /* もう居ない */ }
       poll();
     });
-    el.querySelectorAll(".vm-btn").forEach(b =>
-      b.addEventListener("click", () => press(id, { button: b.dataset.button })));
+    // 決定は長押し（2秒）もできる。問い合わせが無いときの長押しは集合待ちの取り消し（実機と同じ）
+    el.querySelectorAll(".vm-btn").forEach(b => {
+      let holdTimer = null, held = false;
+      if (b.dataset.button === "ok") {
+        const release = () => { clearTimeout(holdTimer); holdTimer = null; };
+        b.addEventListener("pointerdown", () => {
+          held = false;
+          release();
+          holdTimer = setTimeout(() => { held = true; press(id, { button: "ok", hold: true }); }, LONG_PRESS_MS);
+        });
+        ["pointerup", "pointerleave", "pointercancel"].forEach(t => b.addEventListener(t, release));
+      }
+      b.addEventListener("click", () => {
+        if (held) { held = false; return; }   // 長押しを送った後の click は捨てる
+        press(id, { button: b.dataset.button });
+      });
+    });
     el.querySelector(".vm-screen").addEventListener("click", e => {
       const chip = e.target.closest("[data-select]");
       if (chip) press(id, { select: Number(chip.dataset.select) });
@@ -256,6 +271,8 @@
     timer.textContent = "エラー: " + err.message;
     setTimeout(() => timer.classList.remove("is-error"), 3000);
   }
+
+  const LONG_PRESS_MS = 2000;   // gemmba.cpp / raspi.py の長押しと同じ
 
   async function press(id, body) {
     try { await api(moduleUrl(id, "/button"), "POST", body); } catch (e) { /* 次の周期で整合する */ }

@@ -2715,7 +2715,7 @@ def _sync_module_state(device_id, eq_id):
     if row["status"] == "gathering":
         need = row["need"] or 1
         lines = [row["task_title"] or "?", f"{row['have']}/{need}人 集合待ち",
-                 f"あと{max(need - row['have'], 0)}人 社員証をタッチ"]
+                 f"あと{max(need - row['have'], 0)}人 社員証をタッチ", "決定ボタン長押しで取り消し"]
         led = "gathering"
     elif row["status"] == "working":
         who = f"{row['worker_name'] or '?'} さん"
@@ -2817,7 +2817,11 @@ def _mqtt_on_message(client, userdata, msg):
 
 
 def _handle_data(device_id, payload):
-    """NFCタッチ（pi/<device_id>/data）。仮想モジュールのタッチもここへ入る"""
+    """NFCタッチ（pi/<device_id>/data）。仮想モジュールのタッチもここへ入る。
+    ボタンの長押し（{"event": "long_press", "button": "ok"}）も同じトピックで届く"""
+    if payload.get("event") == "long_press":
+        _handle_long_press(device_id, payload.get("button"))
+        return
     tag_id = payload.get("tag_id")
     if not tag_id:
         print(f"[{device_id}] payload missing tag_id")
@@ -2829,6 +2833,36 @@ def _handle_data(device_id, payload):
         _notify(device_id, ["未登録のモジュールです", "機材管理画面で紐付けてください"], "error")
         return
     _dispatch_touch(device_id, module_id, tag_id)
+
+
+def _handle_long_press(device_id, button):
+    """
+    問い合わせが出ていないときの、決定ボタンの長押し。集合待ちならそれを取り消す。
+    社員証を読まないので誰が押したかは分からないが、取り消しても集合前に戻るだけで
+    実績は何も消えないので、その場にいる誰でも取り消せるようにしてある
+    （来ない人を待ち続けて機材がふさがるのを、時間切れより先に解きたい）。
+    """
+    if button != "ok":
+        return
+    module_id = _resolve_module_id(device_id)
+    if not module_id:
+        return
+    conn = db.get_db()
+    eq = conn.execute("SELECT id, status FROM equipment WHERE module_id = ?", (module_id,)).fetchone()
+    conn.close()
+    if not eq or eq["status"] != "gathering":
+        print(f"[{module_id}] 決定の長押し（集合待ちではないので何もしません）")
+        return
+    with _touch_busy_lock:
+        if device_id in _touch_busy:
+            # 誰かがタッチして参加・取り消しを操作している。そちらを優先する
+            print(f"[{module_id}] 操作中なので決定の長押しを無視しました")
+            return
+    g = _cancel_gathering(eq["id"])
+    if not g:
+        return
+    print(f"[{module_id}] 決定の長押しで「{g['title']}」の集合待ちを取り消しました")
+    _notify_briefly(device_id, module_id, ["集合待ちを取り消しました", g["title"]], "idle", sec=4)
 
 
 def _handle_presence(device_id, payload):
@@ -3928,9 +3962,22 @@ def api_test_button(device_id):
     """
     物理ボタン（左/決定/右）。{"button": "left"|"ok"|"right"}
     {"select": n} は画面の選択肢を直接指したとき（カーソルだけ動かす）。
+    {"button": "ok", "hold": true} は決定の長押し（問い合わせが無いときだけ。集合待ちの取り消し）。
     """
     data = request.get_json(silent=True) or {}
     button = data.get("button")
+    with _virtual_lock:
+        vm = _virtual_modules.get(device_id)
+        if vm is None:
+            return jsonify({"error": "not running"}), 404
+        choice = vm["choice"]
+        # 実機も、問い合わせ中の長押しは送らない（押した時点で答えになる）
+        long_press = bool(data.get("hold")) and button == "ok" and not choice
+        if long_press:
+            _virtual_log(vm, "up", "決定の長押し")
+    if long_press:
+        _handle_data(device_id, {"device_id": device_id, "event": "long_press", "button": "ok"})
+        return jsonify({"ok": True})
     with _virtual_lock:
         vm = _virtual_modules.get(device_id)
         if vm is None:

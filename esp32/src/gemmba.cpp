@@ -58,6 +58,8 @@ static constexpr uint32_t TOUCH_RELEASE_MS = 1000;
 static constexpr uint32_t TOUCH_POLL_MS = 100;
 
 static constexpr uint32_t BUTTON_DEBOUNCE_MS = 50;  // 2台目のボタンは 20ms では揺れが残った
+// 問い合わせが出ていないときに決定をこの時間押し続けると、長押しとしてサーバーへ送る（集合待ちの取り消し）
+static constexpr uint32_t LONG_PRESS_MS = 2000;
 
 static constexpr float REC_MAX_SEC = 30;
 static constexpr uint32_t REC_MIN_MS = 600;  // これより短い押下は押し間違いとみなして捨てる
@@ -413,6 +415,7 @@ static void set_led(const String& state) {
 struct Button {
   int stable = HIGH, last_raw = HIGH;
   uint32_t changed_at = 0;
+  uint32_t pressed_at = 0;  // 最後に押された時刻（押下が確定した時点）
 };
 static Button buttons[BTN_COUNT];
 static std::vector<Btn> button_events;
@@ -432,7 +435,10 @@ static void buttons_scan() {
     }
     if (raw != b.stable && now - b.changed_at >= BUTTON_DEBOUNCE_MS) {
       b.stable = raw;
-      if (raw == LOW) button_events.push_back((Btn)i);
+      if (raw == LOW) {
+        b.pressed_at = now;
+        button_events.push_back((Btn)i);
+      }
     }
   }
 }
@@ -542,6 +548,37 @@ static void start_ask(JsonDocument& p, bool yes_no) {
   ask.request_id = json_str(p["request_id"]);
   ask.deadline = millis() + (uint32_t)((p["timeout"] | 30.0f) * 1000);
   button_events.clear();  // 問い合わせ前の押下は捨てる
+}
+
+// 決定の長押し。問い合わせが出ていない（押しても何も起きない）ときの押下だけを数える。
+// 問い合わせに「はい」で答えた指がそのまま載っていても、長押しにはしない。
+// ask_service より先に呼ぶこと（後だと、答えた直後で ask.active が落ちていて区別できない）
+static void long_press_service() {
+  static uint32_t seen_at = 0;
+  static bool armed = false;
+  const Button& b = buttons[BTN_OK];
+  if (b.stable != LOW) {
+    armed = false;
+    return;
+  }
+  uint32_t now = millis();
+  if (b.pressed_at != seen_at) {
+    seen_at = b.pressed_at;
+    // 録音などで loop が止まっていた間に押された分は、押した時点の状態が分からないので数えない
+    armed = !ask.active && now - b.pressed_at < 300;
+  }
+  if (!armed || now - b.pressed_at < LONG_PRESS_MS) return;
+  armed = false;  // 1回の押下で1回だけ送る
+  logf("[BTN] 決定の長押し");
+  if (!mqtt.connected()) {
+    logf("[BTN] ブローカー未接続のため送れません");
+    return;
+  }
+  JsonDocument doc;
+  doc["device_id"] = device_id;
+  doc["event"] = "long_press";
+  doc["button"] = "ok";
+  publish_json(data_topic, doc);
 }
 
 static void ask_service() {
@@ -1147,6 +1184,7 @@ void loop() {
   }
   mqtt_service();
   buttons_scan();
+  long_press_service();
   ask_service();
   if (record_pending) handle_record();
   if (restart_pending) handle_restart();

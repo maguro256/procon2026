@@ -1086,9 +1086,30 @@ BUTTON_PINS = {
 _button_events = queue.Queue()
 _buttons = {}
 
+# 問い合わせが出ていないときに決定をこの秒数押し続けると、長押しとしてサーバーへ送る
+# （集合待ちの取り消し）。gemmba.cpp の LONG_PRESS_MS と同じ
+LONG_PRESS_SEC = 2.0
+# armed … 今の決定の押下を長押しとして数えるか。押した時点で決める。
+#         問い合わせに「はい」で答えた指がそのまま載っていても、長押しにはしない
+_long_press = {"armed": False, "recording": False}
+
 
 def _on_press(name):
-    return lambda: _button_events.put(name)
+    def pressed():
+        if name == "ok":
+            _long_press["armed"] = _screen["choice"] is None and not _long_press["recording"]
+        _button_events.put(name)
+    return pressed
+
+
+def _on_ok_held():
+    if not _long_press["armed"]:
+        return
+    _long_press["armed"] = False   # 1回の押下で1回だけ送る
+    print("[BTN] 決定の長押し")
+    client.publish(DATA_TOPIC, json.dumps({
+        "device_id": DEVICE_ID, "event": "long_press", "button": "ok",
+    }), qos=1)
 
 
 def init_buttons():
@@ -1106,8 +1127,11 @@ def init_buttons():
     try:
         for name, pin in BUTTON_PINS.items():
             # bounce_time でチャタリング除去まで済む
-            button = Button(pin, pull_up=True, bounce_time=0.05)
+            button = Button(pin, pull_up=True, bounce_time=0.05,
+                            hold_time=LONG_PRESS_SEC if name == "ok" else 1.0)
             button.when_pressed = _on_press(name)
+            if name == "ok":
+                button.when_held = _on_ok_held
             _buttons[name] = button
     except Exception as e:
         print(f"[BTN] 開けません（{e}）。キーボード入力に落とします。")
@@ -1284,8 +1308,14 @@ def _handle_record(payload):
     if not url:
         publish_reply({"request_id": request_id, "answer": False, "error": "no url"})
         return
-    path = record_while_held(float(payload.get("max_sec", REC_MAX_SEC)),
-                             float(payload.get("wait_sec", 30)))
+    # 録音のための押下を長押し（集合待ちの取り消し）と取り違えない
+    _long_press["recording"] = True
+    try:
+        path = record_while_held(float(payload.get("max_sec", REC_MAX_SEC)),
+                                 float(payload.get("wait_sec", 30)))
+    finally:
+        _long_press["recording"] = False
+        _long_press["armed"] = False
     if path is None:
         publish_reply({"request_id": request_id, "answer": False, "error": "no audio"})
         return

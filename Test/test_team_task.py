@@ -142,7 +142,8 @@ check("集合待ちのタスクはAIで割り当て直せない",
 # モジュールの画面
 sent.clear()
 app._sync_module_state("pi-a", 1)
-check("集合待ちの画面", sent[-1], ("pi-a", ["大型部品の吊り上げ", "1/2人 集合待ち", "あと1人 社員証をタッチ"],
+check("集合待ちの画面", sent[-1], ("pi-a", ["大型部品の吊り上げ", "1/2人 集合待ち", "あと1人 社員証をタッチ",
+                                   "決定ボタン長押しで取り消し"],
                                    "gathering"))
 
 # 権限の無い鈴木さんが最後の1人として加わろうとする → 断る
@@ -259,6 +260,35 @@ sent.clear()
 check("時間切れを見回りで取り消す", app.cancel_stale_gatherings(now=later), [2])
 check("モジュールに知らせる", sent[-1][1][0], "人数がそろいませんでした")
 check("タスクは未着手に戻る", one("SELECT status FROM tasks WHERE id = ?", three)["status"], "todo")
+
+# ---------------------------------------------------------------- 決定ボタンの長押しで取り消し
+client.post(f"/api/tasks/{three}/start", json={"nfc_tag_id": "T3", "module_id": "MOD-B"})
+app._join_gathering(2, 4)
+sent.clear()
+app._sync_module_state("pi-b", 2)
+check("集合待ちの画面に取り消し方", sent[-1][1][-1], "決定ボタン長押しで取り消し")
+
+# 誰かがタッチして操作している間は、そちらを優先する
+app._touch_busy["pi-b"] = 0
+app._handle_data("pi-b", {"device_id": "pi-b", "event": "long_press", "button": "ok"})
+check("操作中の長押しは無視", one("SELECT status FROM equipment WHERE id = 2")["status"], "gathering")
+app._touch_busy.pop("pi-b", None)
+
+app._handle_data("pi-b", {"device_id": "pi-b", "event": "long_press", "button": "left"})
+check("決定以外の長押しは無視", one("SELECT status FROM equipment WHERE id = 2")["status"], "gathering")
+
+sent.clear()
+app._handle_data("pi-b", {"device_id": "pi-b", "event": "long_press", "button": "ok"})
+check("長押しで機材は空き", one("SELECT status, current_task_id FROM equipment WHERE id = 2"),
+      {"status": "idle", "current_task_id": None})
+check("長押しでタスクは集合前に戻る", one("SELECT status FROM tasks WHERE id = ?", three)["status"], "todo")
+check("長押しでメンバーも外れる", q("SELECT * FROM task_members WHERE task_id = ?", three), [])
+check("長押しの取り消しを知らせる", sent[-1][1], ["集合待ちを取り消しました", "3人で搬入"])
+
+sent.clear()
+app._handle_data("pi-b", {"device_id": "pi-b", "event": "long_press", "button": "ok"})
+check("集合待ちでなければ長押しは何もしない", (one("SELECT status FROM equipment WHERE id = 2")["status"], sent),
+      ("idle", []))
 
 # ---------------------------------------------------------------- 作業者の削除
 client.post(f"/api/tasks/{three}/start", json={"nfc_tag_id": "T3", "module_id": "MOD-B"})
