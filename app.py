@@ -646,6 +646,12 @@ def auto_assign(task_id):
         conn.close()
         flash("タスクが見つかりません", "error")
         return _back_to("tasks")
+    # 割り当てると状態が 'assigned' に上書きされる。作業中のタスクは着手の記録と
+    # 機材のロックが食い違い、完了済みのタスクは未完了に戻ってしまうので断る
+    if task["status"] in ("in_progress", "done"):
+        conn.close()
+        flash(f"「{task['title']}」は{STATUS_LABELS[task['status']]}のため、AIで割り当て直せません", "error")
+        return _back_to("tasks")
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)
     # 権限（D-2）はハード制約なので、学習器に渡す前に候補から落とす。
