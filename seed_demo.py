@@ -14,7 +14,6 @@ JSONの形は demo/factory.json を参照。permissions / required_permissions �
 """
 import argparse
 import json
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -111,7 +110,7 @@ def main():
         backup = db.DB_PATH.with_name(
             f"{db.DB_PATH.name}.before-reset-{datetime.now():%Y%m%d-%H%M%S}"
         )
-        shutil.copy2(db.DB_PATH, backup)
+        db.backup_to(backup)
         print(f"リセット前のDBを {backup.name} に退避しました")
 
     factory = load_factory(path)
