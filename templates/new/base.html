@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Gemmba 管理{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='new/style.css') }}">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-plate">
+        <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Gemmba">
+      </div>
+      <div class="brand-sub"style="font-size: 20px;">管理者画面</div>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="{{ url_for('dashboard') }}" class="navlink {{ 'active' if request.endpoint == 'dashboard' }}">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        使用状況</a>
+      <a href="{{ url_for('tasks') }}" class="navlink {{ 'active' if request.endpoint == 'tasks' }}">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3.5h6v2H9z"/><path d="M8.5 12.5l2 2 4-4.5"/></svg>
+        仕事</a>
+      <a href="{{ url_for('workers') }}" class="navlink {{ 'active' if request.endpoint == 'workers' }}">
+        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.4-4 4-6 7.5-6s6.1 2 7.5 6"/></svg>
+        作業者</a>
+      <a href="{{ url_for('equipment') }}" class="navlink {{ 'active' if request.endpoint == 'equipment' }}">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 3.3l2 2-2.4 2.4 2 2 2.4-2.4 2 2c.5 1.7.1 3.6-1.2 4.9-1.5 1.5-3.7 1.8-5.5 1l-6.4 6.4a1.8 1.8 0 0 1-2.5-2.5l6.4-6.4c-.8-1.8-.5-4 1-5.5 1.3-1.3 3.2-1.7 4.9-1.2z"/></svg>
+        機材</a>
+      {% if test_mode %}
+      <a href="{{ url_for('test_page') }}" class="navlink {{ 'active' if request.endpoint == 'test_page' }}">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><rect x="7" y="6" width="10" height="7" rx="1"/><circle cx="8.5" cy="17" r="1"/><circle cx="12" cy="17" r="1"/><circle cx="15.5" cy="17" r="1"/></svg>
+        テスト</a>
+      {% endif %}
+    </nav>
+
+    {# 新UI（デモ用）で開いていることの表示と、旧UI（審査用）へ戻す口。
+       旧UIの側には何も置かない（審査の画面に切り替えの存在を出さないため）。
+       /ui/new・/ui/classic を直接開いても切り替わる（app.py の switch_ui） #}
+    <div class="sidebar-foot ui-switch">
+      <span class="ui-switch-state">新UI（デモ用）</span>
+      <a class="ui-switch-link" href="{{ url_for('switch_ui', choice='classic', next=request.full_path if request.query_string else request.path) }}">旧UIに戻す</a>
+    </div>
+
+    {# テストモード（/test の仮想モジュール）の切り替え。本番では OFF。
+       サイドバー自体が変わるので、ページごと送信する（data-full-submit） #}
+    <form method="post" action="{{ url_for('toggle_test_mode') }}" class="sidebar-foot test-mode" data-full-submit>
+      <input type="hidden" name="on" value="{{ '0' if test_mode else '1' }}">
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <span class="test-mode-state {{ 'is-on' if test_mode }}">テストモード {{ 'ON' if test_mode else 'OFF' }}</span>
+      <button type="submit" class="btn btn-sm test-mode-btn">{{ 'OFF にする' if test_mode else 'ON にする' }}</button>
+    </form>
+  </aside>
+
+  <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {# 画面右上に重ねて出す。一覧の下の方で操作しても結果が見えるように #}
+        <div class="flashes" role="status" aria-live="polite">
+        {% for category, msg in messages %}
+          <div class="flash flash-{{ 'ok' if category == 'ok' else 'error' }}">
+            {% if category == 'ok' %}
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>
+            {% else %}
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>
+            {% endif %}
+            <div>{{ msg }}</div>
+          </div>
+        {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+
+{# モジュールで操作があったことだけを右上に小さく知らせる。答えるのは現場のモジュール側。
+   <main> の差し替えで消えないよう、.flashes とは別に <main> の外に置く #}
+<div class="module-toasts" id="moduleToasts" role="status" aria-live="polite"></div>
+
+{# 削除・再起動など取り消せない操作の確認。data-confirm を付けたフォームで出る。
+   ブラウザ標準の confirm() は見た目が OS 任せで、何が消えるのかが読みにくいため #}
+<div class="modal-backdrop" id="askModal" hidden>
+  <div class="modal card" role="alertdialog" aria-modal="true" aria-labelledby="askTitle" aria-describedby="askText">
+    <div class="modal-head">
+      <span class="modal-badge badge-danger">確認</span>
+      <h4 id="askTitle">この操作は取り消せません</h4>
+    </div>
+    <p class="ask-text" id="askText"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="askCancel">やめる</button>
+      <button type="button" class="btn btn-danger" id="askOk">実行する</button>
+    </div>
+  </div>
+</div>
+
+{# 未登録ICカードがタッチされたら、どの画面にいても登録フォームを出す #}
+<div class="modal-backdrop" id="tagModal" hidden>
+  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="tagModalTitle">
+    <div class="modal-head">
+      <span class="modal-badge">未登録</span>
+      <h4 id="tagModalTitle">ICカードがタッチされました</h4>
+    </div>
+    <p class="text-muted modal-lead">
+      未登録のICカードです。名前と勤続年数を入力すると、このカードの持ち主として登録されます。
+      すでに登録済みの人のカードなら、下の欄からその人に紐付けてください。
+    </p>
+    <dl class="modal-facts">
+      <dt>タグID</dt><dd class="mono" id="tagModalId"></dd>
+      <dt>タッチされた機材</dt><dd id="tagModalWhere"></dd>
+    </dl>
+    <form method="post" action="{{ url_for('add_worker') }}" class="modal-form">
+      <input type="hidden" name="nfc_tag_id" id="tagModalTagInput">
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <div class="field"><label>名前 *</label>
+        <input class="input" type="text" name="name" id="tagModalName" placeholder="例：山田 太郎" required>
+      </div>
+      <div class="field"><label>勤続年数 *</label>
+        <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" id="tagModalLater">後で</button>
+        <button type="submit" class="btn btn-primary">このカードで登録</button>
+      </div>
+    </form>
+    {# ICタグIDを空欄のまま登録してあった人のカードなら、新規登録せずその人に紐付ける。
+       候補はポーリング（/api/pending）で埋める。候補が無ければ欄ごと隠す #}
+    <form method="post" action="{{ url_for('link_worker_tag') }}" class="modal-form modal-link" id="tagModalLinkForm" hidden>
+      <input type="hidden" name="nfc_tag_id" id="tagModalLinkTag">
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <div class="field"><label>登録済みの作業者に紐付ける</label>
+        <select class="input" name="worker_id" id="tagModalLinkWorker" required>
+          <option value="">ICタグ未紐付けの作業者を選ぶ</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-secondary">この人に紐付け</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  const modal = document.getElementById("tagModal");
+  const idEl = document.getElementById("tagModalId");
+  const whereEl = document.getElementById("tagModalWhere");
+  const tagInput = document.getElementById("tagModalTagInput");
+  const nameInput = document.getElementById("tagModalName");
+  const linkForm = document.getElementById("tagModalLinkForm");
+  const linkTag = document.getElementById("tagModalLinkTag");
+  const linkWorker = document.getElementById("tagModalLinkWorker");
+  // 一度出したタッチ。タブの移動はページごと読み直すので、JSの変数だと消えて
+  // 画面を移るたびに同じポップアップが出てしまう。sessionStorage に残す。
+  // 同じカードをもう一度タッチすれば touch が変わるので、また出る
+  const SEEN_KEY = "gemmba.seenTagTouches";
+  function loadSeen() {
+    try { return new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY)) || []); }
+    catch (e) { return new Set(); }
+  }
+  const seen = loadSeen();
+  function markSeen(touch) {
+    seen.add(touch);
+    try { sessionStorage.setItem(SEEN_KEY, JSON.stringify([...seen].slice(-50))); }
+    catch (e) { /* 保存できなくても、このページの中では二度出さない */ }
+  }
+  let showing = null;
+  let unlinkedKey = "";
+
+  // 紐付け候補（ICタグ未紐付けの作業者）を差し替える。選んでいる人はそのまま残す
+  function setUnlinked(workers) {
+    const key = workers.map(w => w.id + ":" + w.name).join("|");
+    if (key === unlinkedKey) return;
+    unlinkedKey = key;
+    const selected = linkWorker.value;
+    linkWorker.length = 1;   // 先頭の「選ぶ」だけ残す
+    workers.forEach(function (w) {
+      const o = document.createElement("option");
+      o.value = w.id;
+      o.textContent = w.name;
+      linkWorker.appendChild(o);
+    });
+    linkWorker.value = workers.some(w => String(w.id) === selected) ? selected : "";
+    linkForm.hidden = !workers.length;
+  }
+
+  function open(tag) {
+    showing = tag.tag_id;
+    markSeen(tag.touch);
+    idEl.textContent = tag.tag_id;
+    whereEl.textContent = tag.equipment_name || tag.module_id || "不明";
+    tagInput.value = tag.tag_id;
+    linkTag.value = tag.tag_id;
+    modal.hidden = false;
+    nameInput.focus();
+  }
+
+  function close() {
+    showing = null;
+    modal.hidden = true;
+    nameInput.value = "";
+    linkWorker.value = "";
+  }
+
+  document.getElementById("tagModalLater").addEventListener("click", close);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !modal.hidden) close();
+  });
+
+  // ---- モジュールでの操作の通知 ----
+  // タッチ後の選択などはモジュール側で答えるので、ここでは右上に小さく知らせるだけ。
+  // 一度出した応答待ちは画面を移っても出し直さない（タグ登録と同じく sessionStorage に残す）
+  const toastBox = document.getElementById("moduleToasts");
+  const TOASTED_KEY = "gemmba.toastedConfirms";
+  const TOAST_MS = 5000;
+  let toasted;
+  try { toasted = new Set(JSON.parse(sessionStorage.getItem(TOASTED_KEY)) || []); }
+  catch (e) { toasted = new Set(); }
+
+  function dismissToast(t) {
+    if (t.classList.contains("is-leaving")) return;
+    t.classList.add("is-leaving");
+    setTimeout(() => t.remove(), 200);
+  }
+
+  function showToast(c) {
+    toasted.add(c.request_id);
+    try { sessionStorage.setItem(TOASTED_KEY, JSON.stringify([...toasted].slice(-50))); }
+    catch (e) { /* 保存できなくても、このページの中では二度出さない */ }
+    const t = document.createElement("div");
+    t.className = "module-toast";
+    const body = document.createElement("div");
+    const where = document.createElement("strong");
+    where.textContent = c.equipment_name || c.device_id;
+    const what = document.createElement("span");
+    what.textContent = [c.worker_name && c.worker_name + " さん", c.text].filter(Boolean).join(" · ") || "操作がありました";
+    body.append(where, what);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "flash-close";
+    x.setAttribute("aria-label", "閉じる");
+    x.textContent = "×";
+    x.addEventListener("click", () => dismissToast(t));
+    t.append(body, x);
+    toastBox.appendChild(t);
+    while (toastBox.children.length > 3) toastBox.firstChild.remove();
+    setTimeout(() => dismissToast(t), TOAST_MS);
+  }
+
+  async function poll() {
+    let data;
+    try {
+      const res = await fetch("{{ url_for('api_pending') }}", { cache: "no-store" });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) {
+      return;  // app.py の再起動中など。次の周期で拾い直す
+    }
+
+    // /test では仮想モジュールの画面そのものが見えているので、その分は知らせない
+    const confirms = (data.confirms || []).filter(c => !({{ 'true' if request.endpoint == 'test_page' else 'false' }} && c.virtual));
+    confirms.filter(c => !toasted.has(c.request_id)).forEach(showToast);
+
+    setUnlinked(data.unlinked_workers || []);
+    const tags = data.tags || [];
+    // 表示中のタグが消えた = 別の画面で登録された。開いたままにしない
+    if (showing && !tags.some(t => t.tag_id === showing)) close();
+    if (modal.hidden) {
+      const next = tags.find(t => !seen.has(t.touch));
+      if (next) open(next);
+    }
+  }
+
+  poll();
+  // 裏に回ったタブでは取りに行かない。見ていない画面にポップアップを出しても
+  // 誰も答えられないので、表示に戻ったときにすぐ取り直せば足りる
+  setInterval(() => { if (!document.hidden) poll(); }, 2000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+
+  // ---- <main> の差し替え（フォーム送信・自動保存・自動更新・絞り込みで共通） ----
+  // 行ごとに data-key を付けておくと、差し替えの前後で中身が変わった行だけを
+  // 一瞬光らせる（何が変わったのかを目で追えるように）。比べるのはサーバーが
+  // 描いた直後のHTMLで、開閉や入力などのその後の操作は含めない。
+  let lastSigs = null;          // data-key -> 描画直後の outerHTML
+  let lastSigPath = null;       // どの画面の記録か。別の画面へ移ったら比べない
+
+  function signatures(root) {
+    const map = new Map();
+    root.querySelectorAll("[data-key]").forEach(el => {
+      map.set(el.dataset.key, { html: el.outerHTML, cls: el.className });
+    });
+    return map;
+  }
+
+  function highlightChanges(newMain, before) {
+    const changed = [];
+    if (!before) return changed;
+    newMain.querySelectorAll("[data-key]").forEach(el => {
+      const old = before.get(el.dataset.key);
+      if (old && old.html === el.outerHTML) return;
+      // 行の中に data-key を持つ子（入れ子）がある場合は、子の方だけ光らせる
+      if (old && [...el.querySelectorAll("[data-key]")].some(c => {
+        const o = before.get(c.dataset.key);
+        return !o || o.html !== c.outerHTML;
+      })) return;
+      el.classList.add("is-changed");
+      if (old && old.cls !== el.className) el.classList.add("is-status-changed");
+      if (!old) el.classList.add("is-added");
+      changed.push(el);
+      el.addEventListener("animationend", function done(ev) {
+        if (ev.target !== el) return;
+        el.classList.remove("is-changed", "is-status-changed", "is-added");
+        el.removeEventListener("animationend", done);
+      });
+    });
+    return changed;
+  }
+
+  // doc: 取得したHTML。opts.keepFlashes: 今出ているお知らせを残す（自動更新用）
+  function swapMain(doc, opts = {}) {
+    const newMain = doc.querySelector("main.main");
+    const curMain = document.querySelector("main.main");
+    if (!newMain || !curMain) return null;
+    const imported = document.importNode(newMain, true);
+    imported.classList.add("is-swapped");   // 開いたときの持ち上がる演出を繰り返さない
+    if (opts.keepFlashes) {
+      const cur = curMain.querySelector(".flashes");
+      if (cur && !imported.querySelector(".flashes")) imported.prepend(cur);
+    }
+    const path = opts.path || location.pathname;
+    const sigs = signatures(imported);
+    const before = path === lastSigPath ? lastSigs : null;
+    curMain.replaceWith(imported);
+    lastSigs = sigs;
+    lastSigPath = path;
+    const changed = highlightChanges(imported, before);
+    if (doc.title) document.title = doc.title;
+    armFlashes(imported);
+    fillElapsed(imported);
+    applyFolds(imported);
+    return { main: imported, changed };
+  }
+
+  // ---- お知らせ（フラッシュ） ----
+  // 成功は数秒で消し、エラーは自分で閉じるまで残す。どちらも × で閉じられる
+  const FLASH_OK_MS = 5000;
+  function dismissFlash(f) {
+    if (f.classList.contains("is-leaving")) return;
+    f.classList.add("is-leaving");
+    const remove = () => {
+      const box = f.parentElement;
+      f.remove();
+      if (box && !box.querySelector(".flash")) box.remove();
+    };
+    f.addEventListener("animationend", remove, { once: true });
+    setTimeout(remove, 400);   // 動きを減らす設定などで animationend が来ない場合
+  }
+  function armFlashes(root) {
+    root.querySelectorAll(".flash:not([data-armed])").forEach(f => {
+      f.dataset.armed = "1";
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "flash-close";
+      x.setAttribute("aria-label", "閉じる");
+      x.textContent = "×";
+      x.addEventListener("click", () => dismissFlash(f));
+      f.appendChild(x);
+      if (f.classList.contains("flash-ok")) setTimeout(() => dismissFlash(f), FLASH_OK_MS);
+    });
+  }
+
+  // ---- 使用中の経過時間（data-since="YYYY-MM-DD HH:MM:SS"） ----
+  function fillElapsed(root) {
+    (root || document).querySelectorAll("[data-since]").forEach(el => {
+      const since = new Date(el.dataset.since.replace(" ", "T"));
+      const min = Math.floor((Date.now() - since.getTime()) / 60000);
+      if (isNaN(min) || min < 0) { el.textContent = ""; return; }
+      const h = Math.floor(min / 60);
+      // 「経過」の見出しは表の列見出し（狭い画面では CSS の ::before）が出す
+      el.textContent = h ? `${h}時間${min % 60}分` : `${min}分`;
+      el.classList.toggle("is-long", min >= 120);
+    });
+  }
+  setInterval(() => fillElapsed(), 30000);
+
+  // ---- 行の「編集」ボタン（data-toggle-details="開く details の id"） ----
+  // 編集欄は行の下に置いた <details> で、開閉の状態は <main> の差し替え（自動保存など）
+  // をまたいで captureState / restoreState が引き継ぐ。ボタンはそれを開け閉めするだけ
+  document.addEventListener("click", function (e) {
+    const btn = e.target.closest && e.target.closest("[data-toggle-details]");
+    if (!btn) return;
+    const d = document.getElementById(btn.dataset.toggleDetails);
+    if (d) d.open = !d.open;
+  });
+  // toggle は泡立たないので capture で拾い、ボタンの aria-expanded を合わせる
+  document.addEventListener("toggle", function (e) {
+    const d = e.target;
+    if (!d.id) return;
+    document.querySelectorAll(`[data-toggle-details="${CSS.escape(d.id)}"]`)
+      .forEach(b => b.setAttribute("aria-expanded", d.open ? "true" : "false"));
+  }, true);
+  // 「＋ 登録」を押して開いたら最初の入力欄へ移る。自動保存の後に開き直すとき
+  // （restoreState）は入力中の欄から動かさないよう、押したときだけにする
+  document.addEventListener("click", function (e) {
+    const s = e.target.closest && e.target.closest(".add-panel > summary");
+    if (!s) return;
+    setTimeout(() => {
+      const d = s.parentElement;
+      const first = d.open && d.querySelector(".add-panel-body input:not([type=hidden]), .add-panel-body select");
+      if (first) first.focus();
+    }, 0);
+  });
+
+  // ---- 最小化できる案内（<details data-fold="名前" data-fold-items='["id", ...]'>） ----
+  // 閉じたときに出ていた項目を覚えておき、次に描いたときも閉じたままにする。
+  // 覚えていない項目（新しく検出したタグなど）が増えたら開き直して見落としを防ぐ。
+  // <main> の差し替えでサーバーが open 付きで描き直すので、差し替えのたびに当て直す
+  const FOLD_KEY = "gemmba.fold.";
+  function applyFolds(root) {
+    (root || document).querySelectorAll("details[data-fold]").forEach(d => {
+      const key = FOLD_KEY + d.dataset.fold;
+      let items = [];
+      try { items = JSON.parse(d.dataset.foldItems || "[]"); } catch (e) { /* 壊れていたら空扱い */ }
+      let closedWith = null;
+      try { closedWith = JSON.parse(localStorage.getItem(key)); } catch (e) { /* 保存できない環境 */ }
+      if (Array.isArray(closedWith) && items.every(x => closedWith.includes(x))) d.open = false;
+      d.addEventListener("toggle", () => {
+        try {
+          if (d.open) localStorage.removeItem(key);
+          else localStorage.setItem(key, JSON.stringify(items));
+        } catch (e) { /* 覚えられなくても開閉自体はできる */ }
+      });
+    });
+  }
+
+  // ---- 取り消せない操作の確認（data-confirm を付けたフォーム） ----
+  const ask = document.getElementById("askModal");
+  const askText = document.getElementById("askText");
+  const askOk = document.getElementById("askOk");
+  const askCancel = document.getElementById("askCancel");
+  let askForm = null;
+  let askReturnFocus = null;
+
+  function openAsk(form) {
+    askForm = form;
+    askReturnFocus = document.activeElement;
+    askText.textContent = form.dataset.confirm;
+    askOk.textContent = form.dataset.confirmOk || "実行する";
+    ask.hidden = false;
+    askCancel.focus();       // 既定は安全な方。Enter の押しっぱなしで消さない
+  }
+  function closeAsk(run) {
+    const form = askForm;
+    askForm = null;
+    ask.hidden = true;
+    if (run && form) {
+      form.dataset.confirmed = "1";
+      form.requestSubmit();
+      delete form.dataset.confirmed;
+    } else if (askReturnFocus && document.contains(askReturnFocus)) {
+      askReturnFocus.focus();
+    }
+  }
+  askOk.addEventListener("click", () => closeAsk(true));
+  askCancel.addEventListener("click", () => closeAsk(false));
+  ask.addEventListener("click", e => { if (e.target === ask) closeAsk(false); });
+  ask.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.stopPropagation(); closeAsk(false); }
+    if (e.key === "Tab") {   // ダイアログの外へフォーカスを逃がさない
+      e.preventDefault();
+      (document.activeElement === askOk ? askCancel : askOk).focus();
+    }
+  });
+  // 送信の他の処理より先に止める（capture）
+  document.addEventListener("submit", function (e) {
+    const form = e.target;
+    if (!form.dataset || !form.dataset.confirm || form.dataset.confirmed) return;
+    e.preventDefault();
+    openAsk(form);
+  }, true);
+
+  // ---- フォーム送信をその場で処理し、ページ全体のリロードをなくす ----
+  // 登録・更新・削除・AI割当はどれも同じ画面へ戻ってくるだけなので、
+  // 送信結果のHTMLから <main> の中身だけを取り出して差し替える（サイドバーや
+  // モーダル・ポーリングはそのまま維持される）。取得に失敗した場合だけ、
+  // 通常のフォーム送信（ページ遷移）にフォールバックする。
+  async function ajaxSubmit(form) {
+    const method = (form.getAttribute("method") || "get").toUpperCase();
+    let action = form.getAttribute("action") || (location.pathname + location.search);
+    const isTagForm = !!form.closest("#tagModal");
+    // GET はブラウザ標準の送信ならクエリ文字列を自動で組み立ててくれるが、
+    // fetch() は何もしてくれない。ここで組み立てないと検索フォームなどの
+    // GETが常に空のクエリで送られてしまう（POSTは従来どおり body に積む）。
+    let body;
+    if (method === "GET") {
+      const params = new URLSearchParams(new FormData(form));
+      const qs = params.toString();
+      action = action.split("?")[0] + (qs ? `?${qs}` : "");
+    } else {
+      body = new FormData(form);
+    }
+    const res = await fetch(action, {
+      method: method,
+      body: body,
+      credentials: "same-origin",
+    });
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const url = new URL(res.url || action, location.href);
+    const swapped = swapMain(doc, { path: url.pathname });
+    if (!swapped) { location.href = res.url || action; return; }
+    if (res.url && res.url !== location.href) history.pushState({}, "", res.url);
+    if (isTagForm) close();
+    // 追加・更新した行が画面の外なら、そこまで連れて行く（1行だけ変わったときのみ）
+    if (swapped.changed.length === 1) {
+      const r = swapped.changed[0].getBoundingClientRect();
+      if (r.bottom < 0 || r.top > window.innerHeight) swapped.changed[0].scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  // ---- 自動保存（data-autosave を付けたフォーム） ----
+  // 選択・チェック・日付は変えた瞬間に、文字・数値は打ち終わって少し待ってから
+  // （または欄を離れたときに）保存する。保存ボタンはそのまま残してある。
+  // 保存後は <main> を差し替えて表示を最新にするが、入力中の欄のフォーカスと
+  // カーソル、開いている「編集」、スクロール位置は元に戻す。
+  const AUTOSAVE_DELAY = 800;
+  const autosaveTimers = new WeakMap();
+  let inputSeq = 0;   // 入力のたびに進む。保存中に打たれたら画面を差し替えない
+
+  const actionOf = form => form && form.getAttribute("action");
+  const findForm = action => document.querySelector(`main.main form[action="${CSS.escape(action)}"]`);
+  const isTyping = el => el.matches('input[type="text"], input[type="search"], input[type="number"], input:not([type]), textarea');
+
+  function detailsKey(d) {
+    // 行に data-key があればそれで見分ける。フォームを持たない折りたたみ
+    // （ダッシュボードの「詳しい設定」など）が全部同じ鍵にならないように
+    const row = d.closest("[data-key]");
+    const form = d.closest("form") || d.querySelector("form");
+    const summary = d.querySelector("summary");
+    return (row ? row.dataset.key : "") + "|" + actionOf(form) + "|" + (summary ? summary.textContent.trim() : "");
+  }
+
+  function captureState() {
+    const el = document.activeElement;
+    const state = {
+      scrollY: window.scrollY,
+      open: [...document.querySelectorAll("main.main details[open]")].map(detailsKey),
+      focus: null,
+    };
+    if (el && el.form && el.name && el.closest("main.main")) {
+      state.focus = { action: actionOf(el.form), name: el.name, value: el.type === "checkbox" ? el.value : null };
+      try { state.focus.sel = [el.selectionStart, el.selectionEnd]; } catch (e) { /* number などは選択範囲を持たない */ }
+    }
+    return state;
+  }
+
+  function restoreState(state) {
+    document.querySelectorAll("main.main details").forEach(d => {
+      if (state.open.includes(detailsKey(d))) d.open = true;
+    });
+    window.scrollTo(0, state.scrollY);
+    const f = state.focus;
+    if (!f) return;
+    const form = findForm(f.action);
+    if (!form) return;
+    const el = [...form.elements].find(x => x.name === f.name && (f.value === null || x.value === f.value));
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    if (f.sel && f.sel[0] != null) { try { el.setSelectionRange(f.sel[0], f.sel[1]); } catch (e) { /* 同上 */ } }
+    // 優先度を変えると並びが変わり、行が画面外へ動くことがある。そのときだけ追いかける
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) el.scrollIntoView({ block: "center" });
+  }
+
+  function setStatus(form, kind) {
+    if (!form) return;
+    let s = form.querySelector(".autosave-status");
+    if (!s) {
+      s = document.createElement("span");
+      s.className = "autosave-status span-all";
+      s.setAttribute("aria-live", "polite");
+      form.appendChild(s);
+    }
+    s.dataset.kind = kind;
+    s.textContent = {
+      pending: "入力中…（手を止めると保存します）",
+      saving: "保存しています…",
+      saved: "✓ 保存しました",
+      error: "保存できませんでした（右上の赤い表示を確認してください）",
+      offline: "保存できませんでした（通信エラー）。もう一度変更するか、保存ボタンを押してください",
+      wait: "数値が空のため、まだ保存していません",
+    }[kind];
+  }
+
+  function autosaveReady(form) {
+    // 数値欄が空 = 打ち直している途中。このまま送ると 0 や既定値で保存されてしまう
+    for (const el of form.querySelectorAll('input[type="number"]')) {
+      if (el.value === "") return false;
+    }
+    return form.checkValidity();
+  }
+
+  async function autosave(form) {
+    clearTimeout(autosaveTimers.get(form));
+    if (!autosaveReady(form)) { setStatus(form, "wait"); return; }
+    const action = actionOf(form);
+    const seq = inputSeq;
+    setStatus(form, "saving");
+    let html;
+    try {
+      const res = await fetch(action, { method: "POST", body: new FormData(form), credentials: "same-origin" });
+      html = await res.text();
+    } catch (e) {
+      setStatus(findForm(action), "offline");
+      return;
+    }
+    // 保存している間に続けて入力された。いま差し替えると打った文字が消えるので、
+    // 表示の更新は次の保存に任せる（保存そのものは済んでいる）
+    if (seq !== inputSeq) return;
+
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const newMain = doc.querySelector("main.main");
+    if (!newMain) { setStatus(findForm(action), "offline"); return; }
+    // 「更新しました」のお知らせは出さない（入力のたびに積み上がる）。エラーだけ残す
+    const flashes = newMain.querySelector(".flashes");
+    let failed = false;
+    if (flashes) {
+      flashes.querySelectorAll(".flash-ok").forEach(x => x.remove());
+      failed = !!flashes.querySelector(".flash-error");
+      if (!failed) flashes.remove();
+    }
+    const state = captureState();
+    swapMain(doc);
+    restoreState(state);
+    setStatus(findForm(action), failed ? "error" : "saved");
+  }
+
+  function autosaveFormOf(el) {
+    const form = el && el.form;
+    return form && form.hasAttribute("data-autosave") ? form : null;
+  }
+
+  // ---- その場で絞り込む（data-live-search を付けた GET フォーム） ----
+  // 打つたびに一覧だけを取り直す。URL も書き換えるので、絞り込んだ状態を共有できる
+  const LIVE_SEARCH_DELAY = 350;
+  let liveSearchTimer = null;
+  let liveSearchSeq = 0;
+  async function liveSearch(form) {
+    const seq = ++liveSearchSeq;
+    const params = new URLSearchParams(new FormData(form));
+    for (const [k, v] of [...params]) if (!v) params.delete(k);   // 空の条件は URL に残さない
+    const qs = params.toString();
+    const url = form.getAttribute("action").split("?")[0] + (qs ? `?${qs}` : "");
+    let html;
+    try {
+      html = await (await fetch(url, { credentials: "same-origin" })).text();
+    } catch (e) { return; }       // 検索ボタンでの送信は引き続き使える
+    if (seq !== liveSearchSeq) return;   // 後から打った分の結果を優先する
+    const state = captureState();
+    swapMain(new DOMParser().parseFromString(html, "text/html"));
+    restoreState(state);
+    history.replaceState({}, "", url);
+  }
+  function liveSearchFormOf(el) {
+    const form = el && el.form;
+    return form && form.hasAttribute("data-live-search") ? form : null;
+  }
+
+  document.addEventListener("input", function (e) {
+    const search = liveSearchFormOf(e.target);
+    if (search && isTyping(e.target)) {
+      clearTimeout(liveSearchTimer);
+      liveSearchTimer = setTimeout(() => liveSearch(search), LIVE_SEARCH_DELAY);
+      return;
+    }
+    const form = autosaveFormOf(e.target);
+    if (!form) return;
+    inputSeq++;
+    if (!isTyping(e.target)) return;   // 選択・チェック・日付は change で保存する
+    setStatus(form, "pending");
+    clearTimeout(autosaveTimers.get(form));
+    autosaveTimers.set(form, setTimeout(() => autosave(form), AUTOSAVE_DELAY));
+  });
+  document.addEventListener("change", function (e) {
+    const search = liveSearchFormOf(e.target);
+    if (search) {
+      if (!isTyping(e.target)) { clearTimeout(liveSearchTimer); liveSearch(search); }
+      return;
+    }
+    const form = autosaveFormOf(e.target);
+    if (form) autosave(form);
+  });
+  // Enter は従来どおり保存ボタンでの送信になる（下の submit）。待ち中の自動保存は取り消す
+  document.addEventListener("submit", function (e) {
+    if (e.target.hasAttribute && e.target.hasAttribute("data-autosave")) clearTimeout(autosaveTimers.get(e.target));
+    if (e.target.hasAttribute && e.target.hasAttribute("data-live-search")) { clearTimeout(liveSearchTimer); liveSearchSeq++; }
+  }, true);
+
+  document.addEventListener("submit", function (e) {
+    if (e.defaultPrevented) return; // 削除確認などでキャンセルされた場合はここで止まる
+    const form = e.target;
+    if (form.hasAttribute("data-full-submit")) return; // <main> 以外も変わるフォームは通常送信
+    document.querySelectorAll('button[type="submit"]').forEach(function (btn) {
+      if (btn.form === form && !btn.disabled) {
+        btn.classList.add("is-loading");
+        btn.disabled = true;
+      }
+    });
+    e.preventDefault();
+    ajaxSubmit(form).catch(function () {
+      form.submit(); // 通信に失敗した場合だけ、素の送信にフォールバックする
+    });
+  });
+
+  // ---- 画面の自動更新（data-live-refresh="ミリ秒" を置いた画面。ダッシュボード） ----
+  // 現場で誰かがタッチすると、リロードしなくても数秒で表示が変わる。変わった行は
+  // 光らせる。中身が同じなら差し替えない（開いた折りたたみやスクロールを乱さない）
+  let refreshing = false;
+  async function liveRefresh() {
+    const marker = document.querySelector("main.main [data-live-refresh]");
+    if (!marker || refreshing || document.hidden) return;
+    refreshing = true;
+    const note = document.querySelector("main.main .live-note");
+    try {
+      const res = await fetch(location.href, { cache: "no-store", credentials: "same-origin" });
+      if (!res.ok) throw new Error(res.status);
+      const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+      const next = doc.querySelector("main.main");
+      if (!next) throw new Error("no main");
+      const sigs = signatures(next);
+      const same = lastSigs && sigs.size === lastSigs.size &&
+                   [...sigs].every(([k, v]) => lastSigs.has(k) && lastSigs.get(k).html === v.html);
+      if (same) {
+        // 変化なし。最終更新の時刻と、接続の表示だけ直す
+        const t = next.querySelector("[data-rendered-at]");
+        const cur = document.querySelector("main.main [data-rendered-at]");
+        if (t && cur) { cur.textContent = t.textContent; }
+        if (note) note.classList.remove("is-error");
+      } else {
+        const state = captureState();
+        swapMain(doc, { keepFlashes: true });
+        restoreState(state);
+      }
+    } catch (e) {
+      if (note) note.classList.add("is-error");   // サーバーの再起動中など。次の周期で取り直す
+    } finally {
+      refreshing = false;
+    }
+  }
+  (function startLiveRefresh() {
+    const marker = document.querySelector("main.main [data-live-refresh]");
+    const every = marker ? Math.max(2000, parseInt(marker.dataset.liveRefresh, 10) || 4000) : 4000;
+    setInterval(liveRefresh, every);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) liveRefresh(); });
+  })();
+
+  // 最初の表示ぶん
+  lastSigs = signatures(document.querySelector("main.main"));
+  lastSigPath = location.pathname;
+  armFlashes(document);
+  fillElapsed();
+  applyFolds(document);
+})();
+</script>
+</body>
+</html>

@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% from "_macros.html" import role_select, perm_checks, perm_badges with context %}
+{% extends "classic/base.html" %}
+{% from "classic/_macros.html" import role_select, perm_checks, perm_badges with context %}
 {% block title %}作業者管理 | Gemmba 管理{% endblock %}
 {% block content %}
 <header class="page-head">
@@ -8,13 +8,8 @@
 </header>
 
 {% if pending_tags %}
-{# 見出しを押すと最小化できる。閉じた状態はブラウザが覚え、新しいタグが来たら開き直す（base.html の applyFolds） #}
-<details class="callout form-panel callout-fold" open data-fold="pending-tags"
-         data-fold-items='{{ pending_tags|list|tojson }}'>
-  <summary>
-    <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
-    <span class="callout-fold-toggle"><span class="when-open">最小化 ▴</span><span class="when-closed">開く ▾</span></span>
-  </summary>
+<section class="callout form-panel">
+  <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
   <p class="callout-lead">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録するか、ICタグ未紐付けで登録済みの作業者に紐付けてください。保有権限は登録後に編集できます。</p>
   {% for tag_id, module_id in pending_tags.items() %}
   <div class="callout-row">
@@ -44,7 +39,7 @@
     {% endif %}
   </div>
   {% endfor %}
-</details>
+</section>
 {% endif %}
 
 <section class="form-panel narrow">

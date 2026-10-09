@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}Gemmba 管理{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='classic/style.css') }}">
 </head>
 <body>
 <div class="app">
@@ -330,7 +330,6 @@
     if (doc.title) document.title = doc.title;
     armFlashes(imported);
     fillElapsed(imported);
-    applyFolds(imported);
     return { main: imported, changed };
   }
 
@@ -369,34 +368,11 @@
       const min = Math.floor((Date.now() - since.getTime()) / 60000);
       if (isNaN(min) || min < 0) { el.textContent = ""; return; }
       const h = Math.floor(min / 60);
-      // 「経過」の見出しは表の列見出し（狭い画面では CSS の ::before）が出す
-      el.textContent = h ? `${h}時間${min % 60}分` : `${min}分`;
+      el.textContent = "経過 " + (h ? `${h}時間${min % 60}分` : `${min}分`);
       el.classList.toggle("is-long", min >= 120);
     });
   }
   setInterval(() => fillElapsed(), 30000);
-
-  // ---- 最小化できる案内（<details data-fold="名前" data-fold-items='["id", ...]'>） ----
-  // 閉じたときに出ていた項目を覚えておき、次に描いたときも閉じたままにする。
-  // 覚えていない項目（新しく検出したタグなど）が増えたら開き直して見落としを防ぐ。
-  // <main> の差し替えでサーバーが open 付きで描き直すので、差し替えのたびに当て直す
-  const FOLD_KEY = "gemmba.fold.";
-  function applyFolds(root) {
-    (root || document).querySelectorAll("details[data-fold]").forEach(d => {
-      const key = FOLD_KEY + d.dataset.fold;
-      let items = [];
-      try { items = JSON.parse(d.dataset.foldItems || "[]"); } catch (e) { /* 壊れていたら空扱い */ }
-      let closedWith = null;
-      try { closedWith = JSON.parse(localStorage.getItem(key)); } catch (e) { /* 保存できない環境 */ }
-      if (Array.isArray(closedWith) && items.every(x => closedWith.includes(x))) d.open = false;
-      d.addEventListener("toggle", () => {
-        try {
-          if (d.open) localStorage.removeItem(key);
-          else localStorage.setItem(key, JSON.stringify(items));
-        } catch (e) { /* 覚えられなくても開閉自体はできる */ }
-      });
-    });
-  }
 
   // ---- 取り消せない操作の確認（data-confirm を付けたフォーム） ----
   const ask = document.getElementById("askModal");
@@ -724,7 +700,6 @@
   lastSigPath = location.pathname;
   armFlashes(document);
   fillElapsed();
-  applyFolds(document);
 })();
 </script>
 </body>

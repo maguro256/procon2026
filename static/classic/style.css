@@ -1,0 +1,694 @@
+/* Gemmba 管理者コンソール — 現場安全掲示システム
+   工場の壁に留められた注意サイン・機材銘板の文法をそのままUIに翻訳する。
+   地は掲示板の下地(温白)、要素は壁に留められた銘板(太い炭黒の枠+四隅のリベット)。
+   #00bfff = 「稼働中・情報」を示す信号色。#ffdb4f = 「注意・要対応」を示す信号色で、
+   停止/メンテ/至急のときだけ隅のハザードストライプとして局所的に使う。
+   状態は色だけに頼らず、色+アイコンの形+（注意時のみ）ストライプの三重で示す。
+   対象はITに不慣れな現場責任者。装飾より一目で分かることを優先する。 */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  --ink: #232323;
+  --ink-soft: #6b6558;
+  --ink-faint: #6d6757; /* 4.5:1以上を確保（プレースホルダー・タイムスタンプ等の実コンテンツに使うため） */
+  --paper: #F6F3EA;
+  --plate: #FFFFFF;
+  --line: color-mix(in srgb, var(--ink) 18%, transparent);
+  --line-strong: var(--ink);
+  --rivet: color-mix(in srgb, var(--ink) 30%, var(--plate));
+
+  /* ブランド信号色。塗り面の上の文字は必ず --ink（白は使わない＝コントラスト不足のため） */
+  --blue: #00bfff;
+  --blue-deep: #0093c4;
+  --blue-tint: #e3f7ff;
+  --yellow: #ffdb4f;
+  --yellow-deep: #e0bd28;
+  --yellow-tint: #fff6da;
+
+  /* 状態の意味色（ブランド色とは別軸。空き=緑／停止=赤は工場の慣習に合わせる） */
+  --good: #1c7a45; --good-tint: #e3f4e9;
+  --bad:  #b3261e; --bad-tint:  #fbeae9;
+
+  --font: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 40px; --space-9: 56px;
+
+  --radius: 4px;
+  --radius-pill: 999px;
+
+  --ease: cubic-bezier(.3, 0, .2, 1);
+  --focus-ring: 0 0 0 4px color-mix(in srgb, var(--blue) 45%, transparent);
+}
+
+/* 企業向けの掲示物という性格上、常にライト固定。OSのダークモード設定に追従させない */
+html { color-scheme: light; }
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { overflow-x: hidden; }
+body {
+  margin: 0; font-family: var(--font); font-size: 15px; font-weight: 400; line-height: 1.7;
+  background: var(--paper); color: var(--ink); -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font); font-weight: 700;
+  line-height: 1.35; margin: 0; text-wrap: balance;
+}
+p { margin: 0; text-wrap: pretty; }
+a { color: var(--blue-deep); text-underline-offset: 3px; }
+a:hover { color: var(--ink); }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.text-muted { color: var(--ink-soft); }
+.strong { font-weight: 700; }
+
+::selection { background: color-mix(in srgb, var(--blue) 45%, transparent); color: var(--ink); }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--paper); }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 28%, var(--paper)); border: 3px solid var(--paper); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--ink) 42%, var(--paper)); }
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: 2px;
+  box-shadow: var(--focus-ring); border-radius: var(--radius);
+  transition: box-shadow .15s var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
+
+/* 唯一の演出：画面を開いたときに掲示板全体が一拍で持ち上がる（各要素が個別に動くのではなく、一つの動き） */
+@media (prefers-reduced-motion: no-preference) {
+  .page-head, .signage-strip, .sheet, .form-panel, .callout {
+    animation: rise-in .5s var(--ease) both;
+  }
+  .signage-strip { animation-delay: .03s; }
+  .sheet { animation-delay: .07s; }
+}
+@keyframes rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes lamp-pulse { 0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 35%, transparent); } 50% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 差し替えた後（送信・自動保存・自動更新）は、開いたときの持ち上がる演出を繰り返さない */
+.main.is-swapped :is(.page-head, .signage-strip, .sheet, .form-panel, .callout) { animation: none; }
+
+/* 差し替えの前後で中身が変わった行を一瞬光らせる（base.html の highlightChanges） */
+.is-changed { animation: row-changed 1.8s var(--ease); }
+.is-changed.is-added { animation: row-added 1.8s var(--ease); }
+@keyframes row-changed {
+  0%, 25% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); }
+  100% { background-color: transparent; box-shadow: inset 4px 0 0 transparent; }
+}
+@keyframes row-added {
+  0% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); opacity: 0; transform: translateY(-4px); }
+  20% { opacity: 1; transform: none; }
+  40% { background-color: var(--blue-tint); box-shadow: inset 4px 0 0 var(--blue); }
+  100% { background-color: transparent; box-shadow: inset 4px 0 0 transparent; }
+}
+/* 空き⇄使用中が切り替わった瞬間。状態灯とバッジが一度だけ弾む */
+.is-status-changed .status-lamp, .is-status-changed .badge-idle, .is-status-changed .badge-inuse {
+  animation: status-pop .6s var(--ease);
+}
+@keyframes status-pop { 0% { transform: scale(.6); } 60% { transform: scale(1.18); } 100% { transform: none; } }
+/* 件数のタイル。数字が変わったら下から差し替わる */
+.signage-tile.is-changed { animation: none; }
+.signage-tile.is-changed .tile-num { animation: num-bump .5s var(--ease); }
+@keyframes num-bump { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ---------------- アイコン ---------------- */
+.icon { display: block; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------------- ボタン ---------------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  cursor: pointer; text-decoration: none; user-select: none;
+  font-family: var(--font); font-weight: 700;
+  font-size: 14px; line-height: 1.2; color: var(--ink);
+  background: var(--plate); border: 2px solid var(--line-strong);
+  padding: 10px 18px; border-radius: var(--radius);
+  transition: background-color .15s var(--ease), transform .1s var(--ease), opacity .15s var(--ease);
+  /* 日本語は文字と文字の間でも折り返せてしまうため、flex/grid内で幅が
+     足りなくなると「保存」のような短いラベルが1文字ずつ縦に積まれてしまう。
+     ボタンラベルは常に1行のままにする。 */
+  white-space: nowrap; flex-shrink: 0;
+}
+.btn .icon { width: 15px; height: 15px; }
+.btn:hover { background: var(--paper); }
+.btn:active { transform: translateY(1px); }
+
+.btn-primary { background: var(--blue); color: var(--ink); border-color: var(--ink); }
+.btn-primary:hover { background: var(--blue-deep); }
+
+.btn-secondary { background: var(--plate); border-color: var(--line-strong); color: var(--ink); }
+.btn-secondary:hover { background: var(--paper); }
+
+/* AI割当は黄色を全面塗りにしない。黄色の枠だけで「注意を要する操作」だと示す（縞模様は使わない） */
+.btn-ai { background: var(--plate); color: var(--ink); border-color: var(--yellow-deep); }
+.btn-ai:hover { background: var(--yellow-tint); }
+
+.btn-danger { background: var(--plate); color: var(--bad); border-color: var(--bad); }
+.btn-danger:hover { background: var(--bad-tint); }
+
+.btn-icon { width: 40px; height: 40px; padding: 0; flex: none; }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
+
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; pointer-events: none; }
+.btn.is-loading { pointer-events: none; opacity: .85; }
+.btn.is-loading::before {
+  content: ""; width: 14px; height: 14px; flex: none;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .btn.is-loading::before { animation: none; opacity: .5; } }
+
+/* ---------------- フォーム ---------------- */
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > label { font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
+.input, select.input {
+  width: 100%; min-height: 42px; padding: 8px 12px; font: inherit; font-size: 14px;
+  color: var(--ink); caret-color: var(--blue-deep);
+  background: var(--plate); border: 2px solid var(--line); border-radius: var(--radius);
+  transition: border-color .15s var(--ease);
+}
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23232323' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; padding-right: 34px;
+}
+.input::placeholder { color: var(--ink-faint); }
+.input:hover { border-color: var(--ink-faint); }
+.input:focus-visible { border-color: var(--ink); }
+.input:disabled { background: var(--paper); color: var(--ink-faint); cursor: not-allowed; }
+.input-sm { min-height: 34px; padding: 5px 10px; font-size: 13px; }
+
+.bind-form { display: flex; gap: var(--space-2); align-items: center; min-width: 180px; }
+
+/* ---------------- 銘板（カードの基本単位） ---------------- */
+/* 壁に留められた機材銘板・掲示物のメタファー：太い枠＋四隅のリベット。丸みは面取り程度に留める */
+.card {
+  position: relative;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-4); border-radius: var(--radius);
+  border: 2px solid var(--line-strong);
+  background-color: var(--plate);
+  background-image:
+    radial-gradient(circle 2.5px at 11px 11px, var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at calc(100% - 11px) 11px, var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at 11px calc(100% - 11px), var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at calc(100% - 11px) calc(100% - 11px), var(--rivet) 99%, transparent 100%);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.card-kicker { font-size: 12px; font-weight: 700; color: var(--ink-soft); }
+.card-title { font-family: var(--font); font-weight: 700; font-size: 17px; line-height: 1.3; }
+.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-faint); }
+
+/* ---------------- シート（一枚の掲示板として続ける一覧の基本単位） ---------------- */
+/* 個々を独立した銘板にすると分裂して見えるため、一覧は「一枚の掲示板」として
+   外枠を1つだけ持ち、中の行は罫線だけで区切る。四隅のリベットは掲示板全体に1組だけ置く。 */
+.sheet {
+  position: relative;
+  border-radius: var(--radius);
+  border: 2px solid var(--line-strong);
+  background-color: var(--plate);
+  background-image:
+    radial-gradient(circle 2.5px at 11px 11px, var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at calc(100% - 11px) 11px, var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at 11px calc(100% - 11px), var(--rivet) 99%, transparent 100%),
+    radial-gradient(circle 2.5px at calc(100% - 11px) calc(100% - 11px), var(--rivet) 99%, transparent 100%);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--ink) 14%, transparent);
+  overflow: hidden;
+  margin-bottom: var(--space-8);
+}
+.sheet-row {
+  position: relative;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--line);
+}
+.sheet-row:last-child { border-bottom: none; }
+.sheet-row.eq-row { display: flex; align-items: flex-start; gap: var(--space-4); }
+
+/* ---------------- タグ / バッジ：状態は色だけでなく形（アイコン）でも示す ---------------- */
+.tag, .badge {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  font-family: var(--font); font-weight: 700;
+  padding: 4px 11px 4px 8px; border-radius: var(--radius-pill); white-space: nowrap;
+  border: 1.5px solid transparent;
+}
+.badge .icon { width: 13px; height: 13px; }
+.tag-accent { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
+.tag-accent-2 { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow); }
+.tag-neutral { background: var(--paper); color: var(--ink-soft); border-color: var(--line); }
+.tag-outline { border-color: var(--blue); color: var(--blue-deep); }
+.tag-plain { border-color: var(--line-strong); color: var(--ink); font-weight: 400; }
+
+/* 機材ステータス：空き＝丸／使用中＝塗りつぶした再生形で、色だけに頼らない（2種類に統一） */
+.badge-idle { background: var(--good-tint); color: var(--good); border-color: var(--good); }
+.badge-inuse { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
+.badge-online { background: var(--good-tint); color: var(--good); border-color: var(--good); }
+.badge-offline { background: var(--paper); color: var(--ink-faint); border-color: var(--line); }
+.badge-p-urgent { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.badge-p-high { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow-deep); }
+.badge-p-normal { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
+.badge-p-low { background: var(--paper); color: var(--ink-soft); border-color: var(--line); }
+.badge-status { background: var(--paper); color: var(--ink-soft); border-color: var(--line); font-weight: 700; }
+
+/* ---------------- テーブル ---------------- */
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.table th {
+  text-align: left; font-size: 12px; font-weight: 700; color: var(--ink-soft);
+  padding: var(--space-3); border-bottom: 2px solid var(--line-strong); white-space: nowrap;
+}
+.table td { padding: var(--space-3); border-bottom: 1px solid var(--line); }
+.table tbody tr { transition: background-color .12s var(--ease); }
+.table tbody tr:hover { background: var(--paper); }
+.table .num { text-align: right; }
+/* 行末の操作ボタン。form は block なので、囲わないと縦積みになる */
+.table .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+/* ---------------- アプリシェル ---------------- */
+.app { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; background: var(--paper); color: var(--ink); }
+.sidebar {
+  padding: var(--space-5);
+  display: flex; flex-direction: column; gap: var(--space-8);
+  position: sticky; top: 0; height: 100vh;
+  background: var(--ink);
+  color: var(--paper);
+  min-width: 0;
+}
+.brand { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; }
+/* ロゴは明るい地色で作られているため、暗いサイドバーの上に小さな掲示板(温白のプレート)を
+   置いてその上に載せる。ロゴの色や比率そのものは変更しない */
+.brand-plate { background: var(--paper); border-radius: var(--radius); padding: 9px 13px; line-height: 0; }
+.brand-logo { display: block; height: 42px; width: auto; }
+.brand-sub { font-size: 12px; color: color-mix(in srgb, var(--paper) 62%, transparent); margin-left: 2px; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 3px; }
+.navlink {
+  display: flex; align-items: center; gap: 12px; padding: 11px 12px; font-size: 14.5px; font-weight: 500;
+  text-decoration: none; color: color-mix(in srgb, var(--paper) 78%, transparent);
+  border-radius: var(--radius); border: 1.5px solid transparent; white-space: nowrap;
+  transition: background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+}
+.navlink .icon { width: 18px; height: 18px; }
+.navlink:hover { background: color-mix(in srgb, var(--paper) 10%, transparent); color: var(--paper); }
+.navlink.active { background: var(--blue); color: var(--ink); font-weight: 700; border-color: var(--ink); }
+.sidebar-foot {
+  margin-top: auto; font-size: 12px; line-height: 1.7;
+  color: color-mix(in srgb, var(--paper) 58%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--paper) 20%, transparent); padding-top: var(--space-4);
+}
+
+.main { padding: var(--space-8); max-width: 1320px; min-width: 0; }
+
+.page-head { margin-bottom: var(--space-7); }
+.page-head h1 { margin-bottom: 6px; font-size: 30px; }
+.page-sub { color: var(--ink-soft); font-size: 14.5px; max-width: 68ch; }
+.section-title { font-weight: 700; font-size: 19px; margin: var(--space-8) 0 var(--space-3); }
+.section-title:first-of-type { margin-top: 0; }
+
+/* ---------------- フラッシュ ---------------- */
+.flashes {
+  /* 画面右上に重ねる。一覧の下の方で操作しても結果が目に入るように。成功は数秒で消える（base.html） */
+  position: fixed; z-index: 40; right: var(--space-5); top: var(--space-5);
+  width: min(420px, calc(100vw - 2 * var(--space-5)));
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.flash {
+  display: flex; align-items: flex-start; gap: 10px; padding: 13px 12px 13px 16px; font-size: 13.5px;
+  border-radius: var(--radius); border: 2px solid var(--line-strong);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 18%, transparent);
+  animation: flash-in .22s var(--ease) both;
+}
+.flash > div { flex: 1; min-width: 0; }
+.flash svg { flex: none; margin-top: 1px; }
+.flash.is-leaving { animation: flash-out .2s var(--ease) both; }
+.flash-close {
+  flex: none; width: 24px; height: 24px; margin: -2px 0 0; padding: 0;
+  font: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+  color: inherit; background: transparent; border: none; border-radius: var(--radius); opacity: .7;
+}
+.flash-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
+@keyframes flash-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes flash-out { to { opacity: 0; transform: translateX(16px); } }
+.flash-ok { background: var(--good-tint); color: var(--good); border-color: var(--good); }
+.flash-error { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+
+/* ---------------- 状況サマリー帯（掲示板の見出し帯） ---------------- */
+.signage-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 2px;
+  border: 2px solid var(--line-strong); border-radius: var(--radius);
+  overflow: hidden; margin-bottom: var(--space-6); background: var(--line-strong);
+}
+.signage-tile { background: var(--plate); padding: var(--space-4) var(--space-5); display: flex; flex-direction: column; gap: 4px; }
+.signage-tile .tile-label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
+.signage-tile .tile-label .icon { width: 15px; height: 15px; }
+.signage-tile .tile-num { font-weight: 900; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.signage-tile.t-idle .tile-num { color: var(--good); }
+.signage-tile.t-inuse .tile-num { color: #ec6800; }
+/* 機材の稼働状況（使用状況タブ）だけ配色を変える。t-idle/t-inuse は
+   タスクの状況サマリーでも使い回しているので、上の既定は変えずここで上書きする */
+.eq-status-strip .t-idle .tile-num { color: var(--good); }
+.eq-status-strip .t-inuse .tile-num { color: #ec6800; }
+/* 狭い画面では3枚が2+1に折り返し、空いたマスに帯の地（炭黒）が見えてしまう。
+   1列に積み、見出しと件数を横に並べて高さを抑える */
+@media (max-width: 600px) {
+  .signage-strip { grid-template-columns: 1fr; }
+  .signage-tile { flex-direction: row; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); }
+  .signage-tile .tile-num { font-size: 28px; }
+}
+/* 要対応・接続切れ。0件のときは普通の黒、1件以上で赤くする */
+.signage-tile.t-alert .tile-num { color: var(--bad); }
+.signage-tile.t-alert .tile-label { color: var(--bad); }
+
+/* 自動更新の表示（ダッシュボード）。止まったら赤くして、古い表示だと分かるようにする */
+.live-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: var(--space-2); font-size: 13px; }
+.live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+@media (prefers-reduced-motion: no-preference) { .live-dot { animation: live-blink 2s ease-in-out infinite; } }
+@keyframes live-blink { 50% { opacity: .35; } }
+.live-note.is-error .live-dot { background: var(--bad); animation: none; }
+.live-note.is-error .live-state { color: var(--bad); font-weight: 700; }
+.live-note.is-error .live-state::after { content: "（サーバーに繋がりません。再試行しています）"; }
+
+/* 要対応のタスク */
+.attention-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.attention-meta { font-size: 13px; margin-left: auto; }
+.attention-list .empty { padding: var(--space-4) var(--space-5); }
+.badge-overdue { background: var(--bad); color: var(--plate); border-color: var(--bad); }
+.badge-today { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow-deep); }
+.badge-offline-alert { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.badge-done { background: var(--good-tint); color: var(--good); border-color: var(--good); }
+.badge-done .icon { stroke-width: 2.4; }
+
+/* 使用中の経過時間。2時間を超えたら強調（使い終わったのにタッチし忘れている可能性） */
+.elapsed { font-size: 12.5px; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.elapsed.is-long { color: var(--bad); }
+
+/* ---------------- 機材の状況：一枚の掲示板に並ぶ行として続ける ---------------- */
+.eq-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.eq-row-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.eq-row-head .card-title { font-size: 16px; }
+.eq-meta { font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.eq-meta .k { color: var(--ink-faint); }
+.eq-tech { flex: none; align-self: center; font-size: 12px; }
+
+/* 機材コード・最終更新時刻など、IT担当者不在の現場には不要な専門情報は折りたたみに隔離する */
+.eq-tech summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; list-style: revert; white-space: nowrap; }
+.eq-tech summary:hover { color: var(--ink); }
+.eq-tech[open] summary { margin-bottom: 6px; }
+.eq-tech .mono { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 4px; }
+.eq-tech .card-meta { font-size: 11.5px; }
+
+/* 一覧表の専門的な列（機材コード・最終通信）も同様に、開いたときだけ表示する */
+.tech-toggle { margin-bottom: var(--space-3); font-size: 13px; }
+.tech-toggle summary { cursor: pointer; font-weight: 700; color: var(--ink-soft); }
+.tech-toggle summary:hover { color: var(--ink); }
+.tech-col { display: none; }
+.main:has(.tech-toggle[open]) .tech-col { display: table-cell; }
+
+/* 横に長い表はスクロールできることを、狭い画面でだけ一言添えて示す */
+.table-hint { display: none; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); margin-bottom: var(--space-2); }
+.table-hint .icon { width: 13px; height: 13px; }
+@media (max-width: 900px) { .table-hint { display: flex; } }
+
+/* 状態灯：色に加えてアイコン形状でも状態を示す（色弱でも区別できるように） */
+.status-lamp { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; flex: none; border: 2px solid var(--ink); }
+.status-lamp .icon { width: 14px; height: 14px; stroke-width: 2.2; }
+.status-idle .status-lamp { background: var(--good-tint); color: var(--good); }
+.status-inuse .status-lamp { background: var(--blue); color: var(--ink); }
+@media (prefers-reduced-motion: no-preference) { .status-inuse .status-lamp { animation: lamp-pulse 2.4s ease-in-out infinite; } }
+
+/* ---------------- 案内（未紐付け検出などの注意喚起）：色だけで目立たせ、銘板の質感は使わない ---------------- */
+.callout {
+  border: 2px solid var(--yellow-deep); border-radius: var(--radius);
+  background: var(--yellow-tint);
+  padding: var(--space-5); margin-bottom: var(--space-7);
+}
+.callout .callout-lead { color: color-mix(in srgb, var(--ink) 82%, transparent); margin-bottom: var(--space-3); }
+.callout-row { padding: var(--space-3) 0; border-top: 1.5px solid color-mix(in srgb, var(--yellow-deep) 45%, transparent); }
+.callout-row:first-of-type { border-top: none; padding-top: var(--space-2); }
+.callout-row p { margin-bottom: var(--space-2); font-size: 14px; }
+
+/* ---------------- フォームパネル：箱で囲わず、下の罫線1本だけで次のセクションと分ける ---------------- */
+.form-panel { padding-bottom: var(--space-7); margin-bottom: var(--space-7); border-bottom: 2px solid var(--line-strong); }
+.form-panel h4 { font-size: 18px; margin-bottom: var(--space-3); display: flex; align-items: center; gap: 8px; }
+.form-panel.narrow { max-width: 680px; }
+/* フォームの下に置く補足。枠で囲わず、文字だけで静かに添える */
+.form-panel .form-note { font-size: 13px; line-height: 1.7; margin-top: var(--space-4); max-width: 68ch; }
+.task-form-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1.4fr; gap: var(--space-3); align-items: end; }
+.task-form-grid .span-all { grid-column: 1 / -1; }
+.task-search-grid { display: grid; grid-template-columns: 1.3fr 1.3fr .8fr .9fr 1.1fr auto auto; gap: var(--space-3); align-items: end; }
+.worker-form-grid { display: grid; grid-template-columns: 1.4fr .8fr .9fr 1fr auto; gap: var(--space-3); align-items: end; }
+.worker-form-grid .span-all, .worker-edit-grid .span-all { grid-column: 1 / -1; }
+.equipment-form-grid { display: grid; grid-template-columns: 1.4fr 1fr auto; gap: var(--space-3); align-items: end; }
+
+/* ---------------- タスク一覧：一枚の掲示板に並ぶ行として続ける ---------------- */
+.task-row.task-done { opacity: .55; }
+.task-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.task-head h3 { font-size: 16.5px; font-weight: 700; }
+.task-meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
+.task-meta .strong { color: var(--ink); }
+.task-meta .unassigned { font-weight: 700; color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); }
+/* 行の右肩の操作。編集欄は折りたたんだので、よく使う操作だけを常に見せる */
+.task-tools { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+.task-edit { margin-top: var(--space-2); }
+.task-edit > summary {
+  font-size: 12.5px; font-weight: 700; cursor: pointer; width: fit-content;
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+}
+.task-edit > summary:hover { color: var(--blue-deep); }
+
+/* AI割当の根拠（WariAthena）。黄枠はAI操作の目印（DESIGN.md の AI ボタンと同じ語彙） */
+.ai-why { margin-top: var(--space-2); font-size: 13px; }
+.ai-why > summary { cursor: pointer; width: fit-content; font-size: 12.5px; font-weight: 700; color: color-mix(in srgb, var(--ink) 80%, var(--yellow-deep)); }
+.ai-why > summary:hover { color: var(--ink); }
+.ai-why[open] {
+  padding: var(--space-3) var(--space-4); border: 2px solid var(--yellow-deep);
+  border-radius: var(--radius); background: var(--plate);
+}
+.ai-why[open] > summary { margin-bottom: var(--space-2); }
+.ai-why-lead { color: var(--ink-soft); line-height: 1.7; margin-bottom: var(--space-2); max-width: 80ch; }
+.ai-why-table { font-size: 13px; }
+.ai-why-table th, .ai-why-table td { padding: 6px var(--space-3); }
+.ai-why-table tr.is-chosen { background: var(--yellow-tint); }
+.ai-why-excluded { margin-top: var(--space-2); color: var(--ink-soft); }
+.task-actions { display: grid; grid-template-columns: 1.3fr 0.9fr 0.6fr 0.95fr 1.3fr auto; gap: var(--space-2); align-items: end; margin-top: var(--space-3); }
+.task-actions .field { margin: 0; }
+.visually-hidden-form { display: none; }
+
+/* ---------------- API 一覧：一枚の掲示板に並ぶ行として続ける ---------------- */
+.api-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.api-row .tag { font-family: var(--font-mono); flex: none; }
+.api-row code { font-size: 13px; flex: none; }
+.api-row .desc { font-size: 12.5px; color: var(--ink-faint); }
+code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px; border-radius: 3px; border: 1px solid var(--line); }
+
+.empty { color: var(--ink-faint); font-size: .9rem; padding: var(--space-4) 0; }
+
+/* ---------------- 役職・権限（D-2） ---------------- */
+/* 権限は学習の特徴量ではなく候補を絞る条件なので、一覧でも編集でも
+   「誰が何を持っているか」が一目で分かることを優先している */
+.perm-checks { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.perm-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; font-size: 13px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  cursor: pointer; user-select: none;
+}
+.perm-check:hover { border-color: color-mix(in srgb, var(--ink) 45%, transparent); }
+.perm-check input { margin: 0; accent-color: var(--blue-deep); }
+.perm-check em {
+  font-style: normal; font-size: 10px; letter-spacing: .04em;
+  padding: 1px 5px; border-radius: var(--radius);
+  background: var(--paper); color: var(--ink-soft);
+}
+/* 役職で自動的に付く権限。外せないので入力ではなく表示として見せる */
+.perm-check.is-granted { cursor: default; opacity: .75; background: var(--paper); }
+
+.perm-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.task-perms { font-size: 12px; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+/* 完了後に現場で答えてもらった体感難易度。設定値の難易度と見分けが付くよう色を変える */
+.felt { color: var(--ink); font-weight: 600; }
+
+/* 一覧の下にぶら下がる編集フォーム。開くまでは1行しか占めない。
+   本体行とセットで1人分の区切りなので、線は本体行の下ではなく
+   編集行（開閉トグルの下）に引く。 */
+.worker-row td { border-bottom: none; }
+.edit-row td { padding-top: 0; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); }
+.edit-row summary,
+.perm-edit summary {
+  font-size: 12px; cursor: pointer; width: fit-content;
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+}
+.edit-row summary:hover, .perm-edit summary:hover { color: var(--blue-deep); }
+.edit-row details[open] summary, .perm-edit[open] summary { margin-bottom: var(--space-3); }
+.worker-edit-grid {
+  display: grid; grid-template-columns: 140px 160px 180px auto; gap: var(--space-3);
+  align-items: end; padding-bottom: var(--space-3);
+}
+.task-actions .span-all { grid-column: 1 / -1; }
+.perm-edit { margin-top: var(--space-2); }
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr) !important; }
+  .sidebar { position: static !important; height: auto; }
+  .task-form-grid, .worker-form-grid, .equipment-form-grid, .task-search-grid { grid-template-columns: 1fr; }
+  .worker-edit-grid { grid-template-columns: 1fr; }
+  .task-actions { grid-template-columns: 1fr 1fr; }
+  .main { padding: var(--space-5); }
+}
+
+/* ---------------- 未登録ICカードのポップアップ ---------------- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: max(var(--space-6), env(safe-area-inset-top)) max(var(--space-6), env(safe-area-inset-right))
+           max(var(--space-6), env(safe-area-inset-bottom)) max(var(--space-6), env(safe-area-inset-left));
+  background: color-mix(in srgb, var(--ink) 66%, transparent);
+}
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  width: min(460px, 100%);
+  padding: var(--space-6);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--ink) 24%, transparent);
+  animation: modal-in .18s var(--ease);
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .modal { animation: none; } }
+
+.modal-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
+.modal-head h4 { font-size: 17px; }
+.modal-badge {
+  flex: none; padding: 3px 10px; border-radius: var(--radius-pill);
+  font-size: 11.5px; font-weight: 700;
+  background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep));
+  border: 1.5px solid var(--yellow-deep);
+}
+.modal-lead { font-size: 13.5px; line-height: 1.7; margin-bottom: var(--space-4); color: var(--ink-soft); }
+
+.modal-facts {
+  display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4);
+  border-radius: var(--radius); background: var(--paper); border: 1.5px solid var(--line);
+  font-size: 13px;
+}
+.modal-facts dt { color: var(--ink-faint); }
+.modal-facts dd { word-break: break-all; }
+
+.modal-form { display: flex; flex-direction: column; gap: var(--space-4); }
+.modal-form[hidden] { display: none; }
+/* 新規登録の下に置く「登録済みの人に紐付け」。別の操作なので線で区切る */
+.modal-link { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1.5px solid var(--line); }
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
+
+.modal-badge.badge-danger { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.ask-text { font-size: 15px; line-height: 1.7; margin-bottom: var(--space-5); }
+
+/* モジュールでの操作の通知。操作の邪魔をしないよう右上に小さく出して数秒で消える（base.html） */
+.module-toasts {
+  position: fixed; z-index: 45; right: var(--space-5); top: var(--space-5);
+  width: min(300px, calc(100vw - 2 * var(--space-4)));
+  display: flex; flex-direction: column; gap: var(--space-2);
+  pointer-events: none;
+}
+.module-toast {
+  display: flex; align-items: flex-start; gap: var(--space-2); padding: 9px 8px 9px 12px;
+  font-size: 12.5px; line-height: 1.5; color: var(--ink);
+  background: var(--blue-tint); border: 1.5px solid var(--blue); border-radius: var(--radius);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 16%, transparent);
+  animation: flash-in .22s var(--ease) both; pointer-events: auto;
+}
+.module-toast > div { flex: 1; min-width: 0; }
+.module-toast strong { display: block; font-size: 13px; }
+.module-toast span { display: block; color: var(--ink-soft); overflow-wrap: anywhere; }
+.module-toast .flash-close { width: 20px; height: 20px; font-size: 16px; }
+.module-toast.is-leaving { animation: flash-out .2s var(--ease) both; }
+@media (max-width: 600px) { .module-toasts { right: var(--space-4); top: var(--space-4); } }
+.modal-note { font-size: 11.5px; line-height: 1.6; margin-top: var(--space-3); color: var(--ink-faint); }
+
+/* ---------------- テスト（仮想モジュール） ---------------- */
+.vm-add-grid { grid-template-columns: 1.6fr 1fr auto; }
+.vm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: var(--space-5); margin-bottom: var(--space-8); }
+.vm { gap: var(--space-3); padding: var(--space-5); }
+.vm.is-focused { outline: 3px solid var(--blue); outline-offset: 2px; }
+.vm-head { display: flex; align-items: center; gap: var(--space-3); }
+.vm-title { flex: 1; min-width: 0; }
+.vm-eq { font-size: 12.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 実機のステータスLED(B-3)。作業中は赤、それ以外は青 */
+.vm-lamp { width: 16px; height: 16px; border-radius: 50%; flex: none; border: 2px solid var(--ink); background: #2f7bff; box-shadow: 0 0 8px #2f7bff; }
+.vm-lamp.is-red { background: #ff3b30; box-shadow: 0 0 8px #ff3b30; }
+
+/* 2.8インチ LCD (320x240) の見た目をそのまま縮尺する。1px = 100cqw/320 */
+.vm-screen-wrap { container-type: inline-size; width: 100%; }
+.vm-screen {
+  --u: calc(100cqw / 320);
+  position: relative; aspect-ratio: 4 / 3; width: 100%; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: #121214; color: #F2F2F4; border: 6px solid #2a2a2e; border-radius: 6px;
+  font-family: var(--font); line-height: 1.25;
+}
+.lcd-band { flex: none; height: calc(40 * var(--u)); display: flex; align-items: center; justify-content: space-between; padding: 0 calc(12 * var(--u)); color: #fff; font-size: calc(20 * var(--u)); font-weight: 700; }
+.lcd-id { font-size: calc(14 * var(--u)); font-weight: 400; opacity: .95; }
+.lcd-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: calc(14 * var(--u)) calc(12 * var(--u)) calc(6 * var(--u)); gap: calc(4 * var(--u)); }
+.lcd-body.is-center { justify-content: center; }
+.lcd-body p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lcd-title { font-size: calc(25 * var(--u)); font-weight: 700; }
+.lcd-sub { font-size: calc(20 * var(--u)); color: #9E9EA8; }
+.lcd-question { font-size: calc(20 * var(--u)); margin-top: calc(4 * var(--u)); }
+.lcd-chips { flex: 1; display: flex; gap: calc(6 * var(--u)); align-items: center; }
+.lcd-chip {
+  flex: 1 1 0; min-width: 0; height: calc(46 * var(--u)); padding: 0 calc(4 * var(--u));
+  font: inherit; font-size: calc(17 * var(--u)); font-weight: 700; cursor: pointer;
+  background: #1D1D22; color: #9E9EA8; border: 1px solid #32323C; border-radius: calc(8 * var(--u));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lcd-chip.is-selected { color: #101012; border-color: transparent; }
+.lcd-bar { flex: none; height: calc(34 * var(--u)); display: flex; align-items: center; justify-content: space-between; padding: 0 calc(12 * var(--u)); background: #1D1D22; border-top: 1px solid #32323C; font-size: calc(14 * var(--u)); color: #9E9EA8; }
+.lcd-ok { color: #F2F2F4; }
+.lcd-foot { flex: none; padding: 0 calc(12 * var(--u)) calc(8 * var(--u)); font-size: calc(13 * var(--u)); color: #6A6A74; }
+
+/* 物理ボタン(B-2)。画面下部のラベルと左右を揃える */
+.vm-buttons { display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: var(--space-2); }
+.vm-btn {
+  font: inherit; font-weight: 700; font-size: 14px; cursor: pointer;
+  padding: 12px 8px; border-radius: 10px; border: 2px solid var(--ink);
+  background: var(--plate); color: var(--ink); box-shadow: 0 3px 0 var(--ink);
+  transition: transform .06s var(--ease), box-shadow .06s var(--ease);
+}
+.vm-btn:active { transform: translateY(3px); box-shadow: 0 0 0 var(--ink); }
+.vm-btn-ok { background: var(--blue); }
+
+.vm-timer { font-size: 13px; font-weight: 700; color: var(--blue-deep); }
+.vm-timer.is-error { color: var(--bad); }
+.vm-record { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 2px solid #C2379A; border-radius: var(--radius); background: color-mix(in srgb, #C2379A 8%, var(--plate)); }
+.vm-record textarea { resize: vertical; min-height: 0; }
+.vm-record-row, .vm-touch-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.vm-touch-row .input { flex: 1; min-width: 0; }
+.vm-touch .vm-touch-tag { margin-top: var(--space-2); }
+.vm-file { cursor: pointer; }
+
+.vm-log { font-size: 12px; }
+.vm-log summary { cursor: pointer; font-weight: 700; color: var(--ink-soft); }
+.vm-log ol { list-style: none; margin: var(--space-2) 0 0; padding: 0; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.vm-log li { word-break: break-all; color: var(--ink-soft); }
+.vm-log li .mono { color: var(--ink-faint); }
+.vm-log .log-up { color: var(--good); }
+.vm-log .log-down { color: var(--blue-deep); }
+@media (max-width: 900px) { .vm-add-grid { grid-template-columns: 1fr; } }
+
+/* テストモードの切り替え（サイドバー下部）。ON の間は黄色で目立たせ、切り忘れを防ぐ */
+.test-mode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.test-mode-state { font-weight: 700; }
+.test-mode-state.is-on { color: var(--yellow); }
+.test-mode-btn { background: transparent; color: var(--paper); border-color: color-mix(in srgb, var(--paper) 45%, transparent); }
+.test-mode-btn:hover { background: color-mix(in srgb, var(--paper) 12%, transparent); }
+/* 自動保存の状態（data-autosave のフォームの末尾に1行で出る） */
+.autosave-status { font-size: 12px; color: var(--ink-soft); }
+.autosave-status[data-kind="saved"] { color: var(--good); font-weight: 700; }
+.autosave-status[data-kind="error"], .autosave-status[data-kind="offline"] { color: var(--bad); font-weight: 700; }
+.autosave-status[data-kind="wait"] { color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); }

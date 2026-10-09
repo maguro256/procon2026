@@ -229,12 +229,51 @@ def _row_exists(conn, table, row_id):
     return conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is not None
 
 
+# 管理画面の見た目（UI）。審査用に提出した旧UI（classic）と、デモ用の新UI（new）を
+# **ブラウザごとに** 切り替える。/ui/new・/ui/classic を開くと Cookie に記録される。
+# 変わるのは templates/<ui>/ と static/<ui>/style.css だけで、サーバーの処理・DB・
+# モジュールは共通。
+#
+# 既定は classic。Cookie の無いブラウザ（審査で初めて開く画面）に新UIを出さないため。
+# サーバー全体の設定にしないのは、旧UIを開いたままのタブの自動更新に新UIの
+# <main> が流れ込み、旧UIの枠の中で崩れて見えるため。
+UI_COOKIE = "gemmba_ui"
+UI_CHOICES = ("classic", "new")
+DEFAULT_UI = "classic"
+
+
+def _ui():
+    ui = request.cookies.get(UI_COOKIE)
+    return ui if ui in UI_CHOICES else DEFAULT_UI
+
+
+def _render(name, **context):
+    """いまのブラウザのUIのテンプレートで描く。画面の描画は必ずこれを通す"""
+    return render_template(f"{_ui()}/{name}", **context)
+
+
+@app.route("/ui/<choice>")
+def switch_ui(choice):
+    """UIを切り替えて元の画面へ戻る。URLを打つだけで済むよう GET で受ける"""
+    if choice not in UI_CHOICES:
+        return "Not Found", 404
+    nxt = request.args.get("next", "")
+    # 外部URLへは飛ばさない（_back_to と同じ判定。/\ もブラウザは // と同じに扱う）
+    if not nxt.startswith("/") or nxt.startswith("//") or nxt.startswith("/\\"):
+        nxt = url_for("dashboard")
+    resp = redirect(nxt)
+    resp.set_cookie(UI_COOKIE, choice, max_age=60 * 60 * 24 * 365, samesite="Lax")
+    return resp
+
+
 @app.context_processor
 def inject_labels():
     # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
     return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS, F=FELT_LABELS,
                 PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms,
-                test_mode=_test_mode["on"])
+                test_mode=_test_mode["on"],
+                # 期限の「今日まで」「期限切れ」の判定用（新UIの一覧）
+                today=datetime.now().strftime("%Y-%m-%d"))
 
 
 # ---------------------------------------------------------------- 画面
@@ -277,7 +316,7 @@ def dashboard():
                  CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
     """).fetchall()
     conn.close()
-    return render_template("dashboard.html", equipment=equipment, counts=counts, attention=attention,
+    return _render("dashboard.html", equipment=equipment, counts=counts, attention=attention,
                            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
@@ -293,8 +332,11 @@ def workers():
     with _pending_lock:
         pending_tags = dict(_pending_tags)
     unlinked = sorted((w for w in rows if not w["nfc_tag_id"]), key=lambda w: w["name"])
-    return render_template("workers.html", workers=rows, pending_tags=pending_tags,
-                           unlinked_workers=unlinked)
+    # 新UIの名前検索。紐付け候補（unlinked）と人数の表示は絞り込みに関係なく全員から出す
+    q = request.args.get("q", "").strip()
+    shown = [w for w in rows if q.casefold() in w["name"].casefold()] if q else rows
+    return _render("workers.html", workers=shown, pending_tags=pending_tags,
+                   unlinked_workers=unlinked, q=q, total_workers=len(rows))
 
 
 def _back_to(default_endpoint):
@@ -424,9 +466,14 @@ def tasks():
     q_status = q_status if q_status in STATUS_LABELS or q_status == "unassigned" else ""
     q_equipment = request.args.get("q_equipment", "")
     q_equipment = q_equipment if q_equipment.isdigit() or q_equipment == "none" else ""
+    # 新UIの検索欄（タスク名・担当者名のどちらかに部分一致）。旧UIは q_title / q_worker を使う
+    q = request.args.get("q", "").strip()
 
     conditions = []
     params = []
+    if q:
+        conditions.append("(t.title LIKE ? ESCAPE '\\' OR w.name LIKE ? ESCAPE '\\')")
+        params += [_like_escape(q), _like_escape(q)]
     if q_title:
         conditions.append("t.title LIKE ? ESCAPE '\\'")
         params.append(_like_escape(q_title))
@@ -474,10 +521,21 @@ def tasks():
 
     worker_list = conn.execute("SELECT id, name FROM workers ORDER BY name").fetchall()
     equipment_list = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
+    # 状態ごとの件数（新UIの状態タブ）。絞り込みに関係なく全体で数える
+    status_counts = conn.execute("""
+        SELECT
+          COALESCE(SUM(status != 'done'), 0)                                AS open,
+          COALESCE(SUM(status != 'done' AND assigned_worker_id IS NULL), 0) AS unassigned,
+          COALESCE(SUM(status = 'assigned'), 0)                             AS assigned,
+          COALESCE(SUM(status = 'in_progress'), 0)                          AS in_progress,
+          COALESCE(SUM(status = 'done'), 0)                                 AS done
+        FROM tasks
+    """).fetchone()
     conn.close()
-    filtered = any((q_title, q_worker, q_priority, q_status, q_equipment))
-    return render_template("tasks.html", active_tasks=active_tasks, done_tasks=done_tasks,
+    filtered = any((q, q_title, q_worker, q_priority, q_status, q_equipment))
+    return _render("tasks.html", active_tasks=active_tasks, done_tasks=done_tasks,
                            worker_list=worker_list, equipment_list=equipment_list,
+                           q=q, status_counts=status_counts,
                            q_title=q_title, q_worker=q_worker, q_priority=q_priority,
                            q_status=q_status, q_equipment=q_equipment, filtered=filtered,
                            ai_notes={t["id"]: _parse_ai_note(t["ai_note"]) for t in rows
@@ -653,7 +711,7 @@ def equipment():
     conn.close()
     with _pending_lock:
         pending_modules = dict(_pending_modules)
-    return render_template("equipment.html", equipment=rows, pending_modules=pending_modules)
+    return _render("equipment.html", equipment=rows, pending_modules=pending_modules)
 
 
 @app.route("/equipment/add", methods=["POST"])
@@ -2596,7 +2654,7 @@ def test_page():
     # 未登録カードのタッチ（登録ポップアップ・既存作業者への紐付け）を試すための仮の社員証。
     # 誰かに紐付けたものは登録済みの欄に移るので、ここからは外す
     unregistered = [t for t in TEST_UNREGISTERED_TAGS if t not in used]
-    return render_template("test.html", equipment=equipment_rows, workers=worker_rows,
+    return _render("test.html", equipment=equipment_rows, workers=worker_rows,
                            unregistered_tags=unregistered)
 
 

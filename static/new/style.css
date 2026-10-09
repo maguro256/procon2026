@@ -722,6 +722,11 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 
 /* テストモードの切り替え（サイドバー下部）。ON の間は黄色で目立たせ、切り忘れを防ぐ */
 .test-mode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+/* 新UI（デモ用）の表示。テストモードの切り替えのすぐ上に並べる */
+.ui-switch { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.ui-switch + .test-mode { margin-top: var(--space-2); border-top: none; padding-top: 0; }
+.ui-switch-state { font-weight: 700; color: var(--blue); }
+.ui-switch-link { color: var(--paper); font-weight: 700; }
 .test-mode-state { font-weight: 700; }
 .test-mode-state.is-on { color: var(--yellow); }
 .test-mode-btn { background: transparent; color: var(--paper); border-color: color-mix(in srgb, var(--paper) 45%, transparent); }
@@ -731,3 +736,116 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .autosave-status[data-kind="saved"] { color: var(--good); font-weight: 700; }
 .autosave-status[data-kind="error"], .autosave-status[data-kind="offline"] { color: var(--bad); font-weight: 700; }
 .autosave-status[data-kind="wait"] { color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); }
+
+/* ================================================================
+   新UI：一覧画面（仕事・作業者・機材）の共通部品
+   - 見出しの右上に「＋ 登録」。押すとその下に登録フォームが開く（.add-panel）
+   - 一覧は一枚の掲示板の中に1件1行。「編集」でその行の下に編集欄が開く（.lrow-edit）
+   ================================================================ */
+.page-top { position: relative; margin-bottom: var(--space-5); }
+.list-head { margin-bottom: 0; padding-right: 220px; }
+.list-head h1 { margin-bottom: 2px; }
+.list-sub { color: var(--ink-soft); font-size: 14.5px; }
+
+/* 登録フォームの開閉。ボタン（summary）は見出しの右上に置き、開いた中身は見出しの下に出る */
+.add-panel > summary { position: absolute; top: 4px; right: 0; list-style: none; min-height: 44px; }
+.add-panel > summary::-webkit-details-marker { display: none; }
+.add-panel > summary .icon { width: 16px; height: 16px; stroke-width: 2.4; }
+.add-panel[open] > summary { background: var(--plate); }
+.add-panel[open] > summary .icon { transform: rotate(45deg); }
+.add-panel:not([open]) .when-open, .add-panel[open] .when-closed { display: none; }
+.add-panel-body {
+  margin-top: var(--space-5); padding: var(--space-5) var(--space-6);
+  border: 2px solid var(--line-strong); border-radius: var(--radius); background: var(--plate);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.add-panel-title { font-size: 18px; font-weight: 700; margin-bottom: var(--space-4); }
+@media (max-width: 600px) {
+  .list-head { padding-right: 0; }
+  .add-panel > summary { position: static; margin-top: var(--space-3); width: fit-content; }
+}
+
+/* 状態タブ・検索・絞り込みを1行に */
+.list-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-4); margin-bottom: var(--space-4); }
+.seg-group { display: inline-flex; flex-wrap: wrap; gap: 2px; margin: 0; padding: 3px; min-width: 0; border: 1.5px solid var(--line); border-radius: 6px; background: var(--plate); }
+.seg { position: relative; }
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg > span { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: var(--radius); font-size: 14px; font-weight: 700; color: var(--ink-soft); }
+.seg:hover > span { color: var(--ink); }
+.seg input:checked + span { background: var(--ink); color: var(--paper); }
+.seg input:focus-visible + span { box-shadow: var(--focus-ring); }
+.seg-count { font-family: var(--font-mono); font-size: 12.5px; font-weight: 400; }
+.search-form { flex: 0 1 360px; }
+.search-field { position: relative; display: block; flex: 1 1 240px; }
+.search-form .search-field { flex: none; }
+.search-field .icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--ink-soft); }
+.search-field .input { width: 100%; padding-left: 34px; }
+.inline-field { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
+.inline-field .input { width: auto; }
+.clear-link { font-size: 14px; font-weight: 700; }
+.chip-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; font-size: 13px; color: var(--ink-soft); }
+.chip-legend .perm-chip:not(:first-child) { margin-left: var(--space-3); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* 一覧の行 */
+.lrows { container-type: inline-size; }
+.lrows .empty { padding: var(--space-4) var(--space-5); }
+.lrow { display: grid; gap: var(--space-3) var(--space-4); align-items: center; padding: var(--space-3) var(--space-5); min-height: 44px; }
+.lrows-tasks .lrow { grid-template-columns: 64px minmax(220px, 2fr) minmax(100px, 1fr) 104px minmax(140px, 1.1fr) 92px 72px; }
+.lrows-workers .lrow { grid-template-columns: minmax(150px, 1.1fr) 64px minmax(220px, 2.4fr) 124px 64px 72px; }
+.lrows-equipment .lrow { grid-template-columns: minmax(180px, 1.4fr) 140px 100px minmax(170px, 1.5fr) 124px; }
+.lrow-head { padding-top: var(--space-3); padding-bottom: var(--space-3); min-height: 0; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); border-bottom: 1px solid var(--line); }
+.lrow-item { border-bottom: 1px solid var(--line); }
+.lrow-item:last-child { border-bottom: none; }
+.lrow-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lrow-title { font-size: 16px; line-height: 1.45; }
+.lrow-meta { font-size: 13px; color: var(--ink-soft); line-height: 1.5; }
+.lrow-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; line-height: 1.45; min-width: 0; }
+.lrow-note { font-size: 12.5px; color: var(--ink-soft); }
+.lrow-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.is-none { color: var(--ink-faint); }
+.lrow-item.is-done .lrow-title { color: var(--ink-soft); }
+/* 腕輪ICタグが無い人・接続の切れた機材は行ごと色を付ける */
+.lrow-item.is-attention { background: var(--yellow-tint); }
+.lrow-item.is-offline { background: var(--bad-tint); }
+
+/* 編集欄。summary は隠し、行の「編集」ボタン（data-toggle-details）で開閉する */
+.lrow-edit > summary { display: none; }
+.lrow-tools .when-open { display: none; }
+.lrow-item:has(> .lrow-edit[open]) { background: #FAFDFF; box-shadow: inset 0 3px 0 var(--blue); }
+.lrow-item:has(> .lrow-edit[open]) .lrow-tools .when-open { display: inline; }
+.lrow-item:has(> .lrow-edit[open]) .lrow-tools .when-closed { display: none; }
+.lrow-edit-body { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-1) var(--space-5) var(--space-5); }
+.lrow-edit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-3); align-items: end; }
+.lrow-edit-grid .span-all { grid-column: 1 / -1; }
+.lrow-edit-grid > .btn { justify-self: start; }
+.lrow-edit-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.lrow-edit-note { font-size: 13px; color: var(--ink-soft); }
+
+.btn-ghost { background: transparent; border-color: transparent; color: var(--blue-deep); }
+.btn-ghost:hover { background: var(--blue-tint); color: var(--ink); }
+.btn-icon-sm { width: 34px; height: 34px; }
+.btn-icon-sm .icon { width: 16px; height: 16px; stroke-width: 2; }
+.link-btn { padding: 0; border: none; background: none; font: inherit; font-size: 12.5px; font-weight: 700; color: var(--blue-deep); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.link-btn:hover { color: var(--ink); }
+
+/* 権限の札。個別付与は実線、役職で自動的に付くものは点線 */
+.perm-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.perm-chip { display: inline-flex; align-items: center; padding: 1px 8px; border: 1.5px solid var(--line-strong); border-radius: var(--radius); background: var(--plate); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.perm-chip.is-role { border-style: dashed; border-color: color-mix(in srgb, var(--ink) 45%, transparent); background: var(--paper); color: var(--ink-soft); font-weight: 400; }
+
+/* 状態の文字表示（接続・紐付け） */
+.state-ok, .state-warn, .state-bad { display: inline-flex; align-items: center; gap: 5px; font-size: 13.5px; font-weight: 700; white-space: nowrap; }
+.state-ok { color: var(--good); }
+.state-warn { color: color-mix(in srgb, var(--ink) 70%, var(--yellow-deep)); }
+.state-bad { color: var(--bad); }
+.state-ok .icon, .state-warn .icon, .state-bad .icon { width: 14px; height: 14px; stroke-width: 2.4; }
+
+/* 狭いとき（スマホ・狭い窓）は1件を縦に積む */
+@container (max-width: 760px) {
+  .lrows .lrow.lrow-head { display: none; }
+  .lrows .lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: var(--space-3) var(--space-4); }
+  .lrow-main { order: -1; flex: 1 1 100%; }
+  .lrow-tools { margin-left: auto; }
+  .lrow-edit-body { padding: var(--space-1) var(--space-4) var(--space-4); }
+}

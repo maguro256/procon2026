@@ -1,0 +1,11 @@
+{# 機材の状態アイコン：空き＝丸の輪郭、使用中＝塗りつぶした再生形。色だけでなく形でも区別する #}
+{% macro status_icon(status) %}
+{%- if status == 'idle' -%}
+<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/></svg>
+{%- else -%}
+<svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M9 6.5v11l9-5.5z"/></svg>
+{%- endif -%}
+{% endmacro %}
+
+{# 機材の状態ラベル：空き／使用中の2種類に統一する #}
+{% macro status_label(status) %}{{ '空き' if status == 'idle' else '使用中' }}{% endmacro %}

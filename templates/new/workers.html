@@ -1,0 +1,166 @@
+{% extends "new/base.html" %}
+{% from "new/_macros.html" import role_select, perm_checks, perm_chips with context %}
+{% block title %}作業者 | Gemmba 管理{% endblock %}
+{% block content %}
+
+{% set unlinked_n = unlinked_workers|length %}
+<div class="page-top">
+  <header class="page-head list-head">
+    <h1>作業者</h1>
+    <p class="list-sub">{{ total_workers }}名{% if unlinked_n %}・腕輪ICタグ未紐付け {{ unlinked_n }}名{% endif %}</p>
+  </header>
+
+  {# 登録フォームは「＋ 作業者を登録」で開く。登録すると画面が描き直されて閉じる #}
+  <details class="add-panel" id="add-worker">
+    <summary class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="when-closed">作業者を登録</span><span class="when-open">閉じる</span></summary>
+    <div class="add-panel-body">
+      <h2 class="add-panel-title">作業者を登録</h2>
+      <form method="post" action="{{ url_for('add_worker') }}" class="worker-form-grid">
+        <div class="field"><label>名前 *</label>
+          <input class="input" type="text" name="name" placeholder="例：山田 太郎" required>
+        </div>
+        <div class="field"><label>勤続年数 *</label>
+          <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
+        </div>
+        <div class="field"><label>役職</label>{{ role_select(None) }}</div>
+        {# 空欄で登録した人には、あとでカードをタッチしたときのポップアップから紐付けられる #}
+        <div class="field"><label>腕輪ICタグID（任意）</label>
+          <input class="input" type="text" name="nfc_tag_id" placeholder="空欄でも登録できます">
+        </div>
+        <div class="field span-all"><label>保有権限（役職で付くぶんは登録後に自動で加わります）</label>
+          {{ perm_checks('permissions', []) }}
+        </div>
+        <button type="submit" class="btn btn-primary">登録</button>
+      </form>
+      <p class="text-muted form-note">
+        <strong>ICカードは現場でタッチして登録するのが確実です。</strong>
+        未登録のカードがタッチされると、この画面に登録フォームが自動で出ます。
+        ICタグIDを空欄で登録した人には、あとでその人のカードをタッチしたときに紐付けられます。
+      </p>
+    </div>
+  </details>
+</div>
+
+{% if pending_tags %}
+{# 見出しを押すと最小化できる。閉じた状態はブラウザが覚え、新しいタグが来たら開き直す（base.html の applyFolds） #}
+<details class="callout form-panel callout-fold" open data-fold="pending-tags"
+         data-fold-items='{{ pending_tags|list|tojson }}'>
+  <summary>
+    <h4>未登録タグを検出（{{ pending_tags|length }}件）</h4>
+    <span class="callout-fold-toggle"><span class="when-open">最小化 ▴</span><span class="when-closed">開く ▾</span></span>
+  </summary>
+  <p class="callout-lead">以下のICタグがタッチされましたが未登録です。名前と勤続年数を入力して登録するか、ICタグ未紐付けで登録済みの作業者に紐付けてください。保有権限は登録後に編集できます。</p>
+  {% for tag_id, module_id in pending_tags.items() %}
+  <div class="callout-row">
+    <p>タグID: <strong class="mono">{{ tag_id }}</strong>{% if module_id %} <span class="text-muted">（検出モジュール: {{ module_id }}）</span>{% endif %}</p>
+    <form method="post" action="{{ url_for('add_worker') }}" class="worker-form-grid">
+      <input type="hidden" name="nfc_tag_id" value="{{ tag_id }}">
+      <div class="field"><label>名前 *</label>
+        <input class="input" type="text" name="name" placeholder="例：山田 太郎" required>
+      </div>
+      <div class="field"><label>勤続年数 *</label>
+        <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="0" required>
+      </div>
+      <div class="field"><label>役職</label>{{ role_select(None) }}</div>
+      <button type="submit" class="btn btn-primary">このタグで登録</button>
+    </form>
+    {% if unlinked_workers %}
+    <form method="post" action="{{ url_for('link_worker_tag') }}" class="worker-form-grid">
+      <input type="hidden" name="nfc_tag_id" value="{{ tag_id }}">
+      <div class="field"><label>または登録済みの作業者に紐付け</label>
+        <select class="input" name="worker_id" required>
+          <option value="">ICタグ未紐付けの作業者を選ぶ</option>
+          {% for w in unlinked_workers %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-secondary">この人に紐付け</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
+
+<div class="list-toolbar">
+  {# 名前で探す。打つとその場で一覧が絞り込まれる（base.html の data-live-search） #}
+  <form method="get" action="{{ url_for('workers') }}" data-live-search class="search-form">
+    <label class="search-field">
+      <span class="sr-only">名前で探す</span>
+      <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+      <input class="input" type="search" name="q" value="{{ q }}" placeholder="名前で探す">
+    </label>
+  </form>
+  <p class="chip-legend">
+    <span class="perm-chip">アーク溶接</span>個別に付与
+    <span class="perm-chip is-role">完成検査</span>役職で自動的に付く
+  </p>
+</div>
+
+{% macro worker_item(w) %}
+{% set granted = perms.granted_by_role(w.role) %}
+<div class="lrow-item{{ ' is-attention' if not w.nfc_tag_id }}" data-key="w-{{ w.id }}">
+  <div class="lrow">
+    <div class="lrow-main">
+      <strong class="lrow-title">{{ w.name }}</strong>
+      <span class="lrow-meta">{{ perms.role_label(w.role) }}</span>
+    </div>
+    <span class="mono">{{ '%g'|format(w.years_of_service) }}年</span>
+    <span>{{ perm_chips(perms.held(w), granted, empty='なし（資格不要の作業のみ）') }}</span>
+    <span class="lrow-stack">
+      {%- if w.nfc_tag_id %}
+      <span class="state-ok"><svg class="icon" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>紐付け済み</span>
+      {%- else %}
+      <span class="state-warn"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>未紐付け</span>
+      <span class="lrow-note">現場でタッチ不可</span>
+      {%- endif -%}
+    </span>
+    <span>
+      {%- if w.open_tasks %}<a class="strong" href="{{ url_for('tasks', q=w.name) }}">{{ w.open_tasks }}件</a>
+      {%- else %}<span class="is-none">—</span>{% endif -%}
+    </span>
+    <span class="lrow-tools">
+      <button type="button" class="btn btn-ghost btn-sm" data-toggle-details="edit-w-{{ w.id }}" aria-controls="edit-w-{{ w.id }}" aria-expanded="false"><span class="when-closed">編集</span><span class="when-open">閉じる</span></button>
+    </span>
+  </div>
+
+  {# 編集欄。開閉の状態は自動保存で画面が描き直されても引き継がれる（base.html） #}
+  <details class="lrow-edit" id="edit-w-{{ w.id }}">
+    <summary>{{ w.name }} さんを編集</summary>
+    <div class="lrow-edit-body">
+      {# data-autosave: 変えた瞬間に保存する（base.html）。「保存」ボタンも残してある #}
+      <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="lrow-edit-grid" data-autosave>
+        <div class="field"><label>勤続年数</label>
+          <input class="input" type="number" name="years_of_service" step="0.5" min="0" value="{{ w.years_of_service }}">
+        </div>
+        <div class="field"><label>役職</label>{{ role_select(w.role) }}</div>
+        <div class="field"><label>腕輪ICタグID</label>
+          <input class="input mono" type="text" name="nfc_tag_id" placeholder="未紐付け" value="{{ w.nfc_tag_id or '' }}">
+        </div>
+        <div class="field span-all"><label>保有権限（個別付与。「役職」と付いたものは役職で自動的に付きます）</label>
+          {{ perm_checks('permissions', perms.parse(w.permissions), granted) }}
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm">保存</button>
+      </form>
+      <div class="lrow-edit-actions">
+        <button type="submit" form="delete-w-{{ w.id }}" class="btn btn-danger btn-sm">{{ w.name }} さんを削除</button>
+      </div>
+    </div>
+  </details>
+  <form id="delete-w-{{ w.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_worker', worker_id=w.id) }}"
+        data-confirm="{{ w.name }} さんを削除しますか？担当中のタスクは未割当に戻ります。" data-confirm-ok="削除する"></form>
+</div>
+{% endmacro %}
+
+<div class="sheet lrows lrows-workers">
+  {% if workers %}
+  <div class="lrow lrow-head" aria-hidden="true">
+    <span>名前・役職</span><span>勤続</span><span>保有権限</span><span>腕輪ICタグ</span><span>担当中</span><span></span>
+  </div>
+  {% endif %}
+  {% for w in workers %}
+  {{ worker_item(w) }}
+  {% else %}
+  <p class="empty">{{ '名前に一致する作業者はいません。' if q else '作業者が登録されていません。「作業者を登録」から追加してください。' }}</p>
+  {% endfor %}
+</div>
+{% endblock %}
