@@ -21,7 +21,6 @@ db.init_db(seed=True)
 
 import app
 
-app._test_mode["on"] = True   # /test も描けるようにする
 ok = True
 
 

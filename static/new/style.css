@@ -474,6 +474,16 @@ select.input {
 .callout-fold[open] .when-closed, .callout-fold:not([open]) .when-open { display: none; }
 .callout-fold:not([open]) { padding-top: var(--space-3); padding-bottom: var(--space-3); margin-bottom: var(--space-5); }
 
+/* タスク画面の「定期タスクを登録」。ボタンを押すとその下に登録フォームが開く */
+.recurring-add { margin-top: var(--space-3); }
+.recurring-add > summary { list-style: none; width: fit-content; cursor: pointer; }
+.recurring-add > summary::-webkit-details-marker { display: none; }
+.recurring-add > summary .icon { width: 16px; height: 16px; stroke-width: 2.4; }
+.recurring-add[open] > summary .icon { transform: rotate(45deg); }
+/* .when-open / .when-closed は外側の .callout-fold の開閉に巻き込まれるので別の名前にする */
+.recurring-add:not([open]) .ra-open, .recurring-add[open] .ra-closed { display: none; }
+.recurring-add-body { margin-top: var(--space-4); }
+
 /* ---------------- フォームパネル：箱で囲わず、下の罫線1本だけで次のセクションと分ける ---------------- */
 .form-panel { padding-bottom: var(--space-7); margin-bottom: var(--space-7); border-bottom: 2px solid var(--line-strong); }
 .form-panel h4 { font-size: 18px; margin-bottom: var(--space-3); display: flex; align-items: center; gap: 8px; }

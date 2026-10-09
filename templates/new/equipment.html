@@ -139,13 +139,15 @@
       {% if offline %}
       <p class="lrow-edit-note">モジュールと通信できません。タッチしても反応しないので、モジュールの電源とWi-Fiを確認してください。</p>
       {% endif %}
-      {# 機材にモジュールID(hostname)を紐付ける。空にすると紐付けを外す #}
-      <form method="post" action="{{ url_for('bind_equipment') }}" class="lrow-edit-grid">
-        <input type="hidden" name="equipment_id" value="{{ e.id }}">
+      {# 機材名とモジュールID(hostname)の変更。モジュールIDを空にすると紐付けを外す #}
+      <form method="post" action="{{ url_for('update_equipment', eq_id=e.id) }}" class="lrow-edit-grid">
+        <div class="field"><label>機材名 *</label>
+          <input class="input" type="text" name="name" value="{{ e.name }}" required>
+        </div>
         <div class="field"><label>モジュールID</label>
           <input class="input mono" type="text" name="hostname" value="{{ e.hostname or '' }}" placeholder="未紐付け">
         </div>
-        <button type="submit" class="btn btn-secondary btn-sm">モジュールIDを保存</button>
+        <button type="submit" class="btn btn-secondary btn-sm">保存</button>
       </form>
       <p class="lrow-edit-note mono">機材コード {{ e.module_id or '—' }}{% if e.ip %}・IP {{ e.ip }}{% endif %}{% if e.last_seen %}・最終通信 {{ e.last_seen }}{% endif %}</p>
       <div class="lrow-edit-actions">

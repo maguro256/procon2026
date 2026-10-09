@@ -367,6 +367,14 @@
 {% endmacro %}
 
 <h3 class="section-title">タスク一覧（優先度順・{{ active_tasks|length }}件）</h3>
+{# 担当者の決まっていない未着手のタスクを、急ぐものから順にまとめて AI で割り当てる #}
+{% if status_counts.unassigned %}
+<form method="post" action="{{ url_for('auto_assign_all') }}" class="bulk-assign" style="margin: 0 0 12px"
+      data-confirm="担当者の決まっていないタスク（{{ status_counts.unassigned }}件）を、AIでまとめて割り当てますか？担当者を指定したタスクは変わりません。" data-confirm-ok="割り当てる">
+  <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+  <button type="submit" class="btn btn-ai" title="WariAthena による自動割り当て。急ぐタスクから順に、手持ちが偏らないように決めます">未割当の {{ status_counts.unassigned }} 件をAIで一括割当</button>
+</form>
+{% endif %}
 <div class="sheet task-list">
 {% for t in active_tasks %}
 {{ task_row(t) }}

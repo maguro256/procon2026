@@ -88,9 +88,10 @@
           data-confirm="定期タスク「{{ r.title }}」を削除しますか？（追加済みのタスクは残ります）" data-confirm-ok="削除する"><input type="hidden" name="next" value="{{ here }}"></form>
   </div>
   {% endfor %}
-  <details class="lrow-edit" id="add-recurring">
-    <summary>定期タスクを登録</summary>
-    <div class="lrow-edit-body">
+  {# 一覧の行の編集欄（.lrow-edit）は summary を隠しているので使わない。ここはボタンで開閉する #}
+  <details class="recurring-add" id="add-recurring">
+    <summary class="btn btn-secondary btn-sm"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="ra-closed">定期タスクを登録</span><span class="ra-open">登録欄を閉じる</span></summary>
+    <div class="recurring-add-body">
       <form method="post" action="{{ url_for('add_recurring') }}" class="task-form-grid">
         <div class="field"><label>タスク名 *</label>
           <input class="input" type="text" name="title" placeholder="例：旋盤 週次点検" required>
@@ -176,6 +177,15 @@
     </select>
   </label>
   {% if filtered %}<a class="clear-link" href="{{ url_for('tasks') }}">条件をクリア</a>{% endif %}
+  {# 担当者の決まっていない未着手のタスクを、急ぐものから順にまとめて AI で割り当てる。
+     検索フォームの中に置くが、送信先は下の別フォーム（form 属性） #}
+  {% if status_counts.unassigned %}
+  <button type="submit" form="ai-assign-all" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て。急ぐタスクから順に、手持ちが偏らないように決めます">未割当 {{ status_counts.unassigned }} 件をAIで一括割当</button>
+  {% endif %}
+</form>
+<form id="ai-assign-all" class="visually-hidden-form" method="post" action="{{ url_for('auto_assign_all') }}"
+      data-confirm="担当者の決まっていないタスク（{{ status_counts.unassigned }}件）を、AIでまとめて割り当てますか？担当者を指定したタスクは変わりません。" data-confirm-ok="割り当てる">
+  <input type="hidden" name="next" value="{{ here }}">
 </form>
 
 {# AI割当（WariAthena）の根拠。auto_assign() が tasks.ai_note に残したもの #}

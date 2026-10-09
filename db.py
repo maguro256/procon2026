@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at TEXT,
     -- 直近の AI割当（WariAthena）の根拠。JSON。手で担当者を変えたら NULL に戻す
     ai_note TEXT,
+    -- デモモード（demo_mode.py）が入れたタスクなら 1。解除するとこの印の付いた
+    -- タスクと、その実績（work_logs）だけを消す
+    demo INTEGER NOT NULL DEFAULT 0,
     -- 1 = 管理者が担当者を指定した（D-3）。AI割当では担当者を変えず、本人以外には
     -- 提示しない。0 なら assigned_worker_id は AI割当などの「割当結果」
     designated INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +131,7 @@ MIGRATIONS = {
     "tasks": {
         "required_permissions": "TEXT NOT NULL DEFAULT ''",
         "ai_note": "TEXT",
+        "demo": "INTEGER NOT NULL DEFAULT 0",
         "designated": "INTEGER NOT NULL DEFAULT 0",
         "recurring_id": "INTEGER",
     },

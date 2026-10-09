@@ -141,6 +141,10 @@ for ui in ("classic", "new"):
     html = client.get("/tasks").get_data(as_text=True)
     check(f"{ui}: 定期タスクの一覧", "毎日の清掃" in html and "定期タスクを登録" in html, True)
     check(f"{ui}: 自動で追加したタスクに「定期」", ">定期</span>" in html, True)
+# 新UIの .lrow-edit は summary を CSS で隠す（行の「編集」ボタンで開く）。登録欄をそれで
+# 包むと「定期タスクを登録」のボタンが出なくなる（実際にそうなっていた）
+check("new: 登録欄は summary の見えるボタンで開く",
+      'class="recurring-add"' in html and 'class="lrow-edit" id="add-recurring"' not in html, True)
 
 # 削除しても作ったタスクは残る
 client.post(f"/recurring/{rule['id']}/delete")

@@ -35,6 +35,7 @@ except ImportError:
 import db
 import ai_stub
 import permissions as perms
+import demo_mode as demo
 import recurring
 from voice import intent
 
@@ -47,14 +48,12 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 # Flask のデバッグモード（自動リロード＋ブラウザ上のデバッガ）。**既定は OFF。**
 # host=0.0.0.0 で配信しているので、ON のままだと LAN 内の誰でもデバッガから
 # このPCでコードを実行できてしまう。開発時だけ GEMMBA_DEBUG=1 を付けて起動する。
-# 起動後には切り替えられない（管理画面のボタンで切り替わるのは下のテストモード）。
+# 起動後には切り替えられない。
 DEBUG = os.environ.get("GEMMBA_DEBUG") == "1"
 
-# テストモード: /test の仮想モジュールを使えるようにする。管理画面のサイドバーの
-# ボタンで切り替える。本番では OFF にしておく（実機と同じモジュールIDで仮想
-# モジュールを起動すると、実機への指示を横取りできてしまうため）。
-# 状態はメモリにだけ持つので、app.py を再起動すると OFF に戻る。
-_test_mode = {"on": DEBUG or os.environ.get("GEMMBA_TEST_PAGE") == "1"}
+# /test（仮想モジュール）はいつでも開ける。サイドバーには出さないので、URLを直接開く。
+# 実機と同じモジュールIDで仮想モジュールを起動すると、実機への指示を横取りできる
+# ことに注意（同じLANの誰でも開ける）。
 
 # 未登録NFCタグの一時保持: {tag_id: module_id}
 _pending_tags: dict = {}
@@ -272,12 +271,53 @@ def inject_labels():
     # perms は権限コード → 表示名の変換と、テンプレート側でのチェック状態の判定に使う
     return dict(P=PRIORITY_LABELS, S=STATUS_LABELS, E=EQ_STATUS_LABELS, F=FELT_LABELS,
                 PERMISSIONS=perms.PERMISSIONS, ROLES=perms.ROLES, perms=perms,
-                test_mode=_test_mode["on"],
                 # 期限の「今日まで」「期限切れ」の判定用（新UIの一覧）
-                today=datetime.now().strftime("%Y-%m-%d"))
+                today=datetime.now().strftime("%Y-%m-%d"),
+                demo=_demo_state())
+
+
+def _demo_state():
+    """サイドバーのデモモード表示用。ON/OFF と、解除したときに消える件数"""
+    try:
+        conn = db.get_db()
+        try:
+            counts = demo.demo_counts(conn)
+        finally:
+            conn.close()
+    except db.sqlite3.OperationalError:   # tasks.demo の無い古いDB（テストの一時DBなど）
+        return {"on": False, "tasks": 0, "logs": 0}
+    return dict(counts, on=counts["tasks"] > 0)
 
 
 # ---------------------------------------------------------------- 画面
+
+# 機材ごとの使用状況（使用状況ダッシュボードと工場掲示用ダッシュボードで共通）
+EQUIPMENT_BOARD_SQL = """
+    SELECT e.*, w.name AS worker_name, t.title AS task_title,
+           t.quantity AS task_quantity, t.deadline AS task_deadline,
+           t.priority AS task_priority,
+           -- 使い始めた時刻。タスクがあれば着手時刻、フリー利用なら機材の最終更新
+           COALESCE(t.started_at, e.updated_at) AS since
+    FROM equipment e
+    LEFT JOIN workers w ON w.id = e.current_worker_id
+    LEFT JOIN tasks t   ON t.id = e.current_task_id
+    ORDER BY e.name
+"""
+
+# 要対応: 至急、または期限切れ・今日が期限の未完了タスク（同じく両方のダッシュボードで共通）
+ATTENTION_SQL = """
+    SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
+           CASE WHEN t.deadline < date('now','localtime') THEN 'overdue'
+                WHEN t.deadline = date('now','localtime') THEN 'today' END AS due
+    FROM tasks t
+    LEFT JOIN workers w   ON w.id = t.assigned_worker_id
+    LEFT JOIN equipment e ON e.id = t.equipment_id
+    WHERE t.status != 'done'
+      AND (t.priority = 'urgent' OR t.deadline <= date('now','localtime'))
+    ORDER BY t.deadline IS NULL, t.deadline,
+             CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
+"""
+
 
 # --- 終了のタッチ忘れ（導入先の評価で「タッチを忘れる人がいた」）
 # 作業を終えたのに終了のタッチをしないと、機材が「使用中」のまま残り、次の人が使えない。
@@ -338,17 +378,7 @@ def _overdue_now():
 def dashboard():
     """機材の使用状況ダッシュボード"""
     conn = db.get_db()
-    equipment = conn.execute("""
-        SELECT e.*, w.name AS worker_name, t.title AS task_title,
-               t.quantity AS task_quantity, t.deadline AS task_deadline,
-               t.priority AS task_priority,
-               -- 使い始めた時刻。タスクがあれば着手時刻、フリー利用なら機材の最終更新
-               COALESCE(t.started_at, e.updated_at) AS since
-        FROM equipment e
-        LEFT JOIN workers w ON w.id = e.current_worker_id
-        LEFT JOIN tasks t   ON t.id = e.current_task_id
-        ORDER BY e.name
-    """).fetchall()
+    equipment = conn.execute(EQUIPMENT_BOARD_SQL).fetchall()
     counts = conn.execute("""
         SELECT
           (SELECT COUNT(*) FROM tasks WHERE status != 'done')       AS open_tasks,
@@ -359,22 +389,36 @@ def dashboard():
           (SELECT COUNT(*) FROM equipment WHERE hostname IS NOT NULL AND online = 0) AS offline_eq
     """).fetchone()
     # 要対応: 至急、または期限切れ・今日が期限の未完了タスク
-    attention = conn.execute("""
-        SELECT t.*, w.name AS worker_name, e.name AS equipment_name,
-               CASE WHEN t.deadline < date('now','localtime') THEN 'overdue'
-                    WHEN t.deadline = date('now','localtime') THEN 'today' END AS due
-        FROM tasks t
-        LEFT JOIN workers w   ON w.id = t.assigned_worker_id
-        LEFT JOIN equipment e ON e.id = t.equipment_id
-        WHERE t.status != 'done'
-          AND (t.priority = 'urgent' OR t.deadline <= date('now','localtime'))
-        ORDER BY t.deadline IS NULL, t.deadline,
-                 CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
-    """).fetchall()
+    attention = conn.execute(ATTENTION_SQL).fetchall()
     conn.close()
     return _render("dashboard.html", equipment=equipment, counts=counts, attention=attention,
                            overdue=_overdue_now(),
                            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# 工場の壁のモニターに映す掲示用ダッシュボード。サイドバーの無い全画面で、
+# どちらのUI（旧/新）で開いても同じ画面。見るだけで操作はしない
+WEEKDAYS = "月火水木金土日"
+
+
+@app.route("/factorydashboard")
+def factory_dashboard():
+    conn = db.get_db()
+    equipment = conn.execute(EQUIPMENT_BOARD_SQL).fetchall()
+    attention = conn.execute(ATTENTION_SQL).fetchall()
+    conn.close()
+    now = datetime.now()
+    # 見出しの件数。接続の切れた機材は「接続切れ」だけに数え、空きには数えない（タッチできないため）
+    offline = [e for e in equipment if e["hostname"] and not e["online"]]
+    summary = {
+        "working": sum(e["status"] == "working" for e in equipment),
+        "idle": sum(e["status"] == "idle" for e in equipment if e not in offline),
+        "down": sum(e["status"] in ("stopped", "maintenance") for e in equipment),
+        "offline": len(offline),
+    }
+    return render_template("factorydashboard.html", equipment=equipment, attention=attention,
+                           summary=summary, overdue=_overdue_now(), now=now.strftime("%Y-%m-%d %H:%M:%S"),
+                           date_label=f"{now.month}月{now.day}日（{WEEKDAYS[now.weekday()]}）")
 
 
 @app.route("/workers")
@@ -467,8 +511,10 @@ def link_worker_tag():
 @app.route("/workers/<int:worker_id>/update", methods=["POST"])
 def update_worker(worker_id):
     """
-    役職・保有権限・勤続年数・腕輪ICタグIDの変更（D-2）。資格は後から取るものなので
+    名前・役職・保有権限・勤続年数・腕輪ICタグIDの変更（D-2）。資格は後から取るものなので
     編集口が要る。ICタグは紛失・再発行があるので、登録後でも付け替えられるようにする。
+    名前は結婚などで変わるほか、登録時の打ち間違いも直せるようにする。タスク・実績・
+    機材は id で紐付いているので、名前を変えても担当や実績はそのまま引き継がれる。
     """
     f = request.form
     nfc = f.get("nfc_tag_id", "").strip() or None
@@ -478,10 +524,16 @@ def update_worker(worker_id):
         conn.close()
         flash("作業者が見つかりません", "error")
         return redirect(url_for("workers"))
+    # 名前欄の無い経路（古い画面など）からは名前を変えない。空にはさせない
+    # （自動保存なので、打ち直すために消した瞬間にも送られてくる）
+    name = f.get("name", "").strip() if "name" in f else row["name"]
+    kept_name = not name
+    name = name or row["name"]
     try:
         conn.execute(
-            "UPDATE workers SET years_of_service = ?, role = ?, permissions = ?, nfc_tag_id = ? WHERE id = ?",
-            (_safe_float(f.get("years_of_service"), 0.0), f.get("role") or perms.DEFAULT_ROLE,
+            "UPDATE workers SET name = ?, years_of_service = ?, role = ?, permissions = ?, nfc_tag_id = ?"
+            " WHERE id = ?",
+            (name, _safe_float(f.get("years_of_service"), 0.0), f.get("role") or perms.DEFAULT_ROLE,
              perms.dump(f.getlist("permissions")), nfc, worker_id),
         )
         conn.commit()
@@ -489,7 +541,16 @@ def update_worker(worker_id):
         # 勤続年数は学習の文脈ベクトルに入っている。ログの件数は変わらないので
         # AI のキャッシュは自分では気づけない
         ai_stub.invalidate_cache()
-        flash(f"{row['name']} さんの役職・権限・ICタグを更新しました", "ok")
+        if kept_name:
+            flash("名前は空にできないため、元の名前のままにしました", "error")
+        elif name != row["name"]:
+            # 使用中の機材の画面には「〇〇 さん 使用中」と出ているので、新しい名前で出し直す
+            using = conn.execute("SELECT * FROM equipment WHERE status = 'working' AND current_worker_id = ?",
+                                 (worker_id,)).fetchall()
+            _resync_released(using)
+            flash(f"{row['name']} さんの名前を「{name}」に変更しました", "ok")
+        else:
+            flash(f"{name} さんの役職・権限・ICタグを更新しました", "ok")
     except db.sqlite3.IntegrityError:
         flash("そのICタグIDは既に別の作業者が使っています", "error")
     finally:
@@ -777,26 +838,11 @@ def auto_assign(task_id):
         return _back_to("tasks")
     workers_ = conn.execute("SELECT * FROM workers").fetchall()
     logs = _ai_logs(conn)
-    # 権限（D-2）はハード制約なので、学習器に渡す前に候補から落とす。
-    # 無資格者を選ばせてから弾くのでは、AI が選べなかった理由を説明できない。
-    eligible = perms.eligible_workers([dict(w) for w in workers_], task)
-    dropped = len(workers_) - len(eligible)
-    # 各人の手持ち（割り当て済み・作業中）。多い人ほど選ばれにくくして負荷を分散する。
     # 割り当て直しのときに自分自身を手持ちに数えないよう、このタスクは除く
-    open_tasks = [dict(r) for r in conn.execute(
-        """SELECT id, difficulty, quantity, status, started_at, assigned_worker_id FROM tasks
-           WHERE status IN ('assigned', 'in_progress') AND assigned_worker_id IS NOT NULL
-             AND id != ?""", (task_id,))]
-    wid, explain = ai_stub.assign_task_explained(dict(task), eligible, logs, open_tasks=open_tasks)
+    open_tasks = [t for t in _open_assignments(conn) if t["id"] != task_id]
+    wid, eligible = _ai_pick(conn, task, workers_, logs, open_tasks)
+    dropped = len(workers_) - len(eligible)
     if wid:
-        # 根拠は一覧の行に残す。フラッシュ1行だけだと、画面を移ると確かめようがない
-        eligible_ids = {w["id"] for w in eligible}
-        explain.update(
-            chosen=wid, at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            excluded=[{"name": w["name"], "missing": perms.labels(perms.missing(w, task))}
-                      for w in workers_ if w["id"] not in eligible_ids])
-        conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned', ai_note = ? WHERE id = ?",
-                     (wid, json.dumps(explain, ensure_ascii=False), task_id))
         conn.commit()
         loads = ai_stub.workloads(open_tasks, logs)
         chosen = next(w["name"] for w in eligible if w["id"] == wid)
@@ -815,13 +861,103 @@ def auto_assign(task_id):
     return _back_to("tasks")
 
 
+def _open_assignments(conn):
+    """各人の手持ち（割り当て済み・作業中）。多い人ほど選ばれにくくして負荷を分散する"""
+    return [dict(r) for r in conn.execute(
+        """SELECT id, difficulty, quantity, status, started_at, assigned_worker_id FROM tasks
+           WHERE status IN ('assigned', 'in_progress') AND assigned_worker_id IS NOT NULL""")]
+
+
+def _ai_pick(conn, task, workers_, logs, open_tasks):
+    """
+    AI割当（WariAthena）で1件の担当者を決めて tasks に書く。commit は呼び出し側。
+    戻り値: (選んだ作業者の id / 候補なしなら None, 権限を満たした作業者のリスト)
+    """
+    # 権限（D-2）はハード制約なので、学習器に渡す前に候補から落とす。
+    # 無資格者を選ばせてから弾くのでは、AI が選べなかった理由を説明できない。
+    eligible = perms.eligible_workers([dict(w) for w in workers_], task)
+    wid, explain = ai_stub.assign_task_explained(dict(task), eligible, logs, open_tasks=open_tasks)
+    if wid:
+        # 根拠は一覧の行に残す。フラッシュ1行だけだと、画面を移ると確かめようがない
+        eligible_ids = {w["id"] for w in eligible}
+        explain.update(
+            chosen=wid, at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            excluded=[{"name": w["name"], "missing": perms.labels(perms.missing(w, task))}
+                      for w in workers_ if w["id"] not in eligible_ids])
+        conn.execute("UPDATE tasks SET assigned_worker_id = ?, status = 'assigned', ai_note = ? WHERE id = ?",
+                     (wid, json.dumps(explain, ensure_ascii=False), task["id"]))
+    return wid, eligible
+
+
+@app.route("/tasks/auto_assign_all", methods=["POST"])
+def auto_assign_all():
+    """
+    担当者の決まっていない未着手のタスクを、まとめて AI で割り当てる。
+
+    急ぐものから順に決める（至急 → 高 → … 、同じなら期限の近い順）。先に決めた分は
+    その人の手持ちに足してから次を決めるので、1人に集中しない。担当者を指定した
+    タスク・作業中・完了済みは対象にしない（担当者が決まっているため）。
+    """
+    conn = db.get_db()
+    targets = conn.execute("""
+        SELECT * FROM tasks
+        WHERE assigned_worker_id IS NULL AND status IN ('todo', 'assigned')
+        ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                 deadline IS NULL, deadline, id
+    """).fetchall()
+    if not targets:
+        conn.close()
+        flash("担当者の決まっていない未着手のタスクはありません", "error")
+        return _back_to("tasks")
+    workers_ = conn.execute("SELECT * FROM workers").fetchall()
+    if not workers_:
+        conn.close()
+        flash("作業者が登録されていないため、割り当てできません", "error")
+        return _back_to("tasks")
+    logs = _ai_logs(conn)
+    open_tasks = _open_assignments(conn)
+    per_worker, left = {}, []
+    for task in targets:
+        wid, _ = _ai_pick(conn, task, workers_, logs, open_tasks)
+        if wid:
+            open_tasks.append({"id": task["id"], "difficulty": task["difficulty"], "quantity": task["quantity"],
+                               "status": "assigned", "started_at": None, "assigned_worker_id": wid})
+            per_worker[wid] = per_worker.get(wid, 0) + 1
+        else:
+            left.append(task["title"])
+    conn.commit()
+    conn.close()
+
+    names = {w["id"]: w["name"] for w in workers_}
+    done = sum(per_worker.values())
+    if done:
+        breakdown = "・".join(f"{names[w]} さん {n}件" for w, n in
+                             sorted(per_worker.items(), key=lambda kv: -kv[1]))
+        how = "" if ai_stub.is_ready() else "AI本体を読み込めなかったため勤続年数で暫定的に。"
+        flash(f"{how}AIが {done} 件をまとめて割り当てました（{breakdown}）。"
+              f"理由は各タスクの「AIが選んだ理由」で確認できます", "ok" if ai_stub.is_ready() else "error")
+    if left:
+        shown = "、".join(f"「{t}」" for t in left[:3]) + (f" ほか {len(left) - 3} 件" if len(left) > 3 else "")
+        flash(f"必要な権限を持つ作業者がいないため、{len(left)} 件は未割当のままです（{shown}）", "error")
+    return _back_to("tasks")
+
+
 @app.route("/tasks/<int:task_id>/delete", methods=["POST"])
 def delete_task(task_id):
     conn = db.get_db()
     # このタスクで使用中の機材は空きに戻す。タスクだけ外すとフリー利用に見えて残る
     released = _release_equipment(conn, "current_task_id", task_id)
     conn.execute("UPDATE equipment SET current_task_id = NULL WHERE current_task_id = ?", (task_id,))
-    logs = _detach_work_logs(conn, "task_id", task_id)
+    row = conn.execute("SELECT demo FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["demo"]:
+        # デモで足したタスクの実績はデモと一緒に消す。参照を外して残すと、解除しても
+        # どのデモの実績だったか分からなくなり、架空の実績が学習データに残り続ける
+        dropped = conn.execute("DELETE FROM work_logs WHERE task_id = ?", (task_id,)).rowcount
+        if dropped:
+            ai_stub.invalidate_cache()
+        logs = 0
+    else:
+        logs = _detach_work_logs(conn, "task_id", task_id)
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
@@ -1050,6 +1186,57 @@ def bind_equipment():
     conn.close()
 
     flash(f"モジュールID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
+    return redirect(url_for("equipment"))
+
+
+@app.route("/equipment/<int:eq_id>/update", methods=["POST"])
+def update_equipment(eq_id):
+    """
+    機材名とモジュールIDの変更（新UIの編集欄）。モジュールIDの付け替えは
+    /equipment/bind と同じ処理（_bind_module）を通す。
+    """
+    name = request.form.get("name", "").strip()
+    hostname = request.form.get("hostname", "").strip() or None
+    conn = db.get_db()
+    row = conn.execute("SELECT * FROM equipment WHERE id = ?", (eq_id,)).fetchone()
+    if not row:
+        conn.close()
+        flash("機材が見つかりません", "error")
+        return redirect(url_for("equipment"))
+    if not name:
+        conn.close()
+        flash("機材名を入力してください", "error")
+        return redirect(url_for("equipment"))
+
+    renamed = name != row["name"]
+    if renamed:
+        conn.execute("UPDATE equipment SET name = ? WHERE id = ?", (name, eq_id))
+        conn.commit()
+    rebound = "hostname" in request.form and hostname != row["hostname"]
+    if rebound:
+        _bind_module(conn, eq_id, hostname)
+    eq = conn.execute("SELECT * FROM equipment WHERE id = ?", (eq_id,)).fetchone()
+    conn.close()
+
+    # 待機中・停止中のモジュールの画面には機材名が出ているので送り直す。使用中の画面は
+    # 作業者とタスクを出しているだけなので触らない。操作中（メニューや問い合わせを
+    # 出している最中）に送ると、その表示を消してしまうので送らない
+    device_id = _device_id_of(eq)
+    if renamed and eq["status"] != "working" and device_id \
+            and (eq["online"] or device_id in _virtual_modules):
+        with _touch_busy_lock:
+            busy = device_id in _touch_busy
+        if not busy:
+            _sync_module_state(device_id, eq_id)
+
+    if renamed and rebound:
+        flash(f"機材名を「{name}」に変更し、モジュールIDを{'「' + hostname + '」に' if hostname else '外し'}ました", "ok")
+    elif renamed:
+        flash(f"機材名を「{row['name']}」から「{name}」に変更しました", "ok")
+    elif rebound:
+        flash(f"モジュールID「{hostname}」を紐付けました" if hostname else "紐付けを解除しました", "ok")
+    else:
+        flash("変更はありませんでした", "ok")
     return redirect(url_for("equipment"))
 
 
@@ -3096,96 +3283,50 @@ def _virtual_state(vm, active_requests, equipment_by_device):
     }
 
 
-@app.before_request
-def _guard_test_mode():
-    """テストモードが OFF の間は、/test も仮想モジュールの API も存在しない扱いにする"""
-    path = request.path
-    if (path == "/test" or path.startswith("/api/test/")) and not _test_mode["on"]:
-        return (jsonify({"error": "テストモードが OFF です"}), 404) if path.startswith("/api/") \
-            else ("Not Found", 404)
-    return None
-
-
-@app.route("/test-mode", methods=["POST"])
-def toggle_test_mode():
-    """サイドバーのボタン。テストモードを切り替える。OFF にしたら仮想モジュールは全部止める"""
-    turn_on = request.form.get("on") == "1"
-    _test_mode["on"] = turn_on
-    stopped = []
-    if not turn_on:
-        with _virtual_lock:
-            stopped = list(_virtual_modules)
-            _virtual_modules.clear()
-        for device_id in stopped:
-            # 実機なら LWT で届く offline。機材の表示をオフラインに戻す
-            _handle_presence(device_id, {"device_id": device_id, "online": False})
-    print(f"[app] テストモードを {'ON' if turn_on else 'OFF'} にしました"
-          + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""))
-    flash("テストモードを ON にしました。サイドバーの「テスト」から仮想モジュールを使えます" if turn_on
-          else "テストモードを OFF にしました" + (f"（仮想モジュール {len(stopped)} 台を停止）" if stopped else ""),
-          "ok")
-    if turn_on:
-        return redirect(url_for("test_page"))
-    # /test にいたなら、消えたページには戻さない
-    if request.form.get("next", "").startswith("/test"):
-        return redirect(url_for("dashboard"))
-    return _back_to("dashboard")
-
-
-DEMO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "three_modules.json")
-
-
 @app.route("/demo-mode", methods=["POST"])
 def demo_mode():
     """
-    サイドバーのボタン。DBをデモ用の状態（demo/three_modules.json）へ作り直す。
-    中身は demo_reset.py と同じ（作業者・機材・タスク・過去の実績）。
+    サイドバーのデモモード。on=1 で開始、on=0 で解除する（中身は demo_mode.py）。
 
-    demo_reset.py を単体で動かすときは app.py を止める決まりだが、ここでは
-    app.py 自身がメモリに持っている未登録タグ・モジュールの一覧も一緒に作り直す
-    ので、止めなくてよい。今のDBは gemmba.db.before-demo-<日時> に退避する。
+    開始しても、今いる作業者・機材・モジュールの紐付けには触らない。機材ごとに
+    合ったタスクと、作業者ごとの過去の実績を足すだけ。解除すると足したもの
+    （tasks.demo = 1 のタスクと、その実績）だけを消す。
     """
-    import demo_reset
-
-    try:
-        with open(DEMO_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        flash(f"デモ用データを読めませんでした: {e}", "error")
-        return _back_to("dashboard")
-
-    conn = db.get_db()
-    # 今つながっているモジュールは、作り直した後は紐付け先が無くなる。
-    # 未登録モジュールとして残し、機材・モジュール画面からすぐ紐付け直せるようにする
-    connected = [(r["hostname"], r["ip"]) for r in conn.execute(
-        "SELECT hostname, ip FROM equipment WHERE hostname IS NOT NULL AND online = 1")]
-    conn.close()
-
-    backup = demo_reset.backup("demo")
+    turn_on = request.form.get("on") == "1"
     conn = db.get_db()
     try:
-        demo_reset.wipe(conn)
-        demo_reset.seed(conn, data, datetime.now())
+        active = demo.is_active(conn)
+        if turn_on and active:
+            flash("すでにデモモードです", "error")
+            return _back_to("dashboard")
+        if not turn_on and not active:
+            flash("デモモードではありません", "error")
+            return _back_to("dashboard")
+        if turn_on:
+            added = demo.start(conn)
+            released = []
+        else:
+            removed, released = demo.stop(conn)
         conn.commit()
     except Exception as e:
         conn.rollback()
-        conn.close()
-        print(f"[demo] デモ状態にできませんでした: {e}")
-        flash(f"デモ状態にできませんでした（DBは元のままです）: {e}", "error")
+        print(f"[demo] デモモードを切り替えられませんでした: {e}")
+        flash(f"デモモードを切り替えられませんでした（DBは元のままです）: {e}", "error")
         return _back_to("dashboard")
-    conn.close()
+    finally:
+        conn.close()
 
-    with _pending_lock:
-        _pending_tags.clear()
-        _pending_tag_touched.clear()
-        _pending_modules.clear()
-    for device_id, ip in connected:
-        _remember_module(device_id, ip)
     ai_stub.invalidate_cache()
-
-    print(f"[demo] デモ状態にしました（退避: {backup.name if backup else 'なし'}）")
-    flash("デモ状態にしました（作業者・機材・タスク・過去の実績を入れ直しました）。"
-          "モジュールは「機材・モジュール」画面で紐付けてください", "ok")
+    _resync_released(released)
+    if turn_on:
+        print(f"[demo] デモモードを開始: タスク {added['tasks']} 件・実績 {added['logs']} 件を追加")
+        flash(f"デモモードを開始しました（機材に合わせたタスク {added['tasks']} 件と、"
+              f"作業者の実績 {added['logs']} 件を追加しました）", "ok")
+    else:
+        print(f"[demo] デモモードを解除: タスク {removed['tasks']} 件・実績 {removed['logs']} 件を削除")
+        flash(f"デモモードを解除しました（デモで追加したタスク {removed['tasks']} 件と"
+              f"実績 {removed['logs']} 件を削除しました）"
+              + (f"。{_released_note(released)}" if released else ""), "ok")
     return _back_to("dashboard")
 
 
@@ -3454,8 +3595,7 @@ def start_background_jobs():
 if __name__ == "__main__":
     db.init_db()
     _load_pending()
-    print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}"
-          f" / テストモード: {'ON' if _test_mode['on'] else 'OFF'}")
+    print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}")
     # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ
     _intent_ok, _intent_why = intent.available()
     print(f"[voice] 意図分析: {'有効' if _intent_ok else '無効'} - {_intent_why}")
