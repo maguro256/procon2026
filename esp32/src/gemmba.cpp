@@ -968,11 +968,13 @@ static bool connect_broker() {
     prefs.putUShort("port", port);
   }
   logf("[MQTT] connected to %s:%u as %s", host.c_str(), port, device_id.c_str());
-  publish_online();
+  // 購読を先に済ませてから online を出す。逆だと、サーバーが online を受けて即座に
+  // 送ってくる本来の表示（機材名など）が購読前に届いて捨てられ、暫定表示のまま残る
   mqtt.subscribe(cmd_topic.c_str(), 1);
   // 機材に紐付いていればサーバーが直後に本来の表示を送ってくるので、それまでの暫定表示
   set_led("idle");
   render_display({"社員証をタッチしてください"});
+  publish_online();
   return true;
 }
 

@@ -186,12 +186,13 @@ def publish_reply(body):
 
 def on_connect(client, userdata, flags, reason_code, properties):
     log(f"[MQTT] connected to {_broker['host']}:{_broker['port']} as {DEVICE_ID}")
-    publish_online()
-    # 下り。自分宛てだけを購読する
+    # 下り。自分宛てだけを購読する。online より先に購読しないと、サーバーが即座に
+    # 送ってくる本来の表示（機材名など）を取りこぼし、暫定表示のまま残る
     client.subscribe(CMD_TOPIC, qos=1)
     # 機材に紐付いていればサーバーが直後に本来の表示を送ってくるので、それまでの暫定表示
     set_led("idle")
     render_display(["社員証をタッチしてください"])
+    publish_online()
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
