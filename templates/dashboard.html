@@ -15,7 +15,7 @@
 </header>
 
 {% set idle_n = equipment|selectattr('status', 'equalto', 'idle')|list|length %}
-{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+{% set inuse_n = equipment|selectattr('status', 'equalto', 'working')|list|length %}
 <h3 class="section-title">タスクの状況</h3>
 <section class="signage-strip" aria-label="タスクのサマリー">
   <div class="signage-tile t-inuse" data-key="tile-active">
@@ -68,13 +68,13 @@
 
 <div class="sheet eq-list">
   {% for e in equipment %}
-  <div class="sheet-row eq-row {{ 'status-idle' if e.status == 'idle' else 'status-inuse' }}" data-key="eq-{{ e.id }}">
+  <div class="sheet-row eq-row status-{{ icons.status_class(e.status) }}" data-key="eq-{{ e.id }}">
     <span class="status-lamp" title="{{ icons.status_label(e.status) }}">{{ icons.status_icon(e.status) }}</span>
     <div class="eq-row-body">
       <div class="eq-row-head">
         <span class="card-title">{{ e.name }}</span>
-        <span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span>
-        {% if e.status != 'idle' and e.since %}
+        <span class="badge badge-{{ icons.status_class(e.status) }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span>
+        {% if e.status == 'working' and e.since %}
         <span class="elapsed" data-since="{{ e.since }}" title="{{ e.since }} から"></span>
         {% endif %}
         {# モジュールが付いていない機材は接続の概念が無いので出さない #}
