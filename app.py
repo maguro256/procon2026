@@ -443,13 +443,24 @@ def update_worker(worker_id):
 @app.route("/workers/<int:worker_id>/delete", methods=["POST"])
 def delete_worker(worker_id):
     conn = db.get_db()
+    # 本人が使っていた機材は空きに戻す。担当者だけ外すと「誰かが使用中」のまま残る
+    released = _release_equipment(conn, "current_worker_id", worker_id)
+    # 割当済・作業中のタスクは未着手からやり直す。作業中のまま担当者だけ空にすると、
+    # 誰も完了できないタスクが残る。着手時刻も消さないと次の人の所要時間に混ざる
+    reset = conn.execute(
+        """UPDATE tasks SET assigned_worker_id = NULL, status = 'todo', started_at = NULL, ai_note = NULL
+           WHERE assigned_worker_id = ? AND status IN ('assigned', 'in_progress')""", (worker_id,)).rowcount
     conn.execute("UPDATE tasks SET assigned_worker_id = NULL WHERE assigned_worker_id = ?", (worker_id,))
     conn.execute("UPDATE equipment SET current_worker_id = NULL WHERE current_worker_id = ?", (worker_id,))
     logs = _detach_work_logs(conn, "worker_id", worker_id)
     conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
     conn.commit()
     conn.close()
-    flash("作業者を削除しました" + (f"（実績 {logs} 件は残しています）" if logs else ""), "ok")
+    _resync_released(released)
+    notes = [f"担当中のタスク {reset} 件を未着手に戻しました" if reset else "",
+             _released_note(released), f"実績 {logs} 件は残しています" if logs else ""]
+    notes = [n for n in notes if n]
+    flash("作業者を削除しました" + (f"（{' / '.join(notes)}）" if notes else ""), "ok")
     return redirect(url_for("workers"))
 
 
@@ -589,6 +600,18 @@ def update_task(task_id):
 
     worker_id = f.get("assigned_worker_id") or None
     equipment_id = f.get("equipment_id") or None
+    # 作業中・完了のタスクは担当者と機材を動かさない。機材は着手した人のまま使用中で、
+    # 完了時の実績も task の担当者で記録するので、ここで変えると両者が食い違う。
+    # 画面では欄を無効にしてあり送られてこない。送られてきて違っていれば断る
+    locked = task["status"] in ("in_progress", "done")
+    if locked:
+        changed = [label for key, label in (("assigned_worker_id", "担当者"), ("equipment_id", "機材"))
+                   if key in f and str(f.get(key) or "") != str(task[key] or "")]
+        if changed:
+            conn.close()
+            flash(f"作業中のタスクは{'・'.join(changed)}を変更できません", "error")
+            return _back_to("tasks")
+        worker_id, equipment_id = task["assigned_worker_id"], task["equipment_id"]
     priority = _valid_priority(f.get("priority"), task["priority"])
     quantity = _safe_int(f.get("quantity") or task["quantity"], 1) or 1
     deadline = f.get("deadline") or None
@@ -607,7 +630,8 @@ def update_task(task_id):
 
     # 手動割り当てでも権限は無視できない。判定は「このフォームで指定された必要権限」
     # に対して行うので、必要権限を外すのと同時に割り当てる操作は通る。
-    if worker_id:
+    # 作業中のタスクは見ない（api_next_task と同じく、着手済みの人から取り上げない）
+    if worker_id and not locked:
         cand = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
         if not cand:
             conn.close()
@@ -620,14 +644,16 @@ def update_task(task_id):
                   f"（不足: {'・'.join(perms.labels(lacking))}）", "error")
             return _back_to("tasks")
 
-    # status はここでは触らない。着手・完了はNFCタッチ側でしか起きない設計にしてある
-    # （画面から done にできると、所要時間の入っていない実績が混ざる）。
+    # 着手・完了はNFCタッチ側でしか起きない設計にしてある（画面から done にできると、
+    # 所要時間の入っていない実績が混ざる）。ここで動かすのは未着手⇔割当済だけで、
+    # AI割当と同じく担当者がいれば割当済にする。
+    status = task["status"] if locked else ("assigned" if worker_id else "todo")
     # 担当者を手で変えたら、AI割当の根拠はもう当てはまらないので消す
     ai_note = task["ai_note"] if str(task["assigned_worker_id"] or "") == str(worker_id or "") else None
     conn.execute(
-        """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?, priority = ?,
+        """UPDATE tasks SET assigned_worker_id = ?, equipment_id = ?, priority = ?, status = ?,
            quantity = ?, deadline = ?, required_permissions = ?, ai_note = ? WHERE id = ?""",
-        (worker_id, equipment_id, priority, quantity, deadline, required_perms, ai_note, task_id),
+        (worker_id, equipment_id, priority, status, quantity, deadline, required_perms, ai_note, task_id),
     )
     conn.commit()
     conn.close()
@@ -646,8 +672,9 @@ def auto_assign(task_id):
         conn.close()
         flash("タスクが見つかりません", "error")
         return _back_to("tasks")
-    # 割り当てると状態が 'assigned' に上書きされる。作業中のタスクは着手の記録と
-    # 機材のロックが食い違い、完了済みのタスクは未完了に戻ってしまうので断る
+    # 割り当てると状態が 'assigned' に上書きされる。作業中のタスクは着手済みの人から
+    # 取り上げることになり、機材は元の人のまま使用中で残り食い違う。完了済みのタスクは
+    # 未完了に戻ってしまう。どちらも断る
     if task["status"] in ("in_progress", "done"):
         conn.close()
         flash(f"「{task['title']}」は{STATUS_LABELS[task['status']]}のため、AIで割り当て直せません", "error")
@@ -695,12 +722,16 @@ def auto_assign(task_id):
 @app.route("/tasks/<int:task_id>/delete", methods=["POST"])
 def delete_task(task_id):
     conn = db.get_db()
+    # このタスクで使用中の機材は空きに戻す。タスクだけ外すとフリー利用に見えて残る
+    released = _release_equipment(conn, "current_task_id", task_id)
     conn.execute("UPDATE equipment SET current_task_id = NULL WHERE current_task_id = ?", (task_id,))
     logs = _detach_work_logs(conn, "task_id", task_id)
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
-    flash("タスクを削除しました" + (f"（実績 {logs} 件は残しています）" if logs else ""), "ok")
+    _resync_released(released)
+    notes = [n for n in (_released_note(released), f"実績 {logs} 件は残しています" if logs else "") if n]
+    flash("タスクを削除しました" + (f"（{' / '.join(notes)}）" if notes else ""), "ok")
     return _back_to("tasks")
 
 
@@ -864,6 +895,34 @@ def _detach_work_logs(conn, column, value):
         # 実績の中身が変わった。件数と最大idは同じなので、明示的に捨てる
         ai_stub.invalidate_cache()
     return n
+
+
+def _release_equipment(conn, column, value):
+    """
+    削除されるタスク・作業者で使用中になっている機材を空きに戻す。column は
+    current_task_id か current_worker_id。戻した機材の行（戻す前）を返すので、
+    commit した後に _resync_released() でモジュールの画面も戻す。
+    """
+    rows = conn.execute(f"SELECT * FROM equipment WHERE status = 'working' AND {column} = ?",
+                        (value,)).fetchall()
+    if rows:
+        conn.execute(
+            f"""UPDATE equipment SET status = 'idle', current_worker_id = NULL, current_task_id = NULL,
+                updated_at = datetime('now','localtime') WHERE status = 'working' AND {column} = ?""",
+            (value,))
+    return rows
+
+
+def _resync_released(rows):
+    """空きに戻した機材のモジュールへ待機画面を送る。繋がっていない相手には送らない"""
+    for eq in rows:
+        device_id = _device_id_of(eq)
+        if device_id and (eq["online"] or device_id in _virtual_modules):
+            _sync_module_state(device_id, eq["id"])
+
+
+def _released_note(rows):
+    return f"使用中だった {'・'.join(r['name'] for r in rows)} を空きに戻しました" if rows else ""
 
 
 # ------------------------------------------------ API（モジュール/AI連携用）
@@ -2641,6 +2700,63 @@ def toggle_test_mode():
     # /test にいたなら、消えたページには戻さない
     if request.form.get("next", "").startswith("/test"):
         return redirect(url_for("dashboard"))
+    return _back_to("dashboard")
+
+
+DEMO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "three_modules.json")
+
+
+@app.route("/demo-mode", methods=["POST"])
+def demo_mode():
+    """
+    サイドバーのボタン。DBをデモ用の状態（demo/three_modules.json）へ作り直す。
+    中身は demo_reset.py と同じ（作業者・機材・タスク・過去の実績）。
+
+    demo_reset.py を単体で動かすときは app.py を止める決まりだが、ここでは
+    app.py 自身がメモリに持っている未登録タグ・モジュールの一覧も一緒に作り直す
+    ので、止めなくてよい。今のDBは gemmba.db.before-demo-<日時> に退避する。
+    """
+    import demo_reset
+
+    try:
+        with open(DEMO_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        flash(f"デモ用データを読めませんでした: {e}", "error")
+        return _back_to("dashboard")
+
+    conn = db.get_db()
+    # 今つながっているモジュールは、作り直した後は紐付け先が無くなる。
+    # 未登録モジュールとして残し、機材・モジュール画面からすぐ紐付け直せるようにする
+    connected = [(r["hostname"], r["ip"]) for r in conn.execute(
+        "SELECT hostname, ip FROM equipment WHERE hostname IS NOT NULL AND online = 1")]
+    conn.close()
+
+    backup = demo_reset.backup("demo")
+    conn = db.get_db()
+    try:
+        demo_reset.wipe(conn)
+        demo_reset.seed(conn, data, datetime.now())
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print(f"[demo] デモ状態にできませんでした: {e}")
+        flash(f"デモ状態にできませんでした（DBは元のままです）: {e}", "error")
+        return _back_to("dashboard")
+    conn.close()
+
+    with _pending_lock:
+        _pending_tags.clear()
+        _pending_tag_touched.clear()
+        _pending_modules.clear()
+    for device_id, ip in connected:
+        _remember_module(device_id, ip)
+    ai_stub.invalidate_cache()
+
+    print(f"[demo] デモ状態にしました（退避: {backup.name if backup else 'なし'}）")
+    flash("デモ状態にしました（作業者・機材・タスク・過去の実績を入れ直しました）。"
+          "モジュールは「機材・モジュール」画面で紐付けてください", "ok")
     return _back_to("dashboard")
 
 

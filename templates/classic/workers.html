@@ -87,7 +87,7 @@
         <td>{{ w.open_tasks }} 件</td>
         <td class="num">
           <form method="post" action="{{ url_for('delete_worker', worker_id=w.id) }}"
-                onsubmit="return confirm('{{ w.name }} さんを削除しますか？担当中のタスクは未割当に戻ります。')">
+                onsubmit="return confirm('{{ w.name }} さんを削除しますか？担当中・作業中のタスクは未着手に戻り、使用中の機材は空きに戻ります。')">
             <button type="submit" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ w.name }} さんを削除">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
             </button>

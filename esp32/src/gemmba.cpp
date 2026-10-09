@@ -1098,7 +1098,8 @@ void setup() {
   Serial.printf("\n===== Gemmba %s (session %s) =====\n", device_id.c_str(), session_id.c_str());
 
   lcd.init();
-  lcd.setRotation(1);  // 横長 320x240
+  // 横長 320x240。esp-0e5310 と esp-af4828 は筐体への取り付け向きが逆なので上下反転（3 = 1 の180度回転）
+  lcd.setRotation(device_id == "esp-0e5310" || device_id == "esp-af4828" ? 3 : 1);
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI);
   set_led("offline");
   render_display({"Gemmba " + device_id, "Wi-Fi に接続しています…"});

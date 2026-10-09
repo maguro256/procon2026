@@ -73,7 +73,7 @@
           {% endif %}
         </td>
         <td class="mono text-muted tech-col">{{ e.last_seen or '—' }}</td>
-        <td><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></td>
+        <td><span class="badge badge-{{ icons.status_class(e.status) }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></td>
         <td>{{ e.worker_name or '—' }}</td>
         <td>{{ e.task_title or '—' }}</td>
         <td class="num row-actions">

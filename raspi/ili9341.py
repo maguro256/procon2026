@@ -118,8 +118,11 @@ class ILI9341:
         except OSError as e:
             raise DisplayUnavailable(f"{dev} を開けません ({e})")
 
-        self._reset()
-        self._init_panel()
+        # 電源投入後の最初の初期化だけ効かず画面が白いままになり、プログラムを
+        # 起動し直す（2回目の初期化）と映った。そのため最初から2回初期化する
+        for _ in range(2):
+            self._reset()
+            self._init_panel()
         if self._bl:
             self._bl.on()
 

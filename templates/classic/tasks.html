@@ -157,7 +157,10 @@
     <h3>{{ t.title }}</h3>
     <span class="badge badge-status">{{ S[t.status] }}</span>
     <div class="task-tools">
+      {# 作業中は割り当て直さない（着手した人の機材が使用中のまま食い違う） #}
+      {% if t.status != 'in_progress' %}
       <button type="submit" form="ai-assign-{{ t.id }}" class="btn btn-ai btn-sm" title="WariAthena による自動割り当て。必要権限を満たす人だけが候補になります">AI割当（WariAthena）</button>
+      {% endif %}
       <button type="submit" form="delete-task-{{ t.id }}" class="btn btn-icon btn-secondary" title="削除" aria-label="{{ t.title }} を削除">{{ trash_icon() }}</button>
     </div>
   </div>
@@ -174,9 +177,13 @@
   <details class="task-edit">
     <summary>担当者・内容を変更</summary>
     {# data-autosave: 変えた瞬間に保存する（base.html）。「更新」ボタンも残してある #}
+    {% set locked = t.status == 'in_progress' %}
     <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="task-actions" data-autosave>
+      {% if locked %}
+      <p class="text-muted span-all">作業中のため、担当者と機材は完了するまで変更できません。</p>
+      {% endif %}
       <div class="field"><label>担当者</label>
-        <select class="input" name="assigned_worker_id" title="担当者">
+        <select class="input" name="assigned_worker_id" title="担当者" {{ 'disabled' if locked }}>
           <option value="">担当者なし</option>
           {% for w in worker_list %}
           <option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>
@@ -197,7 +204,7 @@
         <input class="input" type="date" name="deadline" title="期限" value="{{ t.deadline or '' }}">
       </div>
       <div class="field"><label>機材</label>
-        <select class="input" name="equipment_id" title="機材">
+        <select class="input" name="equipment_id" title="機材" {{ 'disabled' if locked }}>
           <option value="">機材なし</option>
           {% for e in equipment_list %}
           <option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>
