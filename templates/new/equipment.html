@@ -1,0 +1,135 @@
+{% extends "new/base.html" %}
+{% import "new/_icons.html" as icons %}
+{% block title %}機材 | Gemmba 管理{% endblock %}
+{% block content %}
+
+{% set online_n = equipment|selectattr('online')|list|length %}
+{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+<div class="page-top">
+  <header class="page-head list-head">
+    <h1>機材</h1>
+    <p class="list-sub">{{ equipment|length }}台・接続中 {{ online_n }}台・使用中 {{ inuse_n }}台</p>
+  </header>
+
+  {# 登録フォームは「＋ 機材を登録」で開く。登録すると画面が描き直されて閉じる #}
+  <details class="add-panel" id="add-equipment">
+    <summary class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="when-closed">機材を登録</span><span class="when-open">閉じる</span></summary>
+    <div class="add-panel-body">
+      <h2 class="add-panel-title">機材を登録</h2>
+      <form method="post" action="{{ url_for('add_equipment') }}" class="equipment-form-grid">
+        <div class="field"><label>機材名 *</label>
+          <input class="input" type="text" name="name" placeholder="例：レーザー加工機 #2" required>
+        </div>
+        {# 機材コード(module_id)は内部の目印なので入力させない。_ensure_module_id() が MOD-001 形式で採番する #}
+        <div class="field"><label>モジュールID（任意）</label>
+          <input class="input" type="text" name="hostname" placeholder="例：pi01">
+        </div>
+        <button type="submit" class="btn btn-primary">登録</button>
+      </form>
+    </div>
+  </details>
+</div>
+
+{% if pending_modules %}
+{# 見出しを押すと最小化できる。閉じた状態はブラウザが覚え、新しいモジュールが来たら開き直す（base.html の applyFolds） #}
+<details class="callout form-panel callout-fold" open data-fold="pending-modules"
+         data-fold-items='{{ pending_modules|list|tojson }}'>
+  <summary>
+    <h4>未登録モジュールを検出（{{ pending_modules|length }}件）</h4>
+    <span class="callout-fold-toggle"><span class="when-open">最小化 ▴</span><span class="when-closed">開く ▾</span></span>
+  </summary>
+  <p class="callout-lead">ネットワーク上にモジュールが見つかりましたが、どの機材にも紐付いていません。設置先の機材を選んで紐付けてください。</p>
+  {% for device_id, info in pending_modules.items() %}
+  <div class="callout-row">
+    <p>モジュールID: <strong class="mono">{{ device_id }}</strong>
+      <span class="text-muted">（IP: {{ info.ip or '不明' }} ／ 検出 {{ info.seen_at }}）</span></p>
+    <form method="post" action="{{ url_for('bind_equipment') }}" class="bind-form">
+      <input type="hidden" name="hostname" value="{{ device_id }}">
+      <select class="input" name="equipment_id" required>
+        <option value="">紐付ける機材を選択…</option>
+        {% for e in equipment %}
+        <option value="{{ e.id }}">{{ e.name }}{% if e.hostname %}（現在: {{ e.hostname }}）{% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-primary">紐付ける</button>
+    </form>
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
+
+{% macro eq_item(e) %}
+{# モジュールを紐付けてあるのに繋がっていない機材。タッチしても何も起きない #}
+{% set offline = e.hostname and not e.online %}
+<div class="lrow-item{{ ' is-offline' if offline }}" data-key="eq-{{ e.id }}">
+  <div class="lrow">
+    <div class="lrow-main">
+      <strong class="lrow-title">{{ e.name }}</strong>
+      <span class="lrow-meta mono">{{ e.hostname or 'モジュール未紐付け' }}</span>
+    </div>
+    <span class="lrow-stack">
+      {%- if not e.hostname %}<span class="is-none">—</span>
+      {%- elif e.online %}<span class="state-ok" title="IP: {{ e.ip or '不明' }}"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="5"/></svg>接続中</span>
+      {%- else %}
+      <span class="state-bad"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れ</span>
+      {% if e.last_seen %}<span class="lrow-note">最終通信 <span class="mono">{{ e.last_seen[5:16]|replace('-', '/') }}</span></span>{% endif %}
+      {%- endif -%}
+    </span>
+    <span><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
+    <span class="lrow-stack">
+      {%- if e.worker_name or e.task_title %}
+      <span>{{ e.worker_name or '—' }}</span>
+      <span class="lrow-note">{{ e.task_title or 'フリー利用' }}</span>
+      {%- else %}<span class="is-none">—</span>{% endif -%}
+    </span>
+    <span class="lrow-tools">
+      {# モジュールのプログラムだけを作り直す。機材の電源は切らない #}
+      <button type="submit" form="restart-eq-{{ e.id }}" class="btn btn-icon btn-secondary btn-icon-sm"
+              title="{{ 'モジュールを再起動' if e.online else '接続していないため再起動できません' }}"
+              aria-label="{{ e.name }} のモジュールを再起動" {% if not e.online %}disabled{% endif %}>
+        <svg class="icon" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4h-4"/></svg>
+      </button>
+      <button type="button" class="btn btn-ghost btn-sm" data-toggle-details="edit-eq-{{ e.id }}" aria-controls="edit-eq-{{ e.id }}" aria-expanded="false"><span class="when-closed">編集</span><span class="when-open">閉じる</span></button>
+    </span>
+  </div>
+
+  <details class="lrow-edit" id="edit-eq-{{ e.id }}">
+    <summary>{{ e.name }} を編集</summary>
+    <div class="lrow-edit-body">
+      {% if offline %}
+      <p class="lrow-edit-note">モジュールと通信できません。タッチしても反応しないので、モジュールの電源とWi-Fiを確認してください。</p>
+      {% endif %}
+      {# 機材にモジュールID(hostname)を紐付ける。空にすると紐付けを外す #}
+      <form method="post" action="{{ url_for('bind_equipment') }}" class="lrow-edit-grid">
+        <input type="hidden" name="equipment_id" value="{{ e.id }}">
+        <div class="field"><label>モジュールID</label>
+          <input class="input mono" type="text" name="hostname" value="{{ e.hostname or '' }}" placeholder="未紐付け">
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm">モジュールIDを保存</button>
+      </form>
+      <p class="lrow-edit-note mono">機材コード {{ e.module_id or '—' }}{% if e.ip %}・IP {{ e.ip }}{% endif %}{% if e.last_seen %}・最終通信 {{ e.last_seen }}{% endif %}</p>
+      <div class="lrow-edit-actions">
+        <button type="submit" form="delete-eq-{{ e.id }}" class="btn btn-danger btn-sm">この機材を削除</button>
+      </div>
+    </div>
+  </details>
+  <form id="restart-eq-{{ e.id }}" class="visually-hidden-form" method="post" action="{{ url_for('restart_module', eq_id=e.id) }}"
+        data-confirm="「{{ e.name }}」のモジュールのプログラムを再起動しますか？操作中の作業者がいると中断されます。" data-confirm-ok="再起動する"></form>
+  <form id="delete-eq-{{ e.id }}" class="visually-hidden-form" method="post" action="{{ url_for('delete_equipment', eq_id=e.id) }}"
+        data-confirm="機材「{{ e.name }}」を削除しますか？" data-confirm-ok="削除する"></form>
+</div>
+{% endmacro %}
+
+<div class="sheet lrows lrows-equipment">
+  {% if equipment %}
+  <div class="lrow lrow-head" aria-hidden="true">
+    <span>機材</span><span>モジュール</span><span>状態</span><span>使っている人・タスク</span><span></span>
+  </div>
+  {% endif %}
+  {% for e in equipment %}
+  {{ eq_item(e) }}
+  {% else %}
+  <p class="empty">機材が登録されていません。「機材を登録」から追加してください。</p>
+  {% endfor %}
+</div>
+{% endblock %}

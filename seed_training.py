@@ -20,7 +20,6 @@ HTTP も実機も使わない。所要時間は勤続年数から決めた得意
 import argparse
 import math
 import random
-import shutil
 import sys
 from datetime import datetime, timedelta
 
@@ -61,7 +60,7 @@ def profile_for(years):
 
 def backup():
     dst = db.DB_PATH.with_name(f"{db.DB_PATH.name}.bak-{datetime.now():%Y%m%d-%H%M%S}")
-    shutil.copy2(db.DB_PATH, dst)
+    db.backup_to(dst)
     print(f"退避しました: {dst}")
 
 

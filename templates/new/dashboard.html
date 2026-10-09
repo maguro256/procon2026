@@ -1,0 +1,114 @@
+{% extends "new/base.html" %}
+{% import "new/_icons.html" as icons %}
+{% block title %}使用状況 | Gemmba 管理{% endblock %}
+{% block content %}
+{# data-live-refresh: base.html が数秒ごとにこの画面を取り直し、変わった所だけ光らせる #}
+<div data-live-refresh="4000">
+{% set today = now[:10] %}
+{% set idle_n = equipment|selectattr('status', 'equalto', 'idle')|list|length %}
+{% set inuse_n = equipment|rejectattr('status', 'equalto', 'idle')|list|length %}
+
+{# 期限の表示。年は省いて「10/10」、今日なら「（今日）」を添える #}
+{% macro short_date(d, today) -%}
+{{ d[5:]|replace('-', '/') }}{% if d == today %}（今日）{% endif %}
+{%- endmacro %}
+
+<header class="page-head dash-head">
+  <div>
+    <h1>使用状況</h1>
+    <p class="dash-sub">タスク：未完了 {{ counts.open_tasks }}件（うち作業中 {{ counts.active_tasks }}件）</p>
+  </div>
+  <p class="live-note" aria-live="off">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span class="live-state">自動更新中</span>
+    <span class="text-muted">・最終更新 <time class="mono" data-rendered-at="{{ now }}">{{ now[11:19] }}</time></span>
+  </p>
+</header>
+
+{# 一番上の要約は1段だけ。機材の空き具合と、手を打つべきもの（要対応・接続切れ）を並べる #}
+<section class="signage-strip dash-summary" aria-label="いまの状況">
+  <div class="signage-tile t-inuse" data-key="tile-inuse">
+    <div class="tile-label">{{ icons.status_icon('working') }}使用中機材</div>
+    <div class="tile-num">{{ inuse_n }}<span class="tile-unit">／ {{ equipment|length }}台</span></div>
+  </div>
+  <div class="signage-tile t-idle" data-key="tile-idle">
+    <div class="tile-label">{{ icons.status_icon('idle') }}空き機材</div>
+    <div class="tile-num">{{ idle_n }}<span class="tile-unit">台</span></div>
+  </div>
+  <div class="signage-tile {{ 't-alert' if attention }}" data-key="tile-attention">
+    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r=".4" fill="currentColor" stroke="none"/></svg>要対応タスク</div>
+    <div class="tile-num">{{ attention|length }}<span class="tile-unit">件</span></div>
+  </div>
+  <div class="signage-tile {{ 't-alert' if counts.offline_eq }}" data-key="tile-offline">
+    <div class="tile-label"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れモジュール</div>
+    <div class="tile-num">{{ counts.offline_eq }}<span class="tile-unit">台</span></div>
+  </div>
+</section>
+
+<div class="dash-cols">
+
+<section class="dash-eq" aria-labelledby="dash-eq-title">
+  <h2 class="dash-title" id="dash-eq-title">機材</h2>
+  <div class="sheet eq-board">
+    {% if equipment %}
+    <div class="eqg-row eqg-head" aria-hidden="true">
+      <span></span><span>機材</span><span>状態</span><span>担当者</span><span>作業中のタスク</span><span class="eqg-elapsed">経過</span>
+    </div>
+    {% endif %}
+    {% for e in equipment %}
+    {# モジュールを紐付けてあるのに繋がっていない機材。タッチしても何も起きない #}
+    {% set offline = e.hostname and not e.online %}
+    <div class="eqg-row {{ 'status-idle' if e.status == 'idle' else 'status-inuse' }}{{ ' is-offline' if offline }}" data-key="eq-{{ e.id }}">
+      <span class="status-lamp" title="{{ icons.status_label(e.status) }}">{{ icons.status_icon(e.status) }}</span>
+      <span class="eqg-name">
+        <span class="card-title">{{ e.name }}</span>
+        {% if offline %}
+        <span class="eqg-offline" title="モジュールと通信できません{% if e.last_seen %}（最終通信 {{ e.last_seen }}）{% endif %}"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れ・タッチ不可</span>
+        {% endif %}
+      </span>
+      <span><span class="badge {{ 'badge-idle' if e.status == 'idle' else 'badge-inuse' }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
+      <span class="eqg-worker{{ ' is-empty' if not e.worker_name }}">{{ e.worker_name or '—' }}</span>
+      <span class="eqg-task{{ ' is-empty' if not e.task_title }}">
+        {% if e.task_title %}
+        <span class="strong">{{ e.task_title }}</span>
+        <span class="eqg-task-meta">×{{ e.task_quantity or 1 }}{% if e.task_deadline %}・期限 {{ short_date(e.task_deadline, today) }}{% if e.task_deadline < today %} <span class="badge badge-overdue">期限切れ</span>{% endif %}{% endif %}</span>
+        {% elif e.status != 'idle' %}
+        <span class="text-muted">フリー利用</span>
+        {% else %}—{% endif %}
+      </span>
+      <span class="eqg-elapsed">
+        {% if e.status != 'idle' and e.since %}<span class="elapsed" data-since="{{ e.since }}" title="{{ e.since }} から"></span>{% endif %}
+      </span>
+    </div>
+    {% else %}
+    <p class="empty">機材が登録されていません。「機材・モジュール管理」から追加してください。</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="dash-attention" aria-labelledby="dash-att-title">
+  <h2 class="dash-title" id="dash-att-title">要対応のタスク</h2>
+  <div class="sheet attention-list">
+    {% for t in attention %}
+    <div class="sheet-row attention-item" data-key="att-{{ t.id }}">
+      <div class="attention-badges">
+        <span class="badge badge-p-{{ t.priority }}">{{ P[t.priority] }}</span>
+        {% if t.due == 'overdue' %}<span class="badge badge-overdue">期限切れ（{{ short_date(t.deadline, today) }}）</span>
+        {% elif t.due == 'today' %}<span class="badge badge-today">今日まで</span>
+        {% elif t.deadline %}<span class="attention-due">期限 {{ short_date(t.deadline, today) }}</span>{% endif %}
+      </div>
+      <span class="attention-title">{{ t.title }}</span>
+      <span class="attention-meta">
+        {% if t.worker_name %}{{ S[t.status] }}（{{ t.worker_name }}）{% else %}未割当{% endif %}・{{ t.equipment_name or '機材指定なし' }}・×{{ t.quantity or 1 }}
+      </span>
+    </div>
+    {% else %}
+    <p class="empty">至急・期限切れ・今日が期限のタスクはありません。</p>
+    {% endfor %}
+  </div>
+  <a class="dash-more" href="{{ url_for('tasks') }}">タスク管理で全件を見る →</a>
+</section>
+
+</div>
+</div>
+{% endblock %}

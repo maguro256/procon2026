@@ -1,0 +1,239 @@
+% 卒業研究 発表レジュメ
+% コンパイル: lualatex resume.tex または xelatex resume.tex
+% （Overleaf ではコンパイラを LuaLaTeX か XeLaTeX に設定）
+\documentclass[a4paper,10pt,twocolumn,autodetect-engine,ja=standard]{bxjsarticle}
+
+\geometry{top=15mm,bottom=15mm,left=16mm,right=16mm,columnsep=7mm}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{here}
+
+% 節見出しをテンプレートに合わせて小さめ・太字に
+\titleformat{\section}{\normalsize\sffamily\bfseries}{\thesection}{1em}{}
+\titlespacing*{\section}{0pt}{1.0ex}{0.4ex}
+\setlist{nosep,leftmargin=1.2em}
+\renewcommand{\labelitemi}{\textbullet}
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+\allowdisplaybreaks
+\pagestyle{plain}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{5pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{3pt}
+\setlength{\belowcaptionskip}{0pt}
+
+\newcommand{\x}{\bm{x}}
+\newcommand{\thetab}{\bm{\theta}}
+
+\begin{document}
+
+\twocolumn[
+  \begin{center}
+    \sffamily\bfseries
+    {\large 中小企業の製造現場における
+     タスク自動割当システムと、実績から学習する割当AIの開発,比較\par}
+    
+    \normalfont
+    % ↓ 氏名・指導教員名を記入
+    E2209 小笠原​悠太\qquad 指導教員：野村隼人
+  \end{center}
+  \vspace{1mm}
+]
+
+\section{はじめに}
+工場の共有機材（レーザー加工機・旋盤・プレス機等）では、「誰が何に使っているか
+分からない」「重要な仕事が特定の人に偏る・
+忘れられる」という非効率が起きやすい。製造業では DX を進める人材の不足が
+課題とされており\,\cite{monozukuri,chusho}、専任の IT 担当者がいない中小工場では、
+計画を立てるコストと、空いている機材や仕事を探すコストが現場の負担になる。
+
+本研究では、各機材に NFC リーダー付きの機材モジュールを置き、社員証\(ICタグ\)をタッチした瞬間に
+その人が今その場所でやるべきタスクを提示するシステムを開発した。
+あえて遠隔予約の機能を持たず、物理的なタッチだけを操作の起点にすることで、
+システム上の状態と現場の実態が常に一致する。管理者は従業員、機材の一括管理が可能となり、従業員は次の作業を探す、管理者に尋ねる等の無駄を減らすことができる。
+
+チームでの開発のうち、タスク割当 AIを担当した。
+割当は「誰にどの仕事を任せると速く終わるか」を、作業ログから学習しながら決める
+
+
+\section{システム全体の構成}
+本システムは、各機材の機材モジュール、サーバ、管理画面、割当 AI からなる（図\ref{fig:system}）。
+タッチによる作業の開始・終了はサーバの作業ログに記録され、割当 AI はこのログから学習して、
+管理画面で登録されたタスクの担当者を決める。
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      font=\scriptsize,
+      box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt,minimum height=7mm},
+      arr/.style={-{Stealth[length=4pt]},semithick}]
+    \node[box] (mod) {機材モジュール ×台数\\NFC・LCD・ボタン・LED};
+    \node[box,right=6mm of mod] (srv) {サーバ\\Flask + SQLite};
+    \node[box,right=6mm of srv] (web) {管理画面\\（ブラウザ）};
+    \node[box,below=3mm of srv,fill=gray!12] (ai) {\textbf{割当 AI（WariAthena）}};
+    \draw[arr,<->] (mod) -- (srv);
+    \draw[arr,<->] (srv) -- (web);
+    \draw[arr,<->] (srv) -- (ai);
+  \end{tikzpicture}
+  \caption{システム構成（機材モジュール–サーバ間は MQTT）}
+  \label{fig:system}
+\end{figure}
+
+\textbf{機材モジュール}（図\ref{fig:module}）：試作機は Raspberry Pi 4 に NFC リーダー（RC522）、
+2.8 インチ LCD（ILI9341）、物理ボタン 3 個（左・決定・右）、状態 LED（作業中は赤、
+それ以外は青）をつないだ。量産は ESP32 へ移す計画である。
+\begin{figure}[b]
+  \centering
+  \begin{minipage}[c]{0.36\linewidth}
+    \includegraphics[width=\linewidth]{module.png}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.60\linewidth}
+    \caption{機材モジュールの試作機\\（奥：LCD と物理ボタン，\\\phantom{（}手前：NFC リーダー）}
+    \label{fig:module}
+  \end{minipage}
+\end{figure}
+\textbf{通信}：サーバとは MQTT\,\cite{mqtt} で双方向に通信する。ブローカーは自動探索し、
+切断は Last Will で即時に死活表示へ反映する。
+\textbf{サーバ}：Flask と SQLite。
+
+\textbf{現場の流れ}：(1) 空いている機材で社員証をタッチすると、候補タスクが 1 件ずつ
+LCD に出る。(2) ボタンで承認するとどの機材で誰がタスクを開始したかが管理者に通知される。
+候補が無い・すべて断ったときは「フリー利用」として使用できる。(3) 他の機材に本人宛の
+より重要なタスクがあれば、そちらへ移るかを尋ねる（誘導）。(4) 再タッチで完了し、
+所要時間を作業ログに記録して機材を解放する。直後に体感難易度（簡単・普通・難しい）を尋ねる。
+
+\textbf{管理画面}：タスクの登録（重要度・難易度・数量・期限・必要な資格）、
+AI による割当とその根拠の表示、稼働状況のダッシュボードを持つ。
+画面からの機材予約は、ゴースト予約を防ぐため意図的に作っていない。
+
+\section{割当 AI}
+\textbf{問題設定}：割当は、作業者を「腕」、タスクの特徴を「文脈」とする
+文脈付きバンディット\,\cite{honda} とみなせる。任せたことのない人の実力は分からないため、実績のある人に任せる\textbf{活用}と、
+まだ分からない人に任せてみる\textbf{探索}の両立が要る。
+
+\textbf{文脈}：タスク $j$ を作業者 $w$ に任せるときの文脈ベクトル $\x$ を
+\begin{equation}
+  \x = \bigl[\,y,\; d,\; y d,\; \bm{e}_{\mathrm{diff}},\; \bm{e}_{\mathrm{perm}},\; \bm{e}_{\mathrm{eq}}\,\bigr]
+\end{equation}
+とした。$y$ は勤続年数 / 30、$d$ は難易度（1〜5 を 0.15〜0.85 に写す）、
+$\bm{e}_{\mathrm{diff}}$ は難易度の one-hot、$\bm{e}_{\mathrm{perm}}$ は必要な資格
+（溶接・検査など）の multi-hot、$\bm{e}_{\mathrm{eq}}$ は機材の one-hot である。
+資格と機材を入れたのは、難易度だけでは「溶接が得意な人」「旋盤が得意な人」を区別できないためである。
+
+\textbf{報酬}：作業ログから、1 個あたりの所要時間 $t$（数量で割る）と、
+同じ難易度の過去の平均 $\bar t$ を用いて
+\begin{equation}
+  r = c_f \cdot \bar t / t, \qquad c_f \in \{1.5,\ 1.0,\ 0.5\}
+\end{equation}
+とした。$c_f$ は本人の体感難易度（簡単・普通・難しい）の係数で、未回答なら
+$t$ が $\bar t$ より 1 割以上速い・遅いかで決める。数量で割らないと、
+大量のタスクを引いた人が「遅い」と学習されてしまう。
+
+\textbf{学習}：作業者ごとに $r \approx \thetab_w^{\top}\x$ の線形モデルを置き、
+事前分布 $\thetab_w \sim \mathcal N(\bm 0, 100 I)$、観測雑音 $\sigma^2 = 0.1$ の
+ベイズ線形回帰\,\cite{suyama,bishop} で事後分布 $\mathcal N(\bm\mu_w, \Sigma_w)$ を更新する：
+\begin{align}
+  \Sigma_w^{-1} &\leftarrow \Sigma_w^{-1} + \sigma^{-2}\x\x^{\top}, \\
+  \bm\mu_w &\leftarrow \Sigma_w\bigl(\Sigma_{w,\mathrm{old}}^{-1}\bm\mu_{w,\mathrm{old}} + \sigma^{-2} r\,\x\bigr).
+\end{align}
+更新は足し算なので、学習結果は保存せず、作業ログを古い順に再生して
+組み立て直す。
+
+\textbf{選択（Thompson Sampling）}：各作業者の事後分布から $\tilde\thetab_w$ を 1 本ずつ引き、
+予測報酬 $\tilde r_w = \tilde\thetab_w^{\top}\x$ で比べる\,\cite{honda,agrawal}。実績の少ない人は
+分布が広く、ときどき大きな値を引くので自然に試される。
+
+\textbf{負荷分散}：予測報酬だけで選ぶと、何でも速いベテランに仕事が集まる。
+そこで作業者 $w$ の手持ちの残り時間 $L_w$ と、このタスクの見積もり時間 $\hat T_j$
+（難易度ごとの平均 × 数量）を用いて
+\begin{equation}
+  s_w = \tilde r_w \Big/ \bigl(1 + L_w / \hat T_j\bigr)
+\end{equation}
+で選ぶ（$\tilde r_w < 0$ のときは掛ける）。引き算でなく割り算にしたのは、
+$c_f$ のため報酬が速さに比例せず尺度が一定でないからで、割り算なら尺度に依らず、
+得意・不得意の差が大きい仕事ほど任され続ける。
+
+\textbf{資格はハード制約}：資格（フォークリフト・クレーン・溶接など）は学習させず、
+AI を呼ぶ前に候補から除く。無資格者に危険作業を任せて失敗から学ぶ設計は成り立たず、
+勤続年数でも代用できない。
+
+\textbf{使い方は 2 通り}：(a) 現場でタッチされたとき、その人の $\tilde\thetab_w$ を
+1 本だけ引き、候補タスクを予測報酬の順に並べる。
+(b) 管理画面の「AI 割当」では、タスクに対し上の $s_w$ が最大の人を選び、
+各候補の期待値・引いた値・手持ち・除外理由を根拠として画面に残す。
+
+\section{評価}
+\textbf{設定}：作業者 6 名（勤続 1〜30 年）に、真の時間倍率を隠して与えた。
+ベテランほど全体に速いが（倍率 $1.3 - 0.5\,y$）、個人差 $\pm 30\%$ があり、
+各人に 1 つ得意な作業（溶接・検査・プレスのいずれか、倍率 $\times 0.6$）がある。
+タスクは難易度 1〜5（標準 1〜10 分/個）、数量 1〜5、種類 4 通りを一様に生成し、
+1 ラウンド 6 件を順に割り当て、ラウンドの終わりに全員が作業を終えてログに加わる。
+150 ラウンド、20 試行の平均をとった。割当 AI は実装をそのまま呼んだ。
+
+\textbf{指標}：(i) \textbf{適性比}：任せた人の時間倍率 / そのタスクに最適な人の倍率
+（1 が最良）、(ii) \textbf{完了時間}：1 ラウンドで最も遅い人が終わるまでの時間、
+(iii) \textbf{偏り}：最も多く担当した人の割合。(i)(ii) は学習後（51 ラウンド目以降）で測った。
+
+\begin{table}[tb]
+  \centering
+  \caption{割当方式の比較（20 試行の平均）}
+  \label{tab:result}
+  \small
+  \begin{tabular}{lccc}
+    \toprule
+    方式 & 適性比 & 完了時間 [分] & 偏り \\
+    \midrule
+    ランダム           & 1.73 & 44.4 & 19\% \\
+    順番（ラウンドロビン） & 1.72 & 34.7 & 17\% \\
+    経験年数が最長の人     & 1.27 & 63.7 & 100\% \\
+    提案（負荷分散なし）   & \textbf{1.03} & 32.4 & 42\% \\
+    \textbf{提案}         & 1.16 & \textbf{25.4} & 27\% \\
+    \midrule
+    参考：真の適性で割り振り  & 1.21 & 23.6 & 24\% \\
+    \bottomrule
+  \end{tabular}\\[2pt]
+  {\footnotesize 参考：真の倍率を知り、最も早く終わる人へ任せる貪欲法}
+\end{table}
+
+\textbf{結果}（表\ref{tab:result}）：経験年数で選ぶと全件がベテラン 1 人に集まり
+（偏り 100\%）、他の人が遊ぶため完了時間が最も長い。ランダムや順番は得意でない人に任せるので適性比が 1.7 と悪い。
+
+負荷分散なしの提案は、学習後はほぼ常に最適な人を選べる（適性比 1.03）。
+作業ログだけから隠れた得意分野を見つけられている。
+ただし得意な人に仕事が集まり（偏り 42\%）、完了時間は順番とあまり変わらない。
+
+負荷分散を加えた提案は、得意な人が埋まれば次に向く人へ回すため適性比は 1.16 に上がるが、完了時間は 25.4 分で、経験年数による割当より 60\%、
+順番より 27\% 短い。真の適性を知る貪欲法（23.6 分）との差は 8\% である。
+「各人に一番向く仕事」と「全体が早く終わる割当」は一致せず、後者には負荷分散が要る。
+
+\section{まとめと今後の展望}
+NFC タッチを起点とするタスク割当システムと、作業ログから各人の得意・不得意を学び、
+負荷を分散しながら割り当てる AI を開発した。
+シミュレーションでは、真の適性を知る割当に近い完了時間を得た。
+
+\textbf{限界}：評価はシミュレーションのみで、実際の工場の作業ログはまだ無い。
+実際の現場では作業の熟練度は上がっていくが、シュミレーションでは作業者の適性は時間とともに変わらないと仮定した。
+ログから毎回学習し直すので、ログが増えると計算が重くなる。
+
+
+\textbf{今後の展望}：実際の現場でのログの収集と評価、熟練による変化を扱うための
+古いログの割引、役職の特徴量化、ESP32 版機材モジュールの製作を進める。
+また、今回利用した文脈付きバンディットではなく、eloレーティングを利用したものやその他のアルゴリズムを利用して、今回のシュミレーションとの比較も行いたい。
+
+\footnotesize
+\begin{thebibliography}{9}\setlength{\itemsep}{0pt}
+  \bibitem{monozukuri} 経済産業省 他，『2025 年版ものづくり白書』，2025．
+  \bibitem{chusho} 中小企業庁，『2025 年版中小企業白書』，2025．
+  \bibitem{honda} 本多淳也・中村篤祥，『バンディット問題の理論とアルゴリズム』，講談社，2016．
+  \bibitem{suyama} 須山敦志，『ベイズ推論による機械学習入門』，講談社，2017．
+  \bibitem{bishop} C. M. ビショップ，『パターン認識と機械学習（上）』，丸善出版，2012．
+  \bibitem{agrawal} S. Agrawal and N. Goyal, ``Thompson sampling for contextual bandits with linear payoffs,'' \textit{Proc. ICML}, 2013.
+  \bibitem{mqtt} OASIS, ``MQTT Version 5.0,'' OASIS Standard, 2019.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,395 @@
+{% extends "new/base.html" %}
+{% block title %}テスト | Gemmba 管理{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>モジュールのテスト</h1>
+  <p class="page-sub">実機が無くても、画面の中の仮想モジュールで現場の操作を試せます。社員証のタッチ・ボタン操作・画面表示は、実機と同じ流れでサーバーに届きます。</p>
+</header>
+
+<section class="form-panel narrow">
+  <h4>仮想モジュールを起動</h4>
+  <form id="vmAddForm" class="equipment-form-grid vm-add-grid">
+    <div class="field"><label for="vmEquipment">設置する機材</label>
+      <select class="input" id="vmEquipment">
+        <option value="">紐付けない（未登録モジュールとして検出させる）</option>
+        {% for e in equipment %}
+        <option value="{{ e.id }}" data-hostname="{{ e.hostname or '' }}">{{ e.name }}{% if e.hostname %}（モジュールID: {{ e.hostname }}）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field"><label for="vmDeviceId">モジュールID</label>
+      <input class="input mono" type="text" id="vmDeviceId" value="vpi01" required
+             pattern="[A-Za-z0-9._\-]{1,40}" maxlength="40">
+    </div>
+    <button type="submit" class="btn btn-primary">起動</button>
+  </form>
+  <p class="form-note text-muted" id="vmAddError" hidden></p>
+  <p class="form-note text-muted">
+    機材を選ぶと、そのモジュールIDで機材に紐付けてから起動します。実機と同じIDにすると、起動している間は実機の代わりにこちらへ指示が届きます。
+    ブラウザのキーボードでも操作できます（← → で選択、Enter で決定）。
+  </p>
+</section>
+
+<h3 class="section-title">起動中のモジュール</h3>
+<div class="vm-grid" id="vmGrid"></div>
+<p class="empty" id="vmEmpty">起動中の仮想モジュールはありません。上のフォームから起動してください。</p>
+
+<template id="vmTemplate">
+  <article class="card vm">
+    <header class="vm-head">
+      <span class="vm-lamp" title="ステータスLED（作業中は赤、それ以外は青）"></span>
+      <div class="vm-title">
+        <div class="card-title mono vm-id"></div>
+        <div class="vm-eq"></div>
+      </div>
+      <button type="button" class="btn btn-sm btn-secondary vm-stop">停止</button>
+    </header>
+
+    <div class="vm-screen-wrap"><div class="vm-screen" aria-live="polite"></div></div>
+
+    <div class="vm-buttons" role="group" aria-label="物理ボタン">
+      <button type="button" class="vm-btn" data-button="left">◀ 前へ</button>
+      <button type="button" class="vm-btn vm-btn-ok" data-button="ok">● 決定</button>
+      <button type="button" class="vm-btn" data-button="right">次へ ▶</button>
+    </div>
+    <p class="vm-timer" hidden></p>
+
+    <form class="vm-record" hidden>
+      <div class="field"><label>話す内容（録音の代わり）</label>
+        <textarea class="input" rows="2" name="text" placeholder="例：旋盤の切粉清掃を至急お願いします"></textarea>
+      </div>
+      <div class="vm-record-row">
+        <button type="submit" class="btn btn-primary btn-sm">この内容で送信</button>
+        <label class="btn btn-secondary btn-sm vm-file">WAVを送る<input type="file" accept=".wav,audio/wav" hidden></label>
+        <button type="button" class="btn btn-secondary btn-sm vm-record-cancel">押さずに終える</button>
+      </div>
+    </form>
+
+    <form class="vm-touch">
+      <div class="field"><label>社員証をタッチ</label>
+        <div class="vm-touch-row">
+          <select class="input vm-touch-worker">
+            <optgroup label="登録済み">
+            {% for w in workers %}
+            <option value="{{ w.nfc_tag_id }}">{{ w.name }}（{{ w.nfc_tag_id }}）</option>
+            {% endfor %}
+            </optgroup>
+            {# 登録ポップアップ・登録済み作業者への紐付けを試すためのカード #}
+            <optgroup label="未登録">
+            {% for tag in unregistered_tags %}
+            <option value="{{ tag }}">未登録の社員証（{{ tag }}）</option>
+            {% endfor %}
+            <option value="__new__">新しい未登録の社員証（タッチごとに別ID）</option>
+            </optgroup>
+            <option value="">タグIDを直接入力…</option>
+          </select>
+          <button type="submit" class="btn btn-primary btn-sm">タッチ</button>
+        </div>
+        <input class="input input-sm mono vm-touch-tag" type="text" placeholder="例：0123456789abcdef（未登録カードの確認にも）" hidden>
+      </div>
+    </form>
+
+    <details class="vm-log">
+      <summary>通信ログ</summary>
+      <ol></ol>
+    </details>
+  </article>
+</template>
+
+<script>
+(function () {
+  // raspi.py の LED_LABELS / LED_COLORS と揃えること
+  const LED_LABELS = { idle: "空き", working: "作業中", free: "フリー利用中", guide: "移動してください",
+                       recording: "タスク登録中", error: "使用不可", offline: "オフライン" };
+  const LED_COLORS = { idle: "#2EA043", working: "#E08A1E", free: "#2F6DCC", guide: "#7E3FB8",
+                       recording: "#C2379A", error: "#C83232", offline: "#5A5A5A" };
+  const EQ_LABELS = {{ E|tojson }};
+  const STORE_KEY = "gemmba.test.modules";
+
+  const grid = document.getElementById("vmGrid");
+  const empty = document.getElementById("vmEmpty");
+  const tpl = document.getElementById("vmTemplate");
+  const cards = new Map();   // device_id -> {el, logKey}
+  let focused = null;        // キーボード操作の対象
+  let restored = false;
+
+  function stored() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch (e) { return []; }
+  }
+  function store(ids) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(ids)); } catch (e) { /* 保存できなくても動く */ }
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function api(path, method, body) {
+    const opts = { method: method || "GET", cache: "no-store" };
+    if (body instanceof FormData) opts.body = body;
+    else if (body) { opts.body = JSON.stringify(body); opts.headers = { "Content-Type": "application/json" }; }
+    const res = await fetch(path, opts);
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* 空の応答 */ }
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+  const moduleUrl = (id, rest) => "/api/test/modules/" + encodeURIComponent(id) + (rest || "");
+
+  // ---- 画面（実機の 320x240 と同じ骨組み） ----
+  function screenHtml(m) {
+    const state = m.led || "offline";
+    const choice = m.choice;
+    const lines = choice ? choice.lines.slice(0, 2) : (m.lines || []).slice(0, 4);
+    const badge = choice ? choice.badge : m.badge;
+    let html = `<div class="lcd-band" style="background:${LED_COLORS[state] || LED_COLORS.offline}">
+        <span>${esc(LED_LABELS[state] || state)}</span>
+        <span class="${badge ? "lcd-badge" : "lcd-id"}">${esc(badge || m.device_id)}</span></div>`;
+    html += `<div class="lcd-body${choice ? "" : " is-center"}">`;
+    lines.forEach((line, i) => { html += `<p class="${i === 0 ? "lcd-title" : "lcd-sub"}">${esc(line)}</p>`; });
+    if (choice) {
+      if (choice.text) html += `<p class="lcd-question">${esc(choice.text)}</p>`;
+      html += `<div class="lcd-chips">` + choice.options.map((o, i) =>
+        `<button type="button" class="lcd-chip${i === choice.selected ? " is-selected" : ""}"
+                 data-select="${i}" style="${i === choice.selected ? "background:" + (LED_COLORS[state] || LED_COLORS.offline) : ""}">${esc(o)}</button>`
+      ).join("") + `</div>`;
+    }
+    html += `</div>`;
+    html += choice
+      ? `<div class="lcd-bar"><span>◀ 前へ</span><span class="lcd-ok">● 決定</span><span>次へ ▶</span></div>`
+      : `<div class="lcd-foot">仮想モジュール（MQTTを通しません）</div>`;
+    return html;
+  }
+
+  // 実機（raspi._fit_role / CHIP_ROLES）と同じく、収まらない行は大きい順に文字を
+  // 小さくして1行に収める。一番小さくしても入らないときだけ CSS の … に任せる。
+  // 選択肢チップは、実機と同じく全部を同じ大きさにそろえる。
+  const FIT_PX = {
+    "lcd-title": [25, 20, 17], "lcd-sub": [20, 17, 14], "lcd-question": [20, 17],
+    "lcd-chip": [28, 20, 17, 14],
+  };
+  function fitScreen(screen) {
+    const fits = e => e.scrollWidth <= e.clientWidth;
+    for (const [cls, sizes] of Object.entries(FIT_PX)) {
+      const els = [...screen.querySelectorAll("." + cls)];
+      const groups = cls === "lcd-chip" ? [els] : els.map(e => [e]);
+      for (const group of groups) {
+        for (const px of sizes) {
+          group.forEach(e => { e.style.fontSize = `calc(${px} * var(--u))`; });
+          if (group.every(fits)) break;
+        }
+      }
+    }
+  }
+
+  function createCard(id) {
+    const el = tpl.content.firstElementChild.cloneNode(true);
+    el.dataset.device = id;
+    el.querySelector(".vm-id").textContent = id;
+    const tagSelect = el.querySelector(".vm-touch-worker");
+    const tagInput = el.querySelector(".vm-touch-tag");
+    tagSelect.addEventListener("change", () => {
+      tagInput.hidden = tagSelect.value !== "";
+      if (!tagInput.hidden) tagInput.focus();
+    });
+    tagInput.hidden = tagSelect.value !== "";
+
+    el.addEventListener("pointerdown", () => { focused = id; markFocus(); });
+    el.addEventListener("focusin", () => { focused = id; markFocus(); });
+
+    el.querySelector(".vm-stop").addEventListener("click", async () => {
+      store(stored().filter(x => x !== id));
+      try { await api(moduleUrl(id), "DELETE"); } catch (e) { /* もう居ない */ }
+      poll();
+    });
+    el.querySelectorAll(".vm-btn").forEach(b =>
+      b.addEventListener("click", () => press(id, { button: b.dataset.button })));
+    el.querySelector(".vm-screen").addEventListener("click", e => {
+      const chip = e.target.closest("[data-select]");
+      if (chip) press(id, { select: Number(chip.dataset.select) });
+    });
+
+    el.querySelector(".vm-touch").addEventListener("submit", async e => {
+      e.preventDefault();
+      e.stopPropagation();   // base.html のフォーム送信の横取りを通さない
+      let tag = tagSelect.value || tagInput.value.trim();
+      // 用意した未登録カードを使い切っても試せるよう、その場で使われていないIDを作る
+      if (tag === "__new__") tag = "test-card-" + Math.random().toString(16).slice(2, 8);
+      if (!tag) { tagInput.focus(); return; }
+      try { await api(moduleUrl(id, "/touch"), "POST", { tag_id: tag }); } catch (err) { alertIn(el, err); }
+      poll();
+    });
+
+    const rec = el.querySelector(".vm-record");
+    rec.addEventListener("submit", async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const text = rec.elements.text.value.trim();
+      if (!text) { rec.elements.text.focus(); return; }
+      try { await api(moduleUrl(id, "/record"), "POST", { text: text }); rec.elements.text.value = ""; }
+      catch (err) { alertIn(el, err); }
+      poll();
+    });
+    rec.querySelector("input[type=file]").addEventListener("change", async e => {
+      const file = e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      const fd = new FormData();
+      fd.append("audio", file);
+      try { await api(moduleUrl(id, "/record"), "POST", fd); } catch (err) { alertIn(el, err); }
+      poll();
+    });
+    rec.querySelector(".vm-record-cancel").addEventListener("click", async () => {
+      try { await api(moduleUrl(id, "/record"), "POST", { cancel: true }); } catch (err) { alertIn(el, err); }
+      poll();
+    });
+
+    grid.appendChild(el);
+    return { el: el, logKey: "" };
+  }
+
+  function alertIn(el, err) {
+    const timer = el.querySelector(".vm-timer");
+    timer.hidden = false;
+    timer.classList.add("is-error");
+    timer.textContent = "エラー: " + err.message;
+    setTimeout(() => timer.classList.remove("is-error"), 3000);
+  }
+
+  async function press(id, body) {
+    try { await api(moduleUrl(id, "/button"), "POST", body); } catch (e) { /* 次の周期で整合する */ }
+    poll();
+  }
+
+  function markFocus() {
+    cards.forEach((c, id) => c.el.classList.toggle("is-focused", id === focused && cards.size > 1));
+  }
+
+  function update(card, m) {
+    const el = card.el;
+    const screen = el.querySelector(".vm-screen");
+    screen.innerHTML = screenHtml(m);
+    fitScreen(screen);
+    el.querySelector(".vm-lamp").classList.toggle("is-red", m.led === "working");
+
+    const eq = m.equipment;
+    el.querySelector(".vm-eq").textContent = eq
+      ? `${eq.name} ・ ${EQ_LABELS[eq.status] || eq.status}` +
+        (eq.worker_name ? ` ・ ${eq.worker_name} さん` : "") + (eq.task_title ? `「${eq.task_title}」` : "")
+      : "未紐付け（機材の画面で紐付けてください）";
+
+    const timer = el.querySelector(".vm-timer");
+    if (!timer.classList.contains("is-error")) {
+      const wait = m.choice || m.record;
+      timer.hidden = !wait;
+      if (m.record && m.record.busy) timer.textContent = "送信中… 文字起こしと登録を待っています";
+      else if (wait) timer.textContent = `応答待ち　あと ${wait.remaining} 秒で時間切れ`;
+    }
+    const rec = el.querySelector(".vm-record");
+    rec.hidden = !m.record || m.record.busy;
+
+    const log = m.log || [];
+    const key = log.length + ":" + (log.length ? log[log.length - 1].at + log[log.length - 1].text : "");
+    if (key !== card.logKey) {
+      card.logKey = key;
+      const mark = { up: "↑", down: "↓", info: "・" };
+      el.querySelector(".vm-log ol").innerHTML = log.slice().reverse().map(l =>
+        `<li class="log-${l.dir}"><span class="mono">${esc(l.at)}</span> ${mark[l.dir] || ""} ${esc(l.text)}</li>`
+      ).join("");
+    }
+  }
+
+  let polling = false;
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    let data;
+    try { data = await api("/api/test/state"); }
+    catch (e) { polling = false; return; }   // app.py の再起動中など
+    polling = false;
+
+    const modules = data.modules || [];
+    const ids = new Set(modules.map(m => m.device_id));
+
+    // app.py の再起動で消えた分を繋ぎ直す（紐付けはDBに残っている）
+    if (!restored) {
+      restored = true;
+      const missing = stored().filter(id => !ids.has(id));
+      if (missing.length) {
+        await Promise.all(missing.map(id => api("/api/test/modules", "POST", { device_id: id }).catch(() => {})));
+        return poll();
+      }
+    }
+
+    cards.forEach((c, id) => { if (!ids.has(id)) { c.el.remove(); cards.delete(id); } });
+    modules.forEach(m => {
+      let card = cards.get(m.device_id);
+      if (!card) { card = createCard(m.device_id); cards.set(m.device_id, card); }
+      update(card, m);
+    });
+    if (!ids.has(focused)) focused = modules.length ? modules[0].device_id : null;
+    markFocus();
+    empty.hidden = modules.length > 0;
+    suggestId(ids);
+  }
+
+  // ---- 起動フォーム ----
+  const addForm = document.getElementById("vmAddForm");
+  const eqSelect = document.getElementById("vmEquipment");
+  const idInput = document.getElementById("vmDeviceId");
+  const addError = document.getElementById("vmAddError");
+  let idTouched = false;
+
+  function suggestId(running) {
+    if (idTouched || eqSelect.selectedOptions[0].dataset.hostname) return;
+    if (!running.has(idInput.value)) return;
+    let n = 1;
+    while (running.has("vpi" + String(n).padStart(2, "0"))) n++;
+    idInput.value = "vpi" + String(n).padStart(2, "0");
+  }
+  idInput.addEventListener("input", () => { idTouched = true; });
+  eqSelect.addEventListener("change", () => {
+    // 既に実機のIDが付いている機材は、そのIDで起動すると紐付けを変えずに済む
+    const host = eqSelect.selectedOptions[0].dataset.hostname;
+    if (host) { idInput.value = host; idTouched = false; }
+  });
+
+  addForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = idInput.value.trim();
+    addError.hidden = true;
+    try {
+      await api("/api/test/modules", "POST", { device_id: id, equipment_id: eqSelect.value || null });
+    } catch (err) {
+      addError.hidden = false;
+      addError.textContent = "起動できませんでした: " + err.message;
+      return;
+    }
+    store(stored().filter(x => x !== id).concat([id]));
+    focused = id;
+    idTouched = false;
+    poll();
+  });
+
+  // ---- キーボード（実機のボタンの代わり） ----
+  document.addEventListener("keydown", e => {
+    if (!focused || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.target.closest("input, textarea, select, summary, [contenteditable]")) return;
+    const button = { ArrowLeft: "left", ArrowRight: "right", Enter: "ok" }[e.key];
+    if (!button) return;
+    // ボタンにフォーカスがあるときの Enter は、そのボタン自身を押す（ブラウザ標準）
+    if (button === "ok" && e.target.closest("button, a")) return;
+    e.preventDefault();
+    press(focused, { button: button });
+  });
+
+  poll();
+  // 裏に回ったタブでは取りに行かない（0.5秒ごとなので、開きっぱなしのタブが積もると効く）。
+  // 戻ってきたらすぐ取り直す
+  setInterval(() => { if (!document.hidden) poll(); }, 500);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+})();
+</script>
+{% endblock %}

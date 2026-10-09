@@ -1,0 +1,288 @@
+% プロコン 2026 展示ポスター A0 2 枚版の 2 枚目（AI の仕組みと評価）
+% 版面は A1 で組み、poster2_a0.tex が √2 倍して A0 2 ページの poster2_a0.pdf にする。
+% 評価の数値とグラフは ../../resume/poster_summary.csv・poster_curve.csv（resume/poster_data.py の出力）による
+% ビルド: build_poster.bat をダブルクリック（Tectonic）
+\documentclass[24pt,a1paper,portrait,margin=0mm,innermargin=12mm,
+  blockverticalspace=5mm,colspace=9mm,subcolspace=8mm]{tikzposter}
+\input{poster2_style}
+\posttitle{AI の仕組みと評価}{2 / 2}
+
+% ================================================================ 本文
+\tikzposterlatexaffectionproofoff
+\begin{document}
+\maketitle[width=\paperwidth, linewidth=0pt, roundedcorners=0, innersep=7mm,
+  titletoblockverticalspace=5mm]
+
+\begin{columns}
+% ================================================================ 左列
+\column{0.5}
+
+\block{\bt{割当 AI の仕組み}}{%
+  \head{実績から「誰に任せるか」を学ぶ}
+  {\centering
+  \begin{tikzpicture}[font=\fontsize{21pt}{26pt}\selectfont]
+    \tikzset{c/.style={text width=5.5cm, minimum height=3.8cm}}
+    \newcommand{\st}[2]{{\color{blue}\bfseries\fontsize{32pt}{32pt}\selectfont #1}\ \ {\bfseries\fontsize{26pt}{30pt}\selectfont #2}\\[6pt]}
+    \node[box, c] (a) {\st{1}{記録}所要時間\\本人の体感};
+    \node[aibox, c, right=10mm of a] (b) {\st{2}{学習}人ごとの速さ\\＋\hl{自信の幅}};
+    \node[aibox, c, right=10mm of b] (c) {\st{3}{選択}幅の中から\\くじを引く};
+    \node[aibox, c, right=10mm of c] (d) {\st{4}{調整}手持ちで割る\\無資格者を除外};
+    \foreach \i/\j in {a/b,b/c,c/d} \draw[arr] (\i) -- (\j);
+    \draw[arr, rounded corners=12pt] (d.south) -- ++(0,-1.0) -| node[pos=0.25, below=2pt, elab]{作業が終わるたびにくり返す} (a.south);
+  \end{tikzpicture}\par}
+  \vspace{16pt}
+
+  % ---- 手がかりと「うまくいったか」
+  \begin{minipage}[t]{0.485\linewidth}\vspace{0pt}
+    \tint{card}{%
+      {\bfseries\fontsize{27pt}{32pt}\selectfont\color{navy}手がかり（タスクの特徴）\par}
+      \vspace{8pt}
+      {\bl
+      \begin{tabular}{@{}>{\bfseries}l@{\hspace{10pt}}l@{}}
+        難易度   & 1〜5 \\
+        資格     & 溶接・クレーンなど \\
+        機材     & 旋盤・プレスなど \\
+        経験年数 & 勤続年数 \\
+      \end{tabular}\par}
+      \vspace{6pt}
+      {\sm\color{ink2}資格・機材も見るので、\\「溶接が得意な人」も分かる\par}}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.485\linewidth}\vspace{0pt}
+    \tint{card}{%
+      {\bfseries\fontsize{27pt}{32pt}\selectfont\color{navy}うまくいったか（報酬）\par}
+      \vspace{10pt}
+      {\centering\fontsize{25pt}{30pt}\selectfont
+      $\text{体感}\times\dfrac{\text{いつもの 1 個の時間}}{\text{今回の 1 個の時間}}$\par}
+      \vspace{10pt}
+      {\sm
+      \begin{tabular}{@{}l@{\hspace{14pt}}l@{\hspace{14pt}}l@{}}
+        簡単 \textbf{1.5} & 普通 \textbf{1.0} & 難しい \textbf{0.5} \\
+      \end{tabular}\par}
+      \vspace{6pt}
+      {\sm\color{ink2}数量で割り、1 個あたりで比べる\par}}
+  \end{minipage}
+  \vspace{18pt}
+
+  % ---- 自信の幅とくじ
+  \head{自信の幅から「くじ」を引く}
+  \begin{minipage}[c]{0.50\linewidth}
+    \begin{tikzpicture}
+      \begin{axis}[gem, width=\linewidth, height=0.56\linewidth,
+          xlabel={予想される速さ}, ylabel={確からしさ},
+          xmin=0, xmax=2.2, ymin=0, ymax=5.6, ytick=\empty, xtick=\empty,
+          samples=140, domain=0:2.2, clip=false]
+        \addplot[color=navy, fill=navy, fill opacity=0.12]
+          {exp(-(x-1.2)^2/(2*0.08^2))/(0.08*sqrt(2*pi))} \closedcycle;
+        \addplot[color=orange, fill=orange, fill opacity=0.12]
+          {exp(-(x-0.95)^2/(2*0.35^2))/(0.35*sqrt(2*pi))} \closedcycle;
+        \draw[navy, line width=3.5pt, dashed] (axis cs:1.17,0) -- (axis cs:1.17,4.9);
+        \draw[orange, line width=3.5pt, dashed] (axis cs:1.55,0) -- (axis cs:1.55,1.3);
+        \node[lab, anchor=east, text=navy, align=right] at (axis cs:1.08,4.4)
+          {ベテラン\\幅が狭い};
+        \node[lab, anchor=west, text=orange, align=left] at (axis cs:1.42,2.4)
+          {新人\\幅が広い};
+      \end{axis}
+    \end{tikzpicture}
+    \capt{破線：くじで引いた値。大きい人に任せる}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.47\linewidth}
+    \begin{itemize}\fontsize{22pt}{29pt}\selectfont
+      \item \hl{ベイズ線形回帰}：\\人ごとの速さと「自信の幅」
+      \item \hl{Thompson Sampling}：\\幅の中からくじを引いて選ぶ
+      \item 新人は幅が広く、\\ときどき大きな値を引く\\→ \hl{隠れた得意を発見}
+    \end{itemize}
+  \end{minipage}
+  \vspace{18pt}
+
+  % ---- 負荷分散と資格
+  \begin{minipage}[t]{0.485\linewidth}\vspace{0pt}
+    \tint{skytint}{%
+      {\bfseries\fontsize{27pt}{32pt}\selectfont\color{blue}手持ちで割って偏りを防ぐ\par}
+      \vspace{10pt}
+      {\centering\fontsize{24pt}{30pt}\selectfont
+      $\text{点数}=\dfrac{\text{くじの値}}{1+\dfrac{\text{手持ちの残り時間}}{\text{この仕事の見積もり}}}$\par}
+      \vspace{8pt}
+      {\sm 速いベテランでも、\\手持ちが多いと点数が下がる\par}}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.485\linewidth}\vspace{0pt}
+    \tint{orangetint}{%
+      {\bfseries\fontsize{27pt}{32pt}\selectfont\color{orange}資格は学習させない\par}
+      \vspace{10pt}
+      {\fontsize{22pt}{29pt}\selectfont フォークリフト・溶接などは、\\AI を呼ぶ前に\hl{候補から除外}。\par}
+      \vspace{8pt}
+      {\sm 危険作業を「失敗から学ぶ」\\わけにはいかないため\par}}
+  \end{minipage}
+}
+
+\block{\bt{2 通りの使い方と判断の根拠}}{%
+  {\centering
+  \begin{tikzpicture}[font=\fontsize{22pt}{27pt}\selectfont]
+    \tikzset{c/.style={minimum height=1.9cm, inner sep=7pt}}
+    \node[gbox, c, text width=5.2cm] (w) {{\bfseries\color{good} 現場でかざす}};
+    \node[box, c, text width=15.4cm, right=16mm of w] (t) {その人に向く順に\hl{タスクを並べて}液晶へ};
+    \node[box, c, text width=5.2cm, below=6mm of w] (t2) {{\bfseries 管理画面で\\「AI 割当」}};
+    \node[gbox, c, text width=15.4cm, right=16mm of t2] (w2) {全員の点数を比べて\hl{担当者を選ぶ}};
+    \draw[arr] (w) -- (t);
+    \draw[arr] (t2) -- (w2);
+  \end{tikzpicture}\par}
+  \vspace{16pt}
+  \head{「AI 割当」の根拠（実際の管理画面）}
+  \begin{minipage}[c]{0.70\linewidth}
+    \shot{0.97\linewidth}{admin_ai_why.png}\\[4pt]
+    \capt{「製品F プレス抜き」の割当。\\実績 611 件（デモデータ）から学習}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.28\linewidth}
+    \raggedright\begin{itemize}\fontsize{23pt}{30pt}\selectfont
+      \item 山口さんは\\\hl{手持ち 1.4 時間}\\→ 点数 0.67 に
+      \item 手の空いた\\\hl{小林さん}を選択
+      \item 理由が見えるので\\\hl{納得できる}
+    \end{itemize}
+  \end{minipage}
+}
+
+% ================================================================ 右列
+\column{0.5}
+
+\block{\bt{効果の検証（シミュレーション）}}{%
+  {\bl 作業者 6 名（勤続 1〜30 年）で試した。\par
+  各人に\hl{隠れた得意作業}があり、その作業は 4 割速い。\par
+  AI には教えず、作業ログだけで見つけられるかを調べた。\par}
+  \vspace{6pt}
+  \capt{1 回に 6 件を割り当て × 150 回、20 試行の平均。割当 AI は実装をそのまま呼ぶ}
+  \vspace{14pt}
+  \begin{minipage}[c]{0.62\linewidth}
+    \head{全員が終わるまでの時間}
+    \begin{tikzpicture}
+      \begin{axis}[gem, xbar, width=0.80\linewidth, height=0.50\linewidth,
+          bar width=22pt, xmin=0, xmax=78, xtick=\empty, axis x line=none,
+          ymin=0.4, ymax=4.6, ytick={1,...,4}, y dir=reverse,
+          major y tick style={draw=none},
+          yticklabels={経験年数順,ランダム,順番に回す,\textbf{Gemmba}},
+          nodes near coords={\pgfmathprintnumber[fixed,precision=1,assume math mode=true]{\pgfplotspointmeta}\,分},
+          nodes near coords align={horizontal},
+          every node near coord/.append style={font=\fontsize{21pt}{21pt}\selectfont\bfseries, color=ink}]
+        \addplot[fill=ink2!45, draw=none, bar shift=0pt] coordinates {(63.7,1) (44.4,2) (34.7,3)};
+        \addplot[fill=blue, draw=none, bar shift=0pt] coordinates {(25.4,4)};
+      \end{axis}
+    \end{tikzpicture}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.35\linewidth}
+    {\centering
+    {\fontsize{58pt}{58pt}\selectfont\bfseries\color{blue}−60\%}\\[6pt]
+    {\fontsize{20pt}{24pt}\selectfont\color{ink2}経験年数順と比べて}\\[16pt]
+    {\fontsize{58pt}{58pt}\selectfont\bfseries\color{blue}−27\%}\\[6pt]
+    {\fontsize{20pt}{24pt}\selectfont\color{ink2}順番に回す割当と比べて}\par}
+  \end{minipage}
+  \vspace{16pt}
+
+  \head{使うほど早くなる（学習の進み方）}
+  {\centering
+  \begin{tikzpicture}
+    \begin{axis}[gem, width=0.98\linewidth, height=0.40\linewidth,
+        xlabel={割当の回数}, ylabel={全員が終わるまで [分]},
+        xmin=0, xmax=150, ymin=15, ymax=72, xtick={0,50,100,150}, ytick={20,40,60},
+        unbounded coords=jump, clip=false,
+        legend style={draw=none, fill=none, font=\fontsize{19pt}{22pt}\selectfont,
+          at={(1.0,1.0)}, anchor=north east, legend columns=3,
+          /tikz/every even column/.append style={column sep=14pt}},
+        legend cell align=left]
+      \pgfplotstableread[col sep=comma]{../../resume/poster_curve.csv}\curve
+      \addplot[ink2!45, line width=3pt] table[x=round, y=veteran_span]{\curve};
+      \addlegendentry{経験年数順}
+      \addplot[ink2!80, line width=3pt, dashed] table[x=round, y=random_span]{\curve};
+      \addlegendentry{ランダム}
+      \addplot[navy!55, line width=3pt, dotted] table[x=round, y=roundrobin_span]{\curve};
+      \addlegendentry{順番に回す}
+      \addplot[blue, line width=4.5pt] table[x=round, y=ts_load_span]{\curve};
+      \addlegendentry{\textbf{Gemmba}}
+    \end{axis}
+  \end{tikzpicture}\par}
+  \capt{はじめは手探りでも、ログがたまるほど短くなる（20 試行の平均）}
+  \vspace{14pt}
+
+  \tint{yellowtint}{%
+    {\bl\bfseries 分かったこと：「一番向く人」と「全体が早く終わる割当」は違う\par}
+    \vspace{6pt}
+    {\fontsize{23pt}{28pt}\selectfont
+    \renewcommand{\arraystretch}{1.25}
+    \begin{tabular*}{\linewidth}{@{\extracolsep{\stretch{1}}}l r r r@{}}
+      \hline
+      & 向いている度\textsuperscript{*} & 1 人への集中 & 完了時間 \\
+      \hline
+      手持ちで割らない & \textbf{1.03} & 42\% & 32.4 分 \\
+      \textbf{\color{blue}手持ちで割る} & 1.16 & \textbf{27\%} & \textbf{\color{blue}25.4 分} \\
+      \hline
+    \end{tabular*}\par}
+    \vspace{4pt}
+    {\fontsize{18pt}{22pt}\selectfont\color{ink2}* 任せた人の時間 ÷ 最も向く人の時間（1 が最良）。学習後（51 回目以降）で計測\par}
+    \vspace{6pt}
+    {\fontsize{23pt}{29pt}\selectfont ログだけで隠れた得意を見つけ、ほぼ最適な人を選べる。\par
+    ただし仕事が偏るので、\hl{手持ちで割る工夫}が要る。\par}}
+}
+
+\block{\bt{音声 AI：話すだけでタスクを登録}}{%
+  {\centering
+  \begin{tikzpicture}[font=\fontsize{21pt}{26pt}\selectfont]
+    \tikzset{c/.style={text width=5.5cm, minimum height=2.7cm}}
+    \node[box, c] (v1) {{\bfseries 話す}\\[4pt]{\sm\color{ink2}ボタンを押して}};
+    \node[ybox, c, right=10mm of v1] (v2) {{\bfseries 文字にする}\\[4pt]Whisper};
+    \node[ybox, c, right=10mm of v2] (v3) {{\bfseries 意味を読む}\\[4pt]Gemma 3（LLM）};
+    \node[box, c, right=10mm of v3] (v4) {{\bfseries 検査して登録}\\[4pt]{\sm\color{ink2}資格を確認}};
+    \foreach \i/\j in {v1/v2,v2/v3,v3/v4} \draw[arr] (\i) -- (\j);
+  \end{tikzpicture}\par}
+  \vspace{14pt}
+  \begin{minipage}[t]{0.31\linewidth}\vspace{0pt}\centering
+    \photo{uc4_rec.png}{\linewidth}{0.64\linewidth}{}\\[4pt]
+    \capt{ボタンを押している\\間だけ録音}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.31\linewidth}\vspace{0pt}\centering
+    \photo{uc4_done.png}{\linewidth}{0.64\linewidth}{}\\[4pt]
+    \capt{登録できたら\\液晶に表示}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.345\linewidth}\vspace{0pt}
+    \begin{itemize}\fontsize{22pt}{28pt}\selectfont
+      \item \hl{現場の PC で処理}\\情報を外に出さない
+      \item 気づいた人が\\その場で登録\\→ \hl{忘れを防ぐ}
+    \end{itemize}
+  \end{minipage}
+  \vspace{12pt}
+  {\fontsize{20pt}{25pt}\selectfont
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabular*}{\linewidth}{@{\extracolsep{\stretch{1}}}l l c c c@{}}
+    \hline
+    話した言葉 & タスク名 & 重要度 & 数量 & 期限 \\
+    \hline
+    「旋盤の切粉清掃を至急お願いします」 & 旋盤の切粉清掃 & \textcolor{red!70!black}{\textbf{至急}} & 1 & -- \\
+    「製品 C の外形加工を 20 個、明日まで…」 & 製品Cの外形加工 & \textbf{高} & 20 & 翌日 \\
+    \hline
+  \end{tabular*}\par}
+  \capt{仮想モジュールから送った言葉と、Gemma 3 が実際に作ったタスク}
+}
+
+\end{columns}
+
+% ---------------------------------------------------------------- ユースケース（全幅）
+\block{\bt{ユースケース}}{%
+  % 1 行：場面（太字）と、そのときの操作の流れ
+  \newcommand{\ucrow}[2]{%
+    \begin{minipage}[t]{0.25\linewidth}{\bfseries\fontsize{24pt}{29pt}\selectfont #1}\end{minipage}\hfill
+    \begin{minipage}[t]{0.74\linewidth}{\fontsize{21pt}{29pt}\selectfont #2}\end{minipage}\par
+    \vspace{6pt}}
+  \newcommand{\ucbox}[4]{% 地の色, 文字色, 見出し, 行
+    \begin{minipage}[t]{0.488\linewidth}\vspace{0pt}
+      \tint{#1}{%
+        {\fontsize{32pt}{38pt}\selectfont\bfseries\color{#2}#3}\par
+        \vspace{8pt}
+        \def\ucto{\ \textcolor{#2}{→}\ }#4}
+    \end{minipage}}
+  \ucbox{goodtint}{good}{従業員：}{%
+    \ucrow{仕事をする}{腕輪をかざす\ucto 提案を承認\ucto 終わったら再度かざす}
+    \ucrow{急ぎの仕事}{かざすと至急の仕事へ誘導\ucto 移動先にも通知}
+    \ucrow{仕事に気づく}{ボタンを押して話す\ucto AI がタスクに登録}}\hfill
+  \ucbox{skytint}{blue}{管理者：}{%
+    \ucrow{仕事を割り振る}{タスクを登録\ucto 「AI 割当」\ucto 担当者が決まる}
+    \ucrow{現場を確かめる}{機材の使用中・空きと、誰が何をしているかを確認}
+    \ucrow{人を育てる}{ログで得意・不得意を把握。新人にも試しに任せる}}
+}
+
+\end{document}
