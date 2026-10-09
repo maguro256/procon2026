@@ -245,6 +245,9 @@ select.input {
 /* 機材ステータス：空き＝丸／使用中＝塗りつぶした再生形で、色だけに頼らない（2種類に統一） */
 .badge-idle { background: var(--good-tint); color: var(--good); border-color: var(--good); }
 .badge-inuse { background: var(--blue-tint); color: var(--blue-deep); border-color: var(--blue); }
+/* 停止＝四角／メンテ中＝スパナ（_icons.html）。使用中に混ぜない */
+.badge-stopped { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+.badge-maint { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow-deep); }
 .badge-online { background: var(--good-tint); color: var(--good); border-color: var(--good); }
 .badge-offline { background: var(--paper); color: var(--ink-faint); border-color: var(--line); }
 .badge-p-urgent { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
@@ -447,6 +450,8 @@ select.input {
 .status-lamp .icon { width: 14px; height: 14px; stroke-width: 2.2; }
 .status-idle .status-lamp { background: var(--good-tint); color: var(--good); }
 .status-inuse .status-lamp { background: var(--blue); color: var(--ink); }
+.status-stopped .status-lamp { background: var(--bad-tint); color: var(--bad); }
+.status-maint .status-lamp { background: var(--yellow-tint); color: var(--yellow-deep); }
 @media (prefers-reduced-motion: no-preference) { .status-inuse .status-lamp { animation: lamp-pulse 2.4s ease-in-out infinite; } }
 
 /* ---------------- 案内（未紐付け検出などの注意喚起）：色だけで目立たせ、銘板の質感は使わない ---------------- */
@@ -727,6 +732,8 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 .ui-switch + .test-mode { margin-top: var(--space-2); border-top: none; padding-top: 0; }
 .ui-switch-state { font-weight: 700; color: var(--blue); }
 .ui-switch-link { color: var(--paper); font-weight: 700; }
+/* デモモードはテストモードのすぐ下。区切り線と margin-top:auto は .sidebar-foot 側だけに付ける */
+.demo-mode { margin-top: var(--space-3); font-size: 12px; color: color-mix(in srgb, var(--paper) 58%, transparent); }
 .test-mode-state { font-weight: 700; }
 .test-mode-state.is-on { color: var(--yellow); }
 .test-mode-btn { background: transparent; color: var(--paper); border-color: color-mix(in srgb, var(--paper) 45%, transparent); }

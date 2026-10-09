@@ -51,6 +51,15 @@
       <span class="test-mode-state {{ 'is-on' if test_mode }}">テストモード {{ 'ON' if test_mode else 'OFF' }}</span>
       <button type="submit" class="btn btn-sm test-mode-btn">{{ 'OFF にする' if test_mode else 'ON にする' }}</button>
     </form>
+    {# デモモード：DBをデモ用の状態（demo/three_modules.json）に作り直す。何度押しても同じ状態に戻る。
+       全画面の中身が変わるので、ページごと送信する #}
+    <form method="post" action="{{ url_for('demo_mode') }}" class="test-mode demo-mode" data-full-submit
+          data-confirm="今の作業者・機材・タスク・実績をすべて消して、デモ用の状態に入れ替えますか？今のDBは gemmba.db.before-demo-（日時）として退避されます。"
+          data-confirm-ok="デモ状態にする">
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <span class="test-mode-state">デモモード</span>
+      <button type="submit" class="btn btn-sm test-mode-btn">デモ状態にする</button>
+    </form>
   </aside>
 
   <main class="main">

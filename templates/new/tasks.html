@@ -181,9 +181,14 @@
     <div class="lrow-edit-body">
       {% if not done %}
       {# data-autosave: 変えた瞬間に保存する。状態（着手・完了）は現場のタッチでしか変わらない #}
+      {# 作業中は担当者と機材を動かさない（機材は着手した人のまま使用中。サーバー側でも断る） #}
+      {% set locked = t.status == 'in_progress' %}
       <form method="post" action="{{ url_for('update_task', task_id=t.id) }}" class="lrow-edit-grid" data-autosave>
+        {% if locked %}
+        <p class="lrow-edit-note span-all">作業中のため、担当者と機材は完了するまで変更できません。</p>
+        {% endif %}
         <div class="field"><label>担当者</label>
-          <select class="input" name="assigned_worker_id">
+          <select class="input" name="assigned_worker_id" {{ 'disabled' if locked }}>
             <option value="">担当者なし</option>
             {% for w in worker_list %}<option value="{{ w.id }}" {{ 'selected' if t.assigned_worker_id == w.id }}>{{ w.name }}</option>{% endfor %}
           </select>
@@ -200,7 +205,7 @@
           <input class="input" type="date" name="deadline" value="{{ t.deadline or '' }}">
         </div>
         <div class="field"><label>機材</label>
-          <select class="input" name="equipment_id">
+          <select class="input" name="equipment_id" {{ 'disabled' if locked }}>
             <option value="">機材なし</option>
             {% for e in equipment_list %}<option value="{{ e.id }}" {{ 'selected' if t.equipment_id == e.id }}>{{ e.name }}</option>{% endfor %}
           </select>
