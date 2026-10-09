@@ -227,7 +227,6 @@ select.input {
   border-bottom: 1px solid var(--line);
 }
 .sheet-row:last-child { border-bottom: none; }
-.sheet-row.eq-row { display: flex; align-items: flex-start; gap: var(--space-4); }
 
 /* ---------------- タグ / バッジ：状態は色だけでなく形（アイコン）でも示す ---------------- */
 .tag, .badge {
@@ -335,32 +334,44 @@ select.input {
 .flash-ok { background: var(--good-tint); color: var(--good); border-color: var(--good); }
 .flash-error { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
 
-/* ---------------- 状況サマリー帯（掲示板の見出し帯） ---------------- */
+/* ---------------- 状況サマリー帯（ダッシュボード上部の1段） ---------------- */
+/* 機材の空き具合（使用中・空き）と、手を打つべきもの（要対応・接続切れ）を1段に並べる。
+   4枚を横1列か2×2に割り切る（3+1に折り返すと空いたマスができるため） */
 .signage-strip {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 2px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
   border: 2px solid var(--line-strong); border-radius: var(--radius);
-  overflow: hidden; margin-bottom: var(--space-6); background: var(--line-strong);
+  overflow: hidden; margin-bottom: var(--space-7); background: var(--line);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--ink) 14%, transparent);
 }
-.signage-tile { background: var(--plate); padding: var(--space-4) var(--space-5); display: flex; flex-direction: column; gap: 4px; }
-.signage-tile .tile-label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
-.signage-tile .tile-label .icon { width: 15px; height: 15px; }
-.signage-tile .tile-num { font-weight: 900; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
-.signage-tile.t-idle .tile-num { color: var(--good); }
-.signage-tile.t-inuse .tile-num { color: #ec6800; }
-/* 機材の稼働状況（使用状況タブ）だけ配色を変える。t-idle/t-inuse は
-   タスクの状況サマリーでも使い回しているので、上の既定は変えずここで上書きする */
-.eq-status-strip .t-idle .tile-num { color: var(--good); }
-.eq-status-strip .t-inuse .tile-num { color: #ec6800; }
-/* 狭い画面では3枚が2+1に折り返し、空いたマスに帯の地（炭黒）が見えてしまう。
-   1列に積み、見出しと件数を横に並べて高さを抑える */
+.signage-tile { background: var(--plate); padding: var(--space-4) var(--space-6); display: flex; flex-direction: column; gap: 2px; }
+.signage-tile .tile-label { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--ink-soft); }
+.signage-tile .tile-label .icon { width: 16px; height: 16px; }
+.signage-tile .tile-num { font-weight: 700; font-size: 44px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.signage-tile .tile-unit { margin-left: 6px; font-size: 15px; font-weight: 400; color: var(--ink-soft); }
+/* 状態の色はアイコンにだけ付ける。信号色の文字は白地で読みにくいため */
+.signage-tile.t-inuse .tile-label .icon { color: var(--blue-deep); }
+.signage-tile.t-idle .tile-label .icon { color: var(--good); }
+/* 要対応・接続切れ。0件のときは普通の表示、1件以上で地と文字を赤くする */
+.signage-tile.t-alert { background: var(--bad-tint); }
+.signage-tile.t-alert .tile-label, .signage-tile.t-alert .tile-num { color: var(--bad); }
+@media (max-width: 1100px) { .signage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) {
-  .signage-strip { grid-template-columns: 1fr; }
-  .signage-tile { flex-direction: row; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); }
-  .signage-tile .tile-num { font-size: 28px; }
+  .signage-tile { padding: var(--space-3) var(--space-4); }
+  .signage-tile .tile-num { font-size: 32px; }
 }
-/* 要対応・接続切れ。0件のときは普通の黒、1件以上で赤くする */
-.signage-tile.t-alert .tile-num { color: var(--bad); }
-.signage-tile.t-alert .tile-label { color: var(--bad); }
+
+/* ---------------- ダッシュボードの見出しと2段組 ---------------- */
+.dash-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-2) var(--space-6); margin-bottom: var(--space-6); }
+.dash-head h1 { margin-bottom: 2px; }
+.dash-sub { color: var(--ink-soft); font-size: 14.5px; }
+.dash-head .live-note { margin-top: 0; }
+/* 左に機材、右に要対応。狭くなったら要対応が下に回る */
+.dash-cols { display: flex; flex-wrap: wrap; gap: var(--space-6); align-items: flex-start; }
+.dash-eq { flex: 999 1 600px; min-width: 0; }
+.dash-attention { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; }
+.dash-title { font-size: 19px; font-weight: 700; margin-bottom: var(--space-3); }
+.dash-cols .sheet { margin-bottom: var(--space-3); }
+.dash-more { align-self: flex-end; font-size: 14px; font-weight: 700; }
 
 /* 自動更新の表示（ダッシュボード）。止まったら赤くして、古い表示だと分かるようにする */
 .live-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: var(--space-2); font-size: 13px; }
@@ -371,9 +382,12 @@ select.input {
 .live-note.is-error .live-state { color: var(--bad); font-weight: 700; }
 .live-note.is-error .live-state::after { content: "（サーバーに繋がりません。再試行しています）"; }
 
-/* 要対応のタスク */
-.attention-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
-.attention-meta { font-size: 13px; margin-left: auto; }
+/* 要対応のタスク：バッジ → タスク名 → 担当・機材 の3行で1件 */
+.attention-item { display: flex; flex-direction: column; gap: 4px; }
+.attention-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.attention-due { font-size: 13px; color: var(--ink-soft); }
+.attention-title { font-weight: 700; font-size: 16px; line-height: 1.45; }
+.attention-meta { font-size: 13px; color: var(--ink-soft); }
 .attention-list .empty { padding: var(--space-4) var(--space-5); }
 .badge-overdue { background: var(--bad); color: var(--plate); border-color: var(--bad); }
 .badge-today { background: var(--yellow-tint); color: color-mix(in srgb, var(--ink) 85%, var(--yellow-deep)); border-color: var(--yellow-deep); }
@@ -382,23 +396,39 @@ select.input {
 .badge-done .icon { stroke-width: 2.4; }
 
 /* 使用中の経過時間。2時間を超えたら強調（使い終わったのにタッチし忘れている可能性） */
-.elapsed { font-size: 12.5px; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.elapsed { font-size: 14px; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .elapsed.is-long { color: var(--bad); }
+.elapsed.is-long::after { content: "長時間"; display: block; font-size: 12px; }
 
-/* ---------------- 機材の状況：一枚の掲示板に並ぶ行として続ける ---------------- */
-.eq-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.eq-row-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.eq-row-head .card-title { font-size: 16px; }
-.eq-meta { font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 2px 14px; }
-.eq-meta .k { color: var(--ink-faint); }
-.eq-tech { flex: none; align-self: center; font-size: 12px; }
-
-/* 機材コード・最終更新時刻など、IT担当者不在の現場には不要な専門情報は折りたたみに隔離する */
-.eq-tech summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; list-style: revert; white-space: nowrap; }
-.eq-tech summary:hover { color: var(--ink); }
-.eq-tech[open] summary { margin-bottom: 6px; }
-.eq-tech .mono { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 4px; }
-.eq-tech .card-meta { font-size: 11.5px; }
+/* ---------------- 機材の状況：一枚の掲示板の中の表（1台1行） ---------------- */
+/* 列の幅は表示欄の幅で切り替える（画面幅ではない）。右に要対応が並ぶと狭くなるため */
+.eq-board { container-type: inline-size; }
+.eqg-row {
+  display: grid;
+  grid-template-columns: 28px minmax(170px, 1.2fr) 92px minmax(90px, .8fr) minmax(170px, 1.6fr) 96px;
+  gap: var(--space-3); align-items: center;
+  padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--line);
+}
+.eqg-row:last-child { border-bottom: none; }
+.eqg-head { padding-top: var(--space-3); padding-bottom: var(--space-3); font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
+.eqg-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.45; }
+.eqg-name .card-title { font-size: 16px; }
+/* モジュールが繋がっていない機材。普段は接続の表示を出さず、切れたときだけ行ごと赤くする */
+.eqg-row.is-offline { background: var(--bad-tint); }
+.eqg-offline { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 700; color: var(--bad); white-space: nowrap; }
+.eqg-offline .icon { width: 13px; height: 13px; stroke-width: 2.6; }
+.eqg-worker.is-empty, .eqg-task.is-empty { color: var(--ink-faint); }
+.eqg-task { display: flex; flex-direction: column; min-width: 0; line-height: 1.45; }
+.eqg-task-meta { font-size: 13px; color: var(--ink-soft); }
+.eqg-elapsed { text-align: right; }
+@container (max-width: 620px) {
+  .eqg-head { display: none; }
+  .eqg-row { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: 2px; align-items: start; }
+  .eqg-worker, .eqg-task, .eqg-elapsed { grid-column: 2 / -1; text-align: left; }
+  .eqg-worker.is-empty, .eqg-task.is-empty { display: none; }
+  .eqg-elapsed .elapsed::before { content: "経過 "; }
+  .elapsed.is-long::after { display: inline; margin-left: 6px; }
+}
 
 /* 一覧表の専門的な列（機材コード・最終通信）も同様に、開いたときだけ表示する */
 .tech-toggle { margin-bottom: var(--space-3); font-size: 13px; }
@@ -429,6 +459,15 @@ select.input {
 .callout-row { padding: var(--space-3) 0; border-top: 1.5px solid color-mix(in srgb, var(--yellow-deep) 45%, transparent); }
 .callout-row:first-of-type { border-top: none; padding-top: var(--space-2); }
 .callout-row p { margin-bottom: var(--space-2); font-size: 14px; }
+/* 最小化できる案内（<details class="callout callout-fold">）。閉じると見出しの1行だけになる */
+.callout-fold > summary { display: flex; align-items: center; gap: var(--space-3); cursor: pointer; list-style: none; }
+.callout-fold > summary::-webkit-details-marker { display: none; }
+.callout-fold > summary h4 { margin-bottom: 0; }
+.callout-fold[open] > summary { margin-bottom: var(--space-3); }
+.callout-fold-toggle { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+.callout-fold > summary:hover .callout-fold-toggle { color: var(--ink); }
+.callout-fold[open] .when-closed, .callout-fold:not([open]) .when-open { display: none; }
+.callout-fold:not([open]) { padding-top: var(--space-3); padding-bottom: var(--space-3); margin-bottom: var(--space-5); }
 
 /* ---------------- フォームパネル：箱で囲わず、下の罫線1本だけで次のセクションと分ける ---------------- */
 .form-panel { padding-bottom: var(--space-7); margin-bottom: var(--space-7); border-bottom: 2px solid var(--line-strong); }
