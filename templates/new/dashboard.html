@@ -65,6 +65,10 @@
         {% if offline %}
         <span class="eqg-offline" title="モジュールと通信できません{% if e.last_seen %}（最終通信 {{ e.last_seen }}）{% endif %}"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れ・タッチ不可</span>
         {% endif %}
+        {# 見込みを大きく超えた使用。終了のタッチを忘れて立ち去った可能性がある #}
+        {% if e.id in overdue %}
+        <a class="badge badge-overdue" href="{{ url_for('equipment') }}" title="見込み時間を大きく超えています。終わっていれば機材画面から代わりに終了できます">終了タッチ忘れ？</a>
+        {% endif %}
       </span>
       <span><span class="badge badge-{{ icons.status_class(e.status) }}">{{ icons.status_icon(e.status) }}{{ icons.status_label(e.status) }}</span></span>
       <span class="eqg-worker{{ ' is-empty' if not e.worker_name }}">{{ e.worker_name or '—' }}</span>

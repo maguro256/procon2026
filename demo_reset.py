@@ -35,7 +35,7 @@ import permissions as perms
 ROOT = Path(__file__).parent
 DEFAULT_FILE = ROOT / "demo" / "showcase.json"
 BACKUP_PREFIX = db.DB_PATH.name + ".before-"
-TABLES = ["work_logs", "tasks", "equipment", "workers", "pending_tags", "pending_modules"]
+TABLES = ["work_logs", "tasks", "recurring_tasks", "equipment", "workers", "pending_tags", "pending_modules"]
 
 # 1個あたりの標準的な所要時間（秒）。seed_training.py と同じ
 BASE_SECONDS = {1: 60, 2: 120, 3: 240, 4: 420, 5: 600}

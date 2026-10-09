@@ -28,30 +28,30 @@
       <a href="{{ url_for('equipment') }}" class="navlink {{ 'active' if request.endpoint == 'equipment' }}">
         <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 3.3l2 2-2.4 2.4 2 2 2.4-2.4 2 2c.5 1.7.1 3.6-1.2 4.9-1.5 1.5-3.7 1.8-5.5 1l-6.4 6.4a1.8 1.8 0 0 1-2.5-2.5l6.4-6.4c-.8-1.8-.5-4 1-5.5 1.3-1.3 3.2-1.7 4.9-1.2z"/></svg>
         機材・モジュール</a>
-      {% if test_mode %}
-      <a href="{{ url_for('test_page') }}" class="navlink {{ 'active' if request.endpoint == 'test_page' }}">
-        <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><rect x="7" y="6" width="10" height="7" rx="1"/><circle cx="8.5" cy="17" r="1"/><circle cx="12" cy="17" r="1"/><circle cx="15.5" cy="17" r="1"/></svg>
-        テスト</a>
-      {% endif %}
     </nav>
 
-    {# テストモード（/test の仮想モジュール）の切り替え。本番では OFF。
-       サイドバー自体が変わるので、ページごと送信する（data-full-submit） #}
-    <form method="post" action="{{ url_for('toggle_test_mode') }}" class="sidebar-foot test-mode" data-full-submit>
-      <input type="hidden" name="on" value="{{ '0' if test_mode else '1' }}">
-      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
-      <span class="test-mode-state {{ 'is-on' if test_mode }}">テストモード {{ 'ON' if test_mode else 'OFF' }}</span>
-      <button type="submit" class="btn btn-sm test-mode-btn">{{ 'OFF にする' if test_mode else 'ON にする' }}</button>
-    </form>
-    {# デモモード：DBをデモ用の状態（demo/three_modules.json）に作り直す。何度押しても同じ状態に戻る。
+    {# デモモード：今の作業者・機材・モジュールはそのままに、機材に合ったタスクと作業者の
+       過去の実績を足す。解除すると足したものだけを消す（demo_mode.py）。
        全画面の中身が変わるので、ページごと送信する #}
-    <form method="post" action="{{ url_for('demo_mode') }}" class="test-mode demo-mode" data-full-submit
-          data-confirm="今の作業者・機材・タスク・実績をすべて消して、デモ用の状態に入れ替えますか？今のDBは gemmba.db.before-demo-（日時）として退避されます。"
-          data-confirm-ok="デモ状態にする">
+    {% if demo.on %}
+    <form method="post" action="{{ url_for('demo_mode') }}" class="sidebar-foot test-mode demo-mode" data-full-submit
+          data-confirm="デモで追加したタスク {{ demo.tasks }} 件と実績 {{ demo.logs }} 件を削除して、デモモードを解除しますか？作業者・機材と、デモ以外のタスクはそのまま残ります。"
+          data-confirm-ok="解除する">
+      <input type="hidden" name="on" value="0">
       <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
-      <span class="test-mode-state">デモモード</span>
-      <button type="submit" class="btn btn-sm test-mode-btn">デモ状態にする</button>
+      <span class="test-mode-state is-on">デモモード ON</span>
+      <button type="submit" class="btn btn-sm test-mode-btn">解除する</button>
     </form>
+    {% else %}
+    <form method="post" action="{{ url_for('demo_mode') }}" class="sidebar-foot test-mode demo-mode" data-full-submit
+          data-confirm="今の作業者・機材はそのままに、機材に合ったタスクと作業者の過去の実績を追加しますか？「解除する」で追加したものだけを消して元に戻せます。"
+          data-confirm-ok="開始する">
+      <input type="hidden" name="on" value="1">
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+      <span class="test-mode-state">デモモード OFF</span>
+      <button type="submit" class="btn btn-sm test-mode-btn">開始する</button>
+    </form>
+    {% endif %}
   </aside>
 
   <main class="main">
@@ -650,14 +650,23 @@
     if (e.defaultPrevented) return; // 削除確認などでキャンセルされた場合はここで止まる
     const form = e.target;
     if (form.hasAttribute("data-full-submit")) return; // <main> 以外も変わるフォームは通常送信
+    const busy = [];
     document.querySelectorAll('button[type="submit"]').forEach(function (btn) {
       if (btn.form === form && !btn.disabled) {
         btn.classList.add("is-loading");
         btn.disabled = true;
+        busy.push(btn);
       }
     });
     e.preventDefault();
-    ajaxSubmit(form).catch(function () {
+    ajaxSubmit(form).then(function () {
+      // <main> の中のボタンは差し替えで新しくなるが、外のフォーム（未登録カードの
+      // ポップアップなど）はそのまま残る。戻さないと、次に開いたとき回ったまま押せない
+      busy.forEach(function (btn) {
+        btn.classList.remove("is-loading");
+        btn.disabled = false;
+      });
+    }, function () {
       form.submit(); // 通信に失敗した場合だけ、素の送信にフォールバックする
     });
   });

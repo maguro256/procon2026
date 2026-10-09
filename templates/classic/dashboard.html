@@ -77,6 +77,10 @@
         {% if e.status == 'working' and e.since %}
         <span class="elapsed" data-since="{{ e.since }}" title="{{ e.since }} から"></span>
         {% endif %}
+        {# 見込みを大きく超えた使用。終了のタッチを忘れて立ち去った可能性がある #}
+        {% if e.id in overdue %}
+        <a class="badge badge-overdue" href="{{ url_for('equipment') }}" title="見込み時間を大きく超えています。終わっていれば機材管理から代わりに終了できます">終了タッチ忘れ？</a>
+        {% endif %}
         {# モジュールが付いていない機材は接続の概念が無いので出さない #}
         {% if e.hostname %}
           {% if e.online %}

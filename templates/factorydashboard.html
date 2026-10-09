@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>機材の使用状況 | Gemmba</title>
+{#
+  工場の壁のモニターに映す掲示用ダッシュボード（/factorydashboard）。
+  - 1920×1080 の板として組み、画面の大きさに合わせて丸ごと拡大縮小する（どのモニターでも同じ見た目）
+  - 数秒ごとに自分自身を取り直して中身だけ差し替える。時計と経過時間は毎秒進める
+  - 機材の台数に合わせてタイルの並びと文字の大きさを変える。長い機材名は欄に収まるまで縮める
+  - 工場のLANはインターネットに出られないことがあるので、外部のフォントは読まない
+#}
+{% set today = now[:10] %}
+{% macro md(d) %}{{ d[5:7]|int }}/{{ d[8:10]|int }}{% endmacro %}
+{% set n = equipment|length %}
+{% set cols = 1 if n <= 1 else 2 if n == 2 or n == 4 else 3 if n <= 9 else 4 if n <= 16 else 5 %}
+{% set rows = ((n + cols - 1) // cols) if n else 1 %}
+{% set scale = 1 if rows <= 2 else 0.78 if rows == 3 else 0.62 if rows == 4 else 0.5 %}
+<style>
+  :root {
+    --ink: #232323; --ink-soft: #4A4539; --paper: #F6F3EA; --plate: #FFFFFF;
+    --blue: #00BFFF; --good: #1C7A45; --good-tint: #E3F4E9;
+    --yellow-deep: #E0BD28; --yellow-tint: #FFF6DA; --bad: #B3261E; --bad-tint: #FBEAE9;
+    --font: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ink); }
+  body.is-idle { cursor: none; }   /* しばらく触らなければマウスの矢印を隠す */
+  .stage {
+    position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0;
+    display: flex; flex-direction: column; background: var(--paper); color: var(--ink); font-family: var(--font);
+  }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ---- 見出し帯 ---- */
+  .head { height: 120px; flex: none; box-sizing: border-box; padding: 0 48px; background: var(--ink); color: var(--paper);
+          display: flex; align-items: center; gap: 40px; }
+  .head-title { font-size: 46px; font-weight: 900; letter-spacing: .04em; white-space: nowrap; }
+  .head-brand { font-size: 24px; color: #BDB6A6; margin-left: -20px; }
+  .summary { display: flex; gap: 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 8px 20px; border-radius: 999px;
+          font-size: 28px; font-weight: 900; white-space: nowrap; }
+  .chip svg { width: 24px; height: 24px; }
+  .chip-inuse { background: var(--blue); color: var(--ink); }
+  .chip-idle { background: var(--good-tint); color: var(--good); }
+  .chip-down { background: var(--yellow-tint); color: #3D3520; }
+  .chip-offline { background: var(--bad); color: #FFFFFF; }
+  .clock { margin-left: auto; display: flex; align-items: baseline; gap: 22px; white-space: nowrap; }
+  .clock-date { font-size: 28px; color: #BDB6A6; }
+  .clock-time { font-size: 64px; font-weight: 700; }
+  .conn { display: none; font-size: 24px; font-weight: 700; color: #FF8A80; }
+  .stage.is-stale .conn { display: inline; }
+
+  /* ---- 機材のタイル ---- */
+  .board { flex: 1; min-height: 0; box-sizing: border-box; padding: 32px 48px; display: grid;
+           grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+           gap: calc(28px * var(--s)); }
+  .tile { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--plate);
+          border: 3px solid var(--ink); border-radius: 6px; overflow: hidden; box-shadow: 0 3px 10px rgba(35,35,35,.16); }
+  .band { flex: none; display: flex; align-items: center; gap: calc(14px * var(--s)); height: calc(72px * var(--s));
+          padding: 0 calc(28px * var(--s)); font-size: calc(34px * var(--s)); font-weight: 900; white-space: nowrap; }
+  .band svg { width: calc(34px * var(--s)); height: calc(34px * var(--s)); flex: none; }
+  .t-working .band { background: var(--blue); color: var(--ink); }
+  .t-idle .band { background: var(--good-tint); color: var(--good); border-bottom: 3px solid var(--good); }
+  .t-maintenance .band { background: var(--yellow-tint); color: #3D3520; border-bottom: 3px solid var(--yellow-deep); }
+  .t-stopped .band { background: var(--bad-tint); color: var(--bad); border-bottom: 3px solid var(--bad); }
+  .t-offline .band { background: var(--bad); color: #FFFFFF; }
+  .t-offline, .tile.is-long { border-color: var(--bad); }
+  .body { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: calc(6px * var(--s));
+          padding: calc(20px * var(--s)) calc(28px * var(--s)) calc(22px * var(--s)); }
+  .t-working .body { justify-content: flex-start; }
+  /* 機材名が一番大きい。次に人の名前（空きなら「使えます」など） */
+  .mname, .who { white-space: nowrap; overflow: hidden; }
+  .mname { font-size: calc(68px * var(--s)); font-weight: 900; line-height: 1.15; letter-spacing: .02em; }
+  .who { font-size: calc(48px * var(--s)); font-weight: 700; line-height: 1.25; letter-spacing: .02em; }
+  .task { font-size: calc(30px * var(--s)); font-weight: 700; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .t-idle .who { color: var(--good); }
+  .t-maintenance .who, .t-stopped .who, .t-idle .task, .t-maintenance .task, .t-stopped .task, .t-offline .task { color: var(--ink-soft); }
+  .t-offline .who { color: var(--bad); }
+  .foot { margin-top: auto; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; white-space: nowrap; }
+  .meta { font-size: calc(26px * var(--s)); color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; }
+  .meta .late { color: var(--bad); font-weight: 900; }
+  .elapsed { display: flex; align-items: baseline; gap: 12px; }
+  .elapsed-time { font-size: calc(40px * var(--s)); font-weight: 700; }
+  .elapsed-long { display: none; font-size: calc(26px * var(--s)); font-weight: 900; }
+  .tile.is-long .elapsed { color: var(--bad); }
+  .tile.is-long .elapsed-long { display: inline; }
+  .empty { grid-column: 1 / -1; align-self: center; justify-self: center; font-size: 48px; font-weight: 700; color: var(--ink-soft); }
+
+  /* ---- 要対応の帯 ---- */
+  .ticker { height: 92px; flex: none; box-sizing: border-box; padding: 0 48px; border-top: 3px solid var(--ink);
+            background: var(--plate); display: flex; align-items: center; gap: 28px; overflow: hidden; white-space: nowrap; }
+  .ticker-label { display: inline-flex; align-items: center; gap: 12px; font-size: 30px; font-weight: 900; color: var(--bad); }
+  .ticker-label svg { width: 32px; height: 32px; }
+  .ticker-entry { display: inline-flex; align-items: center; gap: 28px; flex: none; }
+  .ticker-entry[hidden] { display: none; }
+  .ticker-item { font-size: 30px; font-weight: 700; }
+  .ticker-sep { font-size: 30px; color: #6B6558; }
+  .ticker-more, .ticker-none { font-size: 28px; color: var(--ink-soft); }
+  .prio { padding: 2px 12px; border-radius: 999px; border: 2px solid; font-size: 24px; margin-right: 12px; }
+  .prio-urgent { background: var(--bad-tint); color: var(--bad); border-color: var(--bad); }
+  .prio-high { background: var(--yellow-tint); border-color: var(--yellow-deep); }
+  .prio-normal, .prio-low { background: var(--paper); border-color: #BDB6A6; }
+  .due-late { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+
+  <header class="head">
+    <span class="head-title">機材の使用状況</span>
+    <span class="head-brand">Gemmba</span>
+    <div class="summary" id="summary">
+      <span class="chip chip-inuse"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>使用中 {{ summary.working }}</span>
+      <span class="chip chip-idle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="7"/></svg>空き {{ summary.idle }}</span>
+      {% if summary.down %}<span class="chip chip-down">停止・メンテ {{ summary.down }}</span>{% endif %}
+      {% if summary.offline %}<span class="chip chip-offline">接続切れ {{ summary.offline }}</span>{% endif %}
+    </div>
+    <div class="clock">
+      <span class="conn">● 更新できません</span>
+      <span class="clock-date" id="clockDate">{{ date_label }}</span>
+      <span class="clock-time mono" id="clockTime">{{ now[11:16] }}</span>
+    </div>
+  </header>
+
+  <main class="board" id="board" style="--cols: {{ cols }}; --rows: {{ rows }}; --s: {{ scale }}">
+    {% for e in equipment %}
+    {% set offline = e.hostname and not e.online %}
+    {% set st = 'offline' if offline else e.status if e.status in ('working', 'idle', 'stopped', 'maintenance') else 'working' %}
+    <section class="tile t-{{ st }}{{ ' is-forgot' if e.id in overdue }}">
+      <div class="band">
+        {%- if st == 'working' %}<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>使用中
+        {%- elif st == 'idle' %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="7"/></svg>空き
+        {%- elif st == 'maintenance' %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M14.7 3.3l2 2-2.4 2.4 2 2 2.4-2.4 2 2c.5 1.7.1 3.6-1.2 4.9-1.5 1.5-3.7 1.8-5.5 1l-6.4 6.4a1.8 1.8 0 0 1-2.5-2.5l6.4-6.4c-.8-1.8-.5-4 1-5.5 1.3-1.3 3.2-1.7 4.9-1.2z"/></svg>メンテ中
+        {%- elif st == 'stopped' %}<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>停止
+        {%- else %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="7"/><path d="M5 19L19 5"/></svg>接続切れ{% if e.status == 'working' %}（使用中）{% endif %}
+        {%- endif %}
+      </div>
+      <div class="body">
+        <span class="mname">{{ e.name }}</span>
+        {% if e.status == 'working' %}
+          <span class="who">{{ e.worker_name or '—' }}</span>
+          <span class="task">{{ e.task_title or 'フリー利用' }}</span>
+          <div class="foot">
+            <span class="meta">
+              {%- if e.task_title %}×{{ e.task_quantity or 1 }}
+                {%- if e.task_deadline %}・{% if e.task_deadline < today %}<span class="late">期限切れ</span>{% elif e.task_deadline == today %}期限 今日{% else %}期限 {{ md(e.task_deadline) }}{% endif %}{% endif %}
+              {%- endif -%}
+            </span>
+            {% if e.since %}<span class="elapsed"><span class="elapsed-long">{{ '終了タッチ忘れ？' if e.id in overdue else '長時間' }}</span><span class="elapsed-time mono" data-since="{{ e.since }}"></span></span>{% endif %}
+          </div>
+        {% elif st == 'offline' %}
+          <span class="who">タッチできません</span>
+          <span class="task">モジュールの電源・Wi-Fi を確認</span>
+        {% elif st == 'idle' %}
+          <span class="who">使えます</span>
+          <span class="task">社員証をタッチして開始</span>
+        {% else %}
+          <span class="who">使えません</span>
+          <span class="task">{{ 'メンテナンス中' if st == 'maintenance' else '停止中' }}</span>
+        {% endif %}
+      </div>
+    </section>
+    {% else %}
+    <p class="empty">機材が登録されていません</p>
+    {% endfor %}
+  </main>
+
+  <footer class="ticker" id="ticker">
+    <span class="ticker-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><path d="M12 17.5v.01"/></svg>要対応</span>
+    {# 入るだけ並べ、はみ出す分は「ほか N件」にまとめる（下の fitTicker） #}
+    {% for t in attention[:8] %}
+      <span class="ticker-entry">
+        {%- if not loop.first %}<span class="ticker-sep">｜</span>{% endif -%}
+        <span class="ticker-item"><span class="prio prio-{{ t.priority }}">{{ P[t.priority] }}</span>{{ t.title }}
+          {%- if t.equipment_name %}（{{ t.equipment_name }}）{% endif %}
+          {%- if t.due == 'overdue' %}　<span class="due-late">期限切れ</span>{% elif t.due == 'today' %}　今日まで{% endif %}
+          {{- '・' ~ (t.worker_name or '未割当') }}</span>
+      </span>
+    {% else %}
+      <span class="ticker-none">至急・期限切れ・今日が期限のタスクはありません</span>
+    {% endfor %}
+    <span class="ticker-more" data-total="{{ attention|length }}"></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const stage = document.getElementById("stage");
+  const W = 1920, H = 1080;
+  const WEEK = "日月火水木金土";
+  const REFRESH_MS = 5000;
+  const LONG_MIN = 120;     // 2時間を超えたら「長時間」（タッチし忘れの可能性）
+
+  // 1920×1080 の板を画面いっぱいに（縦横比を保って）拡大縮小し、真ん中に置く
+  function fitStage() {
+    const s = Math.min(innerWidth / W, innerHeight / H);
+    stage.style.transform = `translate(${(innerWidth - W * s) / 2}px, ${(innerHeight - H * s) / 2}px) scale(${s})`;
+  }
+  addEventListener("resize", fitStage);
+  fitStage();
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function tickClock() {
+    const d = new Date();
+    document.getElementById("clockTime").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    document.getElementById("clockDate").textContent = `${d.getMonth() + 1}月${d.getDate()}日（${WEEK[d.getDay()]}）`;
+  }
+
+  // 経過時間（data-since="YYYY-MM-DD HH:MM:SS"）を H:MM で出す
+  function tickElapsed() {
+    document.querySelectorAll("[data-since]").forEach(el => {
+      const since = new Date(el.dataset.since.replace(" ", "T"));
+      const min = Math.floor((Date.now() - since.getTime()) / 60000);
+      if (isNaN(min) || min < 0) { el.textContent = ""; return; }
+      el.textContent = `${Math.floor(min / 60)}:${pad(min % 60)}`;
+      const tile = el.closest(".tile");
+      // is-forgot はサーバーが付ける（見込みを大きく超えた＝終了のタッチ忘れの可能性）
+      if (tile) tile.classList.toggle("is-long", min >= LONG_MIN || tile.classList.contains("is-forgot"));
+    });
+  }
+
+  // 長い機材名・人名は、欄に収まるまで文字を小さくする（途中で切らない）
+  function fitText(root) {
+    root.querySelectorAll(".mname, .who").forEach(el => {
+      el.style.fontSize = "";
+      let size = parseFloat(getComputedStyle(el).fontSize);
+      const min = size * 0.45;
+      while (el.scrollWidth > el.clientWidth + 1 && size > min) {
+        size -= 2;
+        el.style.fontSize = size + "px";
+      }
+    });
+  }
+
+  // 前回サーバーから受け取った各欄のHTML。今の画面（経過時間などをJSで書き足したもの）と
+  // 比べると毎回「変わった」ことになるので、受け取ったもの同士で比べる
+  const IDS = ["summary", "board", "ticker"];
+  const last = {};
+  IDS.forEach(id => { last[id] = document.getElementById(id).outerHTML; });
+
+  // 要対応の帯は入るだけ並べ、はみ出した分は「ほか N件」にまとめる
+  function fitTicker() {
+    const box = document.getElementById("ticker");
+    if (!box) return;
+    const entries = [...box.querySelectorAll(".ticker-entry")];
+    const more = box.querySelector(".ticker-more");
+    const total = more ? parseInt(more.dataset.total, 10) || 0 : 0;
+    entries.forEach(e => { e.hidden = false; });
+    let shown = entries.length;
+    const update = () => { if (more) more.textContent = total > shown ? `ほか ${total - shown}件` : ""; };
+    update();
+    while (shown > 1 && box.scrollWidth > box.clientWidth + 1) {
+      entries[--shown].hidden = true;
+      update();
+    }
+  }
+
+  function tick() { tickClock(); tickElapsed(); }
+  tick();
+  setInterval(tick, 1000);
+  fitText(document);
+  fitTicker();
+  addEventListener("resize", fitTicker);
+
+  // 自分自身を取り直し、中身が変わった所だけ差し替える
+  async function refresh() {
+    try {
+      const res = await fetch(location.href, { cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+      IDS.forEach(id => {
+        const cur = document.getElementById(id), next = doc.getElementById(id);
+        if (!cur || !next || next.outerHTML === last[id]) return;
+        last[id] = next.outerHTML;
+        const node = document.importNode(next, true);
+        cur.replaceWith(node);
+        fitText(node);
+        if (id === "ticker") fitTicker();
+      });
+      tickElapsed();
+      stage.classList.remove("is-stale");
+    } catch (e) {
+      stage.classList.add("is-stale");   // サーバーの再起動中など。古い表示だと分かるようにする
+    }
+  }
+  setInterval(refresh, REFRESH_MS);
+
+  // しばらく動かさなければマウスの矢印を隠す
+  let idleTimer = null;
+  addEventListener("mousemove", () => {
+    document.body.classList.remove("is-idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add("is-idle"), 3000);
+  });
+})();
+</script>
+</body>
+</html>

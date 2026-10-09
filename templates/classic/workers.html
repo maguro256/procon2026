@@ -97,9 +97,13 @@
       <tr class="edit-row">
         <td colspan="8">
           <details>
-            <summary>役職・権限・ICタグを編集</summary>
+            <summary>名前・役職・権限・ICタグを編集</summary>
             {# data-autosave: 変えた瞬間に保存する（base.html）。「保存」ボタンも残してある #}
             <form method="post" action="{{ url_for('update_worker', worker_id=w.id) }}" class="worker-edit-grid" data-autosave>
+              {# 名前を変えても、担当のタスクや実績は引き継がれる（id で紐付いている） #}
+              <div class="field"><label>名前</label>
+                <input class="input input-sm" type="text" name="name" value="{{ w.name }}" required>
+              </div>
               <div class="field"><label>勤続年数</label>
                 <input class="input input-sm" type="number" name="years_of_service" step="0.5" min="0"
                        value="{{ w.years_of_service }}">
