@@ -1120,8 +1120,8 @@ def init_buttons():
 # ------------------------------------------------------------ ステータスLED（B-3）
 # 単色LED 2個。**作業中は赤、それ以外は青。** 電流制限抵抗が各1本要る（220〜1kΩ）。
 #
-#   赤 GPIO17（11番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
-#   青 GPIO27（13番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
+#   赤 GPIO27（13番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
+#   青 GPIO17（11番ピン）→ 抵抗 → LEDのアノード(長い足)、カソード(短い足) → GND(9番)
 #
 # 9/11/13番が隣り合っているので、GND・赤・青を並べて挿せる。
 #
@@ -1132,8 +1132,8 @@ def init_buttons():
 # 画面上部の色帯（LED_COLORS）は6状態を色で出し分けるが、こちらは2色しかないので
 # 「その機材が今ふさがっているか」だけを離れた場所から見せる役割に割り切っている。
 LED_PINS = {
-    "red": int(os.environ.get("GEMMBA_LED_RED", "17")),
-    "blue": int(os.environ.get("GEMMBA_LED_BLUE", "27")),
+    "red": int(os.environ.get("GEMMBA_LED_RED", "27")),
+    "blue": int(os.environ.get("GEMMBA_LED_BLUE", "17")),
 }
 # 赤を点ける状態。フリー利用も「ふさがっている」に含めるなら "free" を足す
 LED_RED_STATES = {"working"}

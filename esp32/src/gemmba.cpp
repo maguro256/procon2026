@@ -326,10 +326,25 @@ static void draw_button_bar() {
   lcd.fillTriangle(W - PAD, cy, W - PAD - 9, cy - 6, W - PAD - 9, cy + 6, SUB_COLOR);
 }
 
+// 接続先は secrets.h の WIFI_SSID を優先し、WIFI_SSID2 があればつながらないときに交互に試す
+// （ラズパイ版の NetworkManager の優先度と同じ考え方）
+struct WifiAp {
+  const char* ssid;
+  const char* pass;
+};
+static const WifiAp WIFI_APS[] = {
+    {WIFI_SSID, WIFI_PASSWORD},
+#ifdef WIFI_SSID2
+    {WIFI_SSID2, WIFI_PASSWORD2},
+#endif
+};
+static constexpr int WIFI_AP_COUNT = sizeof(WIFI_APS) / sizeof(WIFI_APS[0]);
+static int wifi_ap = 0;
+
 // ボタン列を出さない画面の下部。接続先を小さく置く（現場の切り分け用）
 static void draw_footer() {
   String foot;
-  if (WiFi.status() != WL_CONNECTED) foot = String("Wi-Fi 未接続（") + WIFI_SSID + "）";
+  if (WiFi.status() != WL_CONNECTED) foot = String("Wi-Fi 未接続（") + WIFI_APS[wifi_ap].ssid + "）";
   else if (mqtt.connected()) foot = "broker " + broker_host;
   else foot = "ブローカー未接続  " + WiFi.localIP().toString();
   draw_text(PAD, H - 22, foot, ROLE_SMALL, DIM_COLOR);
@@ -862,12 +877,17 @@ static void handle_restart() {
 
 // ------------------------------------------------------------ Wi-Fi・ブローカー
 
+static void wifi_connect(int ap) {
+  wifi_ap = ap;
+  WiFi.begin(WIFI_APS[ap].ssid, WIFI_APS[ap].pass);
+  logf("[WiFi] %s に接続します", WIFI_APS[ap].ssid);
+}
+
 static void wifi_begin() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setHostname(device_id.c_str());
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  logf("[WiFi] %s に接続します", WIFI_SSID);
+  wifi_connect(0);
 }
 
 // 切れていたら繋ぎ直す。setAutoReconnect が拾わない場合（起動時に AP が無かった等）の保険
@@ -877,14 +897,14 @@ static void wifi_service() {
   bool now = WiFi.status() == WL_CONNECTED;
   if (now != was_connected) {
     was_connected = now;
-    if (now) logf("[WiFi] 接続しました IP=%s RSSI=%d", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    if (now) logf("[WiFi] %s に接続しました IP=%s RSSI=%d", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
     else logf("[WiFi] 切断されました");
     screen_dirty = true;  // 下部の接続表示を更新
   }
   if (!now && millis() - last_try > 10000) {
     last_try = millis();
     WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    wifi_connect((wifi_ap + 1) % WIFI_AP_COUNT);
   }
 }
 
