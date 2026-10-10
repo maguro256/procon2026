@@ -853,7 +853,7 @@ cd /d D:\procon2026
   外から受けるための `OLLAMA_HOST=0.0.0.0` はユーザー環境変数に保存済みなので、再起動しても効く
 - 初回の準備で踏んだこと:
   - Python 3.11 が無かった → `winget install -e --id Python.Python.3.11`（入れたらコマンドプロンプトを開き直す）
-  - `pip install -r voiceequirements.txt` が `UnicodeDecodeError: 'cp932'` で落ちる
+  - `pip install -r voice\requirements.txt` が `UnicodeDecodeError: 'cp932'` で落ちる
     （コメントが日本語のため）→ 先に `set PYTHONUTF8=1`
   - ファイアウォール（管理者のコマンドプロンプトで1回だけ）:
     `netsh advfirewall firewall add rule name="gemmba stt" dir=in action=allow protocol=TCP localport=8765,11434 remoteip=100.64.0.0/10`
