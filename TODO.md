@@ -835,32 +835,69 @@ pi01 の I2S マイクで台本3文を読み上げて通した。**録音した�
 - リダイレクト時の標準出力は cp932 になるので、`--json > out.json` が後段で読めなくなる。
   `sys.stdout.isatty()` が False のときだけ UTF-8 に切り替えている
 
-#### 文字起こし・意図分析を家のデスクトップに任せる（2026-10-10）
+#### 文字起こし・意図分析を家のデスクトップに任せる（2026-10-10 / 10-11 実測）
 
-発表で使うノートPCにはGPUが無く、large-v3 がCPU（0.7倍速）で動いて遅い。
-Tailscale で家のデスクトップ（RTX 3070 Ti）に繋いで、重い処理だけそちらに任せる。
+発表で使うノートPCにはGPUが無く、large-v3 がCPUで動いて遅い（4.7秒の音声に14秒）。
+Tailscale で家のデスクトップ（RTX 3070 Ti、Tailscale IP `100.106.15.113`）に繋いで、
+文字起こし（Whisper）と意図分析（Gemma）をそちらに任せる。
 
-**デスクトップ側**（リポジトリと `.venv-voice` を用意しておく。スリープさせないこと）
-
-```
-.venv-voice/Scripts/python voice/stt.py --http <デスクトップのTailscale IP>:8765
-set OLLAMA_HOST=0.0.0.0& ollama serve
-```
-
-**ノートPC側**（app.py を起動する前に）
+**デスクトップ側**（`D:\procon2026`。スリープさせないこと）
 
 ```
-set GEMMBA_STT_URL=http://<デスクトップのTailscale IP>:8765
-set GEMMBA_INTENT_HOST=http://<デスクトップのTailscale IP>:11434
+cd /d D:\procon2026
+.venv-voice\Scripts\python voice\stt.py --http 100.106.15.113:8765
 ```
 
-- 起動時に `[voice] 文字起こしは http://… に任せます` と出れば繋がっている
+- 起動すると `[stt] HTTPで常駐を開始しました large-v3 / cuda float16` と出る。この画面は開いたままにする
+- Ollama はタスクトレイのアプリが動いていればよい（`ollama serve` は不要。打つとポートが重なって失敗する）。
+  外から受けるための `OLLAMA_HOST=0.0.0.0` はユーザー環境変数に保存済みなので、再起動しても効く
+- 初回の準備で踏んだこと:
+  - Python 3.11 が無かった → `winget install -e --id Python.Python.3.11`（入れたらコマンドプロンプトを開き直す）
+  - `pip install -r voiceequirements.txt` が `UnicodeDecodeError: 'cp932'` で落ちる
+    （コメントが日本語のため）→ 先に `set PYTHONUTF8=1`
+  - ファイアウォール（管理者のコマンドプロンプトで1回だけ）:
+    `netsh advfirewall firewall add rule name="gemmba stt" dir=in action=allow protocol=TCP localport=8765,11434 remoteip=100.64.0.0/10`
+  - PowerShell では `set OLLAMA_HOST=...` が効かない（PowerShell の変数になるだけ）。保存は
+    `[Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "User")` の後に Ollama を再起動
+
+**ノートPC側**（PowerShell。app.py を起動する前に）
+
+```powershell
+$env:GEMMBA_STT_URL = "http://100.106.15.113:8765"
+$env:GEMMBA_INTENT_HOST = "http://100.106.15.113:11434"
+$env:GEMMBA_INTENT_KEEPALIVE = "30m"
+python app.py
+```
+
+起動時にこの2行が出れば繋がっている:
+
+```
+[voice] 文字起こしは http://100.106.15.113:8765 に任せます large-v3 / cuda float16
+[voice] 意図分析: 有効 - gemma3:4b / http://100.106.15.113:11434
+```
+
 - デスクトップに繋がらない・20秒で返らないときは、ノートPCの常駐でやり直す
   （そのためノートPCでも従来どおりモデルを読み込んでおく）
 - `stt.py --http` には認証が無い。Tailscale のIPを付けて、その網の内側でだけ待ち受けること
-- VRAM 8GB に large-v3(float16, 約5GB) と gemma3:4b(約3.5GB) が同居すると溢れて
-  Ollama の一部がCPUに落ちる。遅ければ `set GEMMBA_STT_COMPUTE=int8_float16` で
-  Whisper 側を約3GBに減らす
+- 繋がっているかは `tailscale ping 100.106.15.113` で確かめられる。デスクトップは再起動しても
+  Tailscale がログイン前から繋がる（Chrome リモート デスクトップでログインし直せばよい）
+
+**実測（ノートPCから、通信込み）**
+
+| | 時間 |
+|---|---|
+| 文字起こし 4.7秒の音声 | 約1.1秒（起動後の最初の1回だけ 2.6秒） |
+| 文字起こし 35秒の音声 | 約6.5秒 |
+| Gemma（載っているとき） | 0.7〜1.2秒 |
+| Gemma（降ろした後の読み直し） | 約4.5秒 |
+| Gemma（Ollama 起動後の最初の1回） | 52秒。**本番前に一度音声登録して済ませておく** |
+
+- **3070 Ti では large-v3 と gemma3:4b(2.88GB) が同時にGPUに載る。** Gemma を載せたままでも
+  文字起こしは cuda のまま（35秒の音声が 4.6秒 → 5〜6秒になる程度）。そこで
+  `GEMMBA_INTENT_KEEPALIVE=30m` にして、既定の60秒で Gemma が降ろされて毎回4.5秒の
+  読み直しが入るのを避けている（既定の60秒は、同時に載らなかった 3060Ti のときの設定）
+- 遅くなったらGPUのメモリが足りていない可能性がある。デスクトップで
+  `set GEMMBA_STT_COMPUTE=int8_float16` にして Whisper 側を約3GBに減らす
 
 #### 意図分析 `voice/intent.py`（2026-09-16 完了）
 
