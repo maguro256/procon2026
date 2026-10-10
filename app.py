@@ -13,10 +13,12 @@ app.py - Gemmba 管理者画面（雛形）
 import os
 import json
 import queue
+import re
 import socket
 import tempfile
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -2406,6 +2408,54 @@ def api_voice():
     return jsonify(_register_task_from_text(tag_id, text, device_id))
 
 
+def _match_key(s):
+    """機材名と聞き取った文を突き合わせるための形。全角/半角・大小文字・空白・長音の
+    揺れを消す（Whisper は「3Dプリンター」「旋盤 1号機」のように書くことがある）"""
+    s = unicodedata.normalize("NFKC", s or "").lower()
+    return re.sub(r"[\sー\-ｰ#＃]", "", s)
+
+
+def _mentions(said, key):
+    """said に key が出てくるか。key が数字で終わるなら、続きも数字のものは数えない
+    （「プレス機1」は「プレス機12個」に含まれるが、プレス機 #1 のことではない）"""
+    if not key:
+        return False
+    tail = r"(?![0-9])" if key[-1].isdigit() else ""
+    return re.search(re.escape(key) + tail, said) is not None
+
+
+def _equipment_in_text(conn, text):
+    """
+    聞き取った文に出てくる登録済みの機材を1台選ぶ。戻り値: 機材の行 / None
+
+    名前そのもの（「旋盤 #2」）が出ていればそれ。無ければ番号を外した名前（「旋盤」）で
+    探し、それに当たる機材が1台だけならそれにする。**2台以上に当たって決められない
+    ときは設定しない。** 違う機材に付けると、本来の機材の前では提示されず「別の機材へ」と誘導されてしまうため。
+    別々の機材が2つ以上出てきたとき（「旋盤用の治具を3Dプリンタで」）も同じ理由で設定しない。
+    """
+    said = _match_key(text)
+    if not said:
+        return None
+    rows = conn.execute("SELECT id, name FROM equipment").fetchall()
+    exact = [r for r in rows if _mentions(said, _match_key(r["name"]))]
+    if exact:
+        # 「レーザー加工機」と「加工機」のように片方が他方を含むなら、長いほうだけ残す
+        keys = {r["id"]: _match_key(r["name"]) for r in exact}
+        exact = [r for r in exact if not any(keys[r["id"]] != k and keys[r["id"]] in k
+                                             for k in keys.values())]
+        return exact[0] if len(exact) == 1 else None
+    base = {}
+    for r in rows:
+        key = re.sub(r"(no\.?|[0-9]+号機|[0-9]+)$", "", _match_key(r["name"]))
+        if _mentions(said, key):
+            base.setdefault(key, []).append(r)
+    found = [rs for key, rs in base.items()
+             if not any(key != k and key in k for k in base)]
+    if len(found) == 1 and len(found[0]) == 1:
+        return found[0][0]
+    return None
+
+
 def _register_task_from_text(tag_id, text, device_id=None):
     """
     文字起こし済みのテキストからタスクを立てる。/api/voice の後段で、
@@ -2422,12 +2472,15 @@ def _register_task_from_text(tag_id, text, device_id=None):
 
     conn = db.get_db()
     worker = conn.execute("SELECT id FROM workers WHERE nfc_tag_id = ?", (tag_id,)).fetchone()
+    # 「旋盤を掃除して」のように登録済みの機材の名前が出てきたら、その機材のタスクにする
+    equipment = _equipment_in_text(conn, text)
     cur = conn.execute(
         """INSERT INTO tasks (title, description, difficulty, priority,
-                              required_permissions, quantity, deadline)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                              required_permissions, quantity, deadline, equipment_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (parsed["title"], parsed["description"], parsed["difficulty"], parsed["priority"],
-         perms.dump(parsed["required_permissions"]), parsed["quantity"], parsed["deadline"]),
+         perms.dump(parsed["required_permissions"]), parsed["quantity"], parsed["deadline"],
+         equipment["id"] if equipment else None),
     )
     conn.commit()
     task_id = cur.lastrowid
@@ -2436,12 +2489,14 @@ def _register_task_from_text(tag_id, text, device_id=None):
           f"worker={worker['id'] if worker else '?'} / {parsed['source']}）"
           f"「{parsed['title']}」 優先度={parsed['priority']} 難易度={parsed['difficulty']} "
           f"数量={parsed['quantity']} 期限={parsed['deadline'] or '-'} "
-          f"権限={','.join(parsed['required_permissions']) or '-'} 全文「{text}」")
+          f"権限={','.join(parsed['required_permissions']) or '-'} "
+          f"機材={equipment['name'] if equipment else '-'} 全文「{text}」")
     return {"ok": True, "task_id": task_id, "text": parsed["title"],
             "full_text": text, "priority": parsed["priority"],
             "difficulty": parsed["difficulty"], "quantity": parsed["quantity"],
             "deadline": parsed["deadline"],
             "required_permissions": parsed["required_permissions"],
+            "equipment": equipment["name"] if equipment else None,
             "source": parsed["source"]}
 
 
