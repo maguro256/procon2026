@@ -688,6 +688,7 @@ code { font-family: var(--font-mono); background: var(--paper); padding: 2px 7px
 /* テストモードの切り替え（サイドバー下部）。ON の間は黄色で目立たせ、切り忘れを防ぐ */
 .test-mode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .test-mode-state { font-weight: 700; }
+.test-mode-actions { display: flex; gap: var(--space-1); }
 .test-mode-state.is-on { color: var(--yellow); }
 .test-mode-btn { background: transparent; color: var(--paper); border-color: color-mix(in srgb, var(--paper) 45%, transparent); }
 .test-mode-btn:hover { background: color-mix(in srgb, var(--paper) 12%, transparent); }

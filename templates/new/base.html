@@ -38,22 +38,28 @@
       <a class="ui-switch-link" href="{{ url_for('switch_ui', choice='classic', next=request.full_path if request.query_string else request.path) }}">旧UIに戻す</a>
     </div>
 
-    {# デモモード：今の作業者・機材・モジュールはそのままに、機材に合ったタスクと作業者の
-       過去の実績を足す。解除すると足したものだけを消す（demo_mode.py）。
+    {# デモモード：ボタン一つでデモ用DB（宮田・南川／3Dプリンタ・旋盤／至急と通常のタスク）へ
+       切り替える。本番のDBには触らないので、解除すれば元に戻る（demo_mode.py）。
        全画面の中身が変わるので、ページごと送信する #}
     {% if demo.on %}
     <form method="post" action="{{ url_for('demo_mode') }}" class="test-mode demo-mode" data-full-submit
-          data-confirm="デモで追加したタスク {{ demo.tasks }} 件と実績 {{ demo.logs }} 件を削除して、デモモードを解除しますか？作業者・機材と、デモ以外のタスクはそのまま残ります。"
+          data-confirm="デモモードを解除して、デモ前の状態に戻しますか？デモ中に行った作業は消えます。"
           data-confirm-ok="解除する">
       <input type="hidden" name="on" value="0">
       <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
       <span class="test-mode-state is-on">デモモード ON</span>
-      <button type="submit" class="btn btn-sm test-mode-btn">解除する</button>
+      <span class="test-mode-actions">
+        {# 初期化は下の別フォームを送る（こちらのフォームの「解除しますか？」を出さないため） #}
+        <button type="submit" form="demo-reset" class="btn btn-sm test-mode-btn">初期化</button>
+        <button type="submit" class="btn btn-sm test-mode-btn">解除する</button>
+      </span>
+    </form>
+    {# デモモードのまま最初の状態に戻す。押したらすぐ戻す（確認は出さない） #}
+    <form id="demo-reset" method="post" action="{{ url_for('demo_mode_reset') }}" data-full-submit hidden>
+      <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
     </form>
     {% else %}
-    <form method="post" action="{{ url_for('demo_mode') }}" class="test-mode demo-mode" data-full-submit
-          data-confirm="今の作業者・機材はそのままに、機材に合ったタスクと作業者の過去の実績を追加しますか？「解除する」で追加したものだけを消して元に戻せます。"
-          data-confirm-ok="開始する">
+    <form method="post" action="{{ url_for('demo_mode') }}" class="test-mode demo-mode" data-full-submit>
       <input type="hidden" name="on" value="1">
       <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
       <span class="test-mode-state">デモモード OFF</span>

@@ -37,3 +37,4 @@ esp32/include/secrets.h
 
 slides/node_modules/
 slides/~$*
+gemmba-demo.db*

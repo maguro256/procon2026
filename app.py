@@ -301,16 +301,8 @@ def inject_labels():
 
 
 def _demo_state():
-    """サイドバーのデモモード表示用。ON/OFF と、解除したときに消える件数"""
-    try:
-        conn = db.get_db()
-        try:
-            counts = demo.demo_counts(conn)
-        finally:
-            conn.close()
-    except db.sqlite3.OperationalError:   # tasks.demo の無い古いDB（テストの一時DBなど）
-        return {"on": False, "tasks": 0, "logs": 0}
-    return dict(counts, on=counts["tasks"] > 0)
+    """サイドバーのデモモード表示用"""
+    return {"on": demo.is_active()}
 
 
 # ---------------------------------------------------------------- 画面
@@ -3811,46 +3803,77 @@ def demo_mode():
     """
     サイドバーのデモモード。on=1 で開始、on=0 で解除する（中身は demo_mode.py）。
 
-    開始しても、今いる作業者・機材・モジュールの紐付けには触らない。機材ごとに
-    合ったタスクと、作業者ごとの過去の実績を足すだけ。解除すると足したもの
-    （tasks.demo = 1 のタスクと、その実績）だけを消す。
+    開始するとデモ用DB（宮田・南川／3Dプリンタ・旋盤／至急と通常のタスク）を作り直して
+    そちらへ切り替える。本番のDBには触らないので、解除すればそのまま元に戻る。
     """
     turn_on = request.form.get("on") == "1"
-    conn = db.get_db()
-    try:
-        active = demo.is_active(conn)
-        if turn_on and active:
-            flash("すでにデモモードです", "error")
-            return _back_to("dashboard")
-        if not turn_on and not active:
-            flash("デモモードではありません", "error")
-            return _back_to("dashboard")
-        if turn_on:
-            added = demo.start(conn)
-            released = []
-        else:
-            removed, released = demo.stop(conn)
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print(f"[demo] デモモードを切り替えられませんでした: {e}")
-        flash(f"デモモードを切り替えられませんでした（DBは元のままです）: {e}", "error")
+    if turn_on == demo.is_active():
+        flash("すでにデモモードです" if turn_on else "デモモードではありません", "error")
         return _back_to("dashboard")
-    finally:
-        conn.close()
+    try:
+        if turn_on:
+            # 以前のデモモードが本番DBに足したタスクと実績が残っていれば、ここで片付ける
+            conn = db.get_db()
+            try:
+                legacy = demo.remove_legacy(conn)
+                conn.commit()
+            finally:
+                conn.close()
+            if legacy:
+                print(f"[demo] 以前のデモモードのタスク {legacy} 件を本番DBから削除しました")
+            added = demo.start()
+        else:
+            demo.stop()
+    except Exception as e:
+        print(f"[demo] デモモードを切り替えられませんでした: {e}")
+        flash(f"デモモードを切り替えられませんでした（本番のDBは元のままです）: {e}", "error")
+        return _back_to("dashboard")
 
-    ai_stub.invalidate_cache()
-    _resync_released(released)
+    _after_db_switch()
     if turn_on:
-        print(f"[demo] デモモードを開始: タスク {added['tasks']} 件・実績 {added['logs']} 件を追加")
-        flash(f"デモモードを開始しました（機材に合わせたタスク {added['tasks']} 件と、"
-              f"作業者の実績 {added['logs']} 件を追加しました）", "ok")
+        print(f"[demo] デモモードを開始: {db.DB_PATH.name} に切り替えました")
+        flash(f"デモモードを開始しました（作業者 {added['workers']} 人・機材 {added['equipment']} 台・"
+              f"タスク {added['tasks']} 件）", "ok")
     else:
-        print(f"[demo] デモモードを解除: タスク {removed['tasks']} 件・実績 {removed['logs']} 件を削除")
-        flash(f"デモモードを解除しました（デモで追加したタスク {removed['tasks']} 件と"
-              f"実績 {removed['logs']} 件を削除しました）"
-              + (f"。{_released_note(released)}" if released else ""), "ok")
+        print(f"[demo] デモモードを解除: {db.DB_PATH.name} に戻しました")
+        flash("デモモードを解除しました（デモ前の状態に戻しました）", "ok")
     return _back_to("dashboard")
+
+
+@app.route("/demo-mode/reset", methods=["POST"])
+def demo_mode_reset():
+    """デモモードの「初期化」。デモ中に行った作業を消して、開始した直後の状態に戻す"""
+    if not demo.is_active():
+        flash("デモモードではありません", "error")
+        return _back_to("dashboard")
+    try:
+        demo.reset()
+    except Exception as e:
+        print(f"[demo] デモモードを初期化できませんでした: {e}")
+        flash(f"デモモードを初期化できませんでした: {e}", "error")
+        return _back_to("dashboard")
+    _after_db_switch()
+    print("[demo] デモモードを初期化しました")
+    flash("デモモードを初期化しました（開始した直後の状態に戻しました）", "ok")
+    return _back_to("dashboard")
+
+
+def _after_db_switch():
+    """
+    使うDBを切り替えた後に、メモリに持っている写しとモジュールの画面を新しいDBに合わせる。
+    未登録タグ・モジュールの一覧は読み直し、繋がっているモジュールには新しいDBでの
+    機材名と状態を送り直す（送らないと、前のDBの機材名や作業中の表示が残る）
+    """
+    with _pending_lock:
+        _pending_tags.clear()
+        _pending_tag_touched.clear()
+        _pending_modules.clear()
+    _load_pending()
+    ai_stub.invalidate_cache()
+    conn = db.get_db()
+    rows = conn.execute("SELECT * FROM equipment").fetchall()
+    conn.close()
+    _resync_released(rows)
 
 
 # /test の「社員証をタッチ」に並べる未登録の仮カード
@@ -4131,6 +4154,9 @@ def start_background_jobs():
 
 if __name__ == "__main__":
     db.init_db()
+    if demo.resume():
+        print(f"[demo] {db.DB_PATH.name} が残っているので、デモモードのまま起動します")
+        db.init_db(seed=False)
     _load_pending()
     print(f"[app] デバッグモード: {'ON（開発用。LANに公開しないこと）' if DEBUG else 'OFF'}")
     # 音声タスク登録の後段(E-2)。無くても既定値で登録はできるので落とさず警告だけ

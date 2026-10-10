@@ -168,8 +168,9 @@ MIGRATIONS = {
 }
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
+def get_db(path=None):
+    """path を省くと DB_PATH（デモモード中は demo_mode.py が差し替えたデモ用DB）"""
+    conn = sqlite3.connect(path or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # 複数プロセス/複数スレッドが同時に書き込むと sqlite3 は即座に
@@ -258,11 +259,11 @@ def backup_to(dst):
         src.close()
 
 
-def init_db(seed: bool = True):
+def init_db(seed: bool = True, path=None):
     # サンプル投入は「DBファイルが存在しなかった初回」に限る。テーブルが空か
     # どうかで判定すると、意図的に全削除した後の起動でサンプルが復活してしまう。
-    first_run = not DB_PATH.exists()
-    conn = get_db()
+    first_run = not (path or DB_PATH).exists()
+    conn = get_db(path)
     # WAL にすると読み込み（管理画面のポーリング）と書き込み（MQTTの死活・タッチ）が
     # 互いを待たなくなる。設定はDBファイルに残るので、一度当てれば以後ずっと有効
     conn.execute("PRAGMA journal_mode = WAL")
