@@ -120,6 +120,20 @@ class RC522:
         self._write(_ModeReg, 0x3D)      # CRCプリセット 0x6363
         self.antenna_on()
 
+    def healthy(self):
+        """
+        チップが設定どおりの状態を保っているか。電源のゆらぎやノイズで RC522 が
+        自分でリセットすると、レジスタが既定値に戻ってアンテナも切れる。そうなると
+        例外は出ないまま read_uid() が None を返し続け、**タッチしても無反応**になる。
+        """
+        return (self._read(_VersionReg) not in (0x00, 0xFF)
+                and self._read(_TModeReg) == 0x8D
+                and (self._read(_TxControlReg) & 0x03) == 0x03)
+
+    def reinit(self):
+        """設定を入れ直す（ソフトリセット → 初期化）。開き直しより軽い"""
+        self._init_chip()
+
     def antenna_on(self):
         if not (self._read(_TxControlReg) & 0x03):
             self._set_bits(_TxControlReg, 0x03)

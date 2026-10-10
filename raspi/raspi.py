@@ -6,6 +6,7 @@ import queue
 import signal
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -47,6 +48,8 @@ LOG_REPEAT_EVERY = 60
 # 一時的に読めないことがあるので、途切れてすぐ離脱と判断しない
 TOUCH_RELEASE_SEC = float(os.environ.get("GEMMBA_TOUCH_RELEASE", "1.0"))
 TOUCH_POLL_SEC = float(os.environ.get("GEMMBA_TOUCH_POLL", "0.1"))
+# カードリーダー(RC522)の状態を確かめる間隔。レジスタを3つ読むだけなので軽い
+NFC_HEALTH_SEC = 2.0
 
 # 選択の入力元。既定はキーボードで、物理ボタン(B-2)が付いたら buttons にする。
 #   buttons … 左/右/決定 の3ボタン。開けなければ console に落ちる
@@ -164,6 +167,8 @@ client.will_set(
 )
 
 _broker = {"host": None, "port": None}
+# 管理画面からの再起動中。自分で切った切断を「再接続しています」と表示しない
+_restarting = threading.Event()
 
 
 def publish_online():
@@ -197,17 +202,37 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
     log(f"[MQTT] disconnected (reason={reason_code})", key=f"disc:{reason_code}")
+    if _restarting.is_set():   # 再起動の表示を上書きしない
+        return
+    # 繋がっていない間は何を押しても・タッチしても届かない。待機画面のままにすると
+    # 使えるように見えるので、繋ぎ直していることを出す（ESP32 と同じ表示）。
+    # 出していた問い合わせも、答えの行き場が無いのでここで畳まれる
+    set_led("offline")
+    render_display([f"Gemmba {DEVICE_ID}", "サーバーに再接続しています…"])
 
 
 def on_message(client, userdata, msg):
     """
     サーバーからの指示。NFC待ちは main スレッドでブロックしているので、
     下りの処理はこのコールバック（paho のネットワークスレッド）側で完結させる。
+
+    **ここから例外を漏らさないこと。** paho のネットワークスレッドごと止まり、
+    以後の指示もハートビートも届かなくなる（再接続されるまで機材が死んだように見える）。
     """
+    try:
+        _dispatch_cmd(msg)
+    except Exception as e:
+        print(f"[cmd] 指示の処理に失敗: {type(e).__name__}: {e}  payload={msg.payload[:200]!r}")
+
+
+def _dispatch_cmd(msg):
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except ValueError:
         print(f"[cmd] 壊れたペイロード: {msg.payload!r}")
+        return
+    if not isinstance(payload, dict):
+        print(f"[cmd] 形式の違うペイロード: {msg.payload!r}")
         return
 
     cmd = payload.get("cmd")
@@ -575,16 +600,18 @@ def _push():
     global _last_pushed
     if _lcd is None:
         return
-    key = repr(_screen)
-    if key == _last_pushed:
-        return
-    try:
-        with _display_lock:
+    # 比べる内容と描く内容は同じ瞬間の _screen から取る。ロックの外で比べると、
+    # 先に比べたスレッドが後から描いたとき、古い内容を「描いた」と記録してしまう
+    with _display_lock:
+        key = repr(_screen)
+        if key == _last_pushed:
+            return
+        try:
             _lcd.display(_compose(_screen["lines"], _screen["state"],
                                   choice=_screen["choice"], badge=_screen["badge"]))
-        _last_pushed = key
-    except Exception as e:
-        print(f"[LCD] 描画に失敗: {e}")
+            _last_pushed = key
+        except Exception as e:
+            print(f"[LCD] 描画に失敗: {e}")
 
 
 def _print_screen():
@@ -604,15 +631,19 @@ def _print_screen():
 
 
 def render_display(lines, badge=None):
-    _screen["lines"] = [str(x) for x in lines]
-    _screen["choice"] = None      # 新しい表示が来たら選択画面は畳む
-    _screen["badge"] = badge
+    with _display_lock:
+        _screen["lines"] = [str(x) for x in lines]
+        # 新しい表示が来たら選択画面は畳む。待っている問い合わせは、自分の選択肢が
+        # 画面から消えたのを見て時間切れ（None）で閉じる（ask_choice）
+        _screen["choice"] = None
+        _screen["badge"] = badge
     _print_screen()
     _push()
 
 
 def set_led(state):
-    _screen["state"] = state
+    with _display_lock:
+        _screen["state"] = state
     print(f"[LED] {LED_LABELS.get(state, state)}")
     _apply_leds(state)     # 実物のLED（B-3）。無ければ何もしない
     _push()
@@ -1107,6 +1138,10 @@ def _on_ok_held():
         return
     _long_press["armed"] = False   # 1回の押下で1回だけ送る
     print("[BTN] 決定の長押し")
+    if not client.is_connected():
+        # 溜めておくと、繋がり直した時点で関係の無い集合待ちを取り消してしまう
+        print("[BTN] サーバーに繋がっていないため送りません")
+        return
     client.publish(DATA_TOPIC, json.dumps({
         "device_id": DEVICE_ID, "event": "long_press", "button": "ok",
     }), qos=1)
@@ -1218,6 +1253,7 @@ MIC_DEVICE = os.environ.get("GEMMBA_MIC", "plughw:CARD=sndrpigooglevoi,DEV=0")
 REC_MAX_SEC = float(os.environ.get("GEMMBA_REC_MAX", "30"))
 REC_MIN_SEC = 0.6     # これより短い押下は押し間違いとみなして捨てる
 REC_PATH = "/tmp/gemmba_rec.wav"
+_record_lock = threading.Lock()   # 録音は1つずつ（マイクも REC_PATH も1つ）
 
 
 def record_while_held(max_sec=REC_MAX_SEC, wait_sec=30):
@@ -1247,11 +1283,23 @@ def record_while_held(max_sec=REC_MAX_SEC, wait_sec=30):
         print("[REC] 決定ボタンが押されませんでした")
         return None
 
+    # 前回の録音を消してから録る。arecord がすぐ落ちた（マイクが他で使用中など）とき、
+    # 残っていた前回のファイルを今回の録音として送ってしまうため
+    try:
+        os.remove(REC_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[REC] 前回の録音を消せません: {e}")
+        return None
+
     cmd = ["arecord", "-D", MIC_DEVICE, "-c", "2", "-r", "16000",
            "-f", "S32_LE", "-d", str(int(max_sec)), "-q", REC_PATH]
     started = time.time()
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # stderr は一時ファイルへ。PIPE のまま読まずにいると、溢れたところで arecord が止まる
+        err = tempfile.TemporaryFile()
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err)
     except OSError as e:
         print(f"[REC] arecord を起動できません: {e}")
         return None
@@ -1260,13 +1308,23 @@ def record_while_held(max_sec=REC_MAX_SEC, wait_sec=30):
     # 離すまで待つ。押しっぱなしでも max_sec で arecord 自身が止まる
     ok.wait_for_release(timeout=max_sec)
     held = time.time() - started
+    # ここで終わっていて終了コードが0でなければ、arecord は自分で落ちている（録れていない）
+    failed = proc.poll() not in (None, 0)
     if proc.poll() is None:
         proc.terminate()
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
     print(f"[REC] 録音終了 {held:.1f}秒")
+    if failed:
+        err.seek(0)
+        print(f"[REC] arecord が異常終了しました (code={proc.returncode}): "
+              f"{err.read().decode('utf-8', 'replace').strip()[:300]}")
+        err.close()
+        return None
+    err.close()
 
     if held < REC_MIN_SEC:
         print("[REC] 短すぎるので捨てます")
@@ -1308,24 +1366,32 @@ def _handle_record(payload):
     if not url:
         publish_reply({"request_id": request_id, "answer": False, "error": "no url"})
         return
-    # 録音のための押下を長押し（集合待ちの取り消し）と取り違えない
-    _long_press["recording"] = True
+    if not _record_lock.acquire(blocking=False):
+        # 録音中に次の指示が来た。マイクは1つなので重ねない（ESP32 と同じ "busy"）
+        publish_reply({"request_id": request_id, "answer": False, "error": "busy"})
+        return
+    # 送り終わるまで REC_PATH を使うので、ロックは最後まで持つ
     try:
-        path = record_while_held(float(payload.get("max_sec", REC_MAX_SEC)),
-                                 float(payload.get("wait_sec", 30)))
+        # 録音のための押下を長押し（集合待ちの取り消し）と取り違えない
+        _long_press["recording"] = True
+        try:
+            path = record_while_held(_num(payload.get("max_sec", REC_MAX_SEC), REC_MAX_SEC),
+                                     _num(payload.get("wait_sec", 30), 30.0))
+        finally:
+            _long_press["recording"] = False
+            _long_press["armed"] = False
+        if path is None:
+            publish_reply({"request_id": request_id, "answer": False, "error": "no audio"})
+            return
+        body = upload_recording(path, url, timeout=_num(payload.get("upload_timeout", 90), 90.0))
+        if body is None:
+            publish_reply({"request_id": request_id, "answer": False, "error": "upload failed"})
+            return
+        publish_reply({"request_id": request_id, "answer": bool(body.get("ok")),
+                       "text": body.get("text"), "task_id": body.get("task_id"),
+                       "error": body.get("error")})
     finally:
-        _long_press["recording"] = False
-        _long_press["armed"] = False
-    if path is None:
-        publish_reply({"request_id": request_id, "answer": False, "error": "no audio"})
-        return
-    body = upload_recording(path, url, timeout=float(payload.get("upload_timeout", 90)))
-    if body is None:
-        publish_reply({"request_id": request_id, "answer": False, "error": "upload failed"})
-        return
-    publish_reply({"request_id": request_id, "answer": bool(body.get("ok")),
-                   "text": body.get("text"), "task_id": body.get("task_id"),
-                   "error": body.get("error")})
+        _record_lock.release()
 
 
 # console モードの入力。行を1本のスレッドで読んでキューに積む。都度 input() する
@@ -1338,8 +1404,14 @@ def _stdin_reader():
         _stdin_lines.put(line.strip())
 
 
-def _console_choice(options, timeout):
+# 問い合わせの待ちを区切る間隔。この間隔で「まだ自分の問い合わせが画面に出ているか」を
+# 見直し、別の表示や次の問い合わせに置き換えられていたら打ち切る
+ASK_POLL_SEC = 0.2
+
+
+def _console_choice(choice, timeout):
     """キーボードで選ぶ。番号のほか、2択のときは y / n も受ける（従来の操作のまま）"""
+    options = choice["options"]
     while not _stdin_lines.empty():  # 問い合わせ前に打たれた行は捨てる
         _stdin_lines.get_nowait()
     hint = " / ".join(f"{i + 1}={o}" for i, o in enumerate(options))
@@ -1347,11 +1419,14 @@ def _console_choice(options, timeout):
     deadline = time.time() + timeout
     while True:
         remaining = deadline - time.time()
-        if remaining <= 0:
+        if remaining <= 0 or _screen["choice"] is not choice:
             return None
         try:
-            line = _stdin_lines.get(timeout=remaining).strip().lower()
+            line = _stdin_lines.get(timeout=min(remaining, ASK_POLL_SEC)).strip().lower()
         except queue.Empty:
+            continue
+        if _screen["choice"] is not choice:   # 置き換えられた後の入力は次の問い合わせのもの
+            _stdin_lines.put(line)
             return None
         if len(options) == 2 and line in ("y", "yes"):
             return 0
@@ -1362,33 +1437,42 @@ def _console_choice(options, timeout):
         print(f"[入力] {hint}")
 
 
-def _move_selection(step):
+def _move_selection(choice, step):
     """選択を動かして描き直す。端では止める（押し続けて一周すると現場で迷う）"""
-    choice = _screen["choice"]
-    if not choice:
-        return
-    n = len(choice["options"])
-    choice["selected"] = min(max(choice["selected"] + step, 0), n - 1)
+    with _display_lock:
+        if _screen["choice"] is not choice:
+            return
+        n = len(choice["options"])
+        choice["selected"] = min(max(choice["selected"] + step, 0), n - 1)
     _print_screen()
     _push()
 
 
-def _buttons_choice(options, timeout):
-    """物理ボタンで選ぶ。左右でカーソルを動かし、決定で確定する"""
+def _buttons_choice(choice, timeout):
+    """
+    物理ボタンで選ぶ。左右でカーソルを動かし、決定で確定する。
+
+    **選択の状態は引数の choice（この問い合わせのもの）だけを見る。** _screen["choice"] を
+    読むと、待っている間に display が来て画面が畳まれたとき None を引いて落ちる
+    （TypeError でスレッドが死に、サーバーは応答なしで25秒待たされていた）。
+    """
     while not _button_events.empty():   # 問い合わせ前の押下は捨てる
         _button_events.get_nowait()
     deadline = time.time() + timeout
     while True:
         remaining = deadline - time.time()
-        if remaining <= 0:
+        if remaining <= 0 or _screen["choice"] is not choice:
             return None
         try:
-            name = _button_events.get(timeout=remaining)
+            name = _button_events.get(timeout=min(remaining, ASK_POLL_SEC))
         except queue.Empty:
+            continue
+        if _screen["choice"] is not choice:   # 置き換えられた後の押下は次の問い合わせのもの
+            _button_events.put(name)
             return None
         if name == "ok":
-            return _screen["choice"]["selected"]
-        _move_selection(-1 if name == "left" else 1)
+            return choice["selected"]
+        _move_selection(choice, -1 if name == "left" else 1)
 
 
 def ask_choice(text, lines, options, timeout, default=0, badge=None):
@@ -1398,17 +1482,24 @@ def ask_choice(text, lines, options, timeout, default=0, badge=None):
 
     Yes/No も難易度フィードバックもこれ1つで賄う。入力元を差し替えるときは
     ここだけを見ればよく、on_message も app.py も変更は要らない。
+
+    **同時に出せる問い合わせは1つだけ。** 待っている間に次の問い合わせや display が
+    来たら、画面はそちらに置き換わり、この問い合わせは時間切れ（None）で閉じる
+    （ESP32 の gemmba.cpp の start_ask と同じ）。以前は古い方のスレッドが待ち続けて
+    ボタンの押下を横取りし、終わるときに新しい方の選択肢まで画面から消していた。
     """
     options = [str(o) for o in options]
     if not options:
         return None
-    _screen["lines"] = [str(x) for x in lines]
-    _screen["badge"] = badge
-    _screen["choice"] = {
+    choice = {
         "text": text,
         "options": options,
         "selected": min(max(default, 0), len(options) - 1),
     }
+    with _display_lock:
+        _screen["lines"] = [str(x) for x in lines]
+        _screen["badge"] = badge
+        _screen["choice"] = choice
     _print_screen()
     _push()
     try:
@@ -1420,13 +1511,18 @@ def ask_choice(text, lines, options, timeout, default=0, badge=None):
             time.sleep(timeout)
             return None
         if INPUT_MODE == "buttons" and init_buttons():
-            return _buttons_choice(options, timeout)
-        return _console_choice(options, timeout)
+            return _buttons_choice(choice, timeout)
+        return _console_choice(choice, timeout)
     finally:
         # 答えた後・時間切れの後にチップを残さない。次の display が来るまでの間、
-        # 押せないものが押せるように見えてしまう。
-        _screen["choice"] = None
-        _push()
+        # 押せないものが押せるように見えてしまう。**自分の選択肢のときだけ畳む。**
+        # 置き換えられていたら、画面に出ているのは次の問い合わせなので触らない
+        with _display_lock:
+            mine = _screen["choice"] is choice
+            if mine:
+                _screen["choice"] = None
+        if mine:
+            _push()
 
 
 def ask_yes_no(text, lines, timeout, badge=None):
@@ -1438,11 +1534,19 @@ def ask_yes_no(text, lines, timeout, badge=None):
     return None if index is None else index == 0
 
 
+def _num(value, default, kind=float):
+    """指示の数値。壊れていたら既定値（ここで例外にすると返事を返せずに終わる）"""
+    try:
+        return kind(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _handle_confirm(payload):
     answer = ask_yes_no(
         payload.get("text", ""),
         payload.get("lines") or [],
-        float(payload.get("timeout", 30)),
+        _num(payload.get("timeout", 30), 30.0),
         badge=payload.get("badge"),
     )
     if answer is None:
@@ -1461,8 +1565,8 @@ def _handle_choice(payload):
         payload.get("text", ""),
         payload.get("lines") or [],
         options,
-        float(payload.get("timeout", 30)),
-        default=int(payload.get("default", 0)),
+        _num(payload.get("timeout", 30), 30.0),
+        default=_num(payload.get("default", 0), 0, int),
         badge=payload.get("badge"),
     )
     if index is None:
@@ -1505,6 +1609,7 @@ def _handle_restart(payload):
     """
     publish_reply({"request_id": payload.get("request_id"), "answer": True})
     print("[restart] 管理画面から再起動を指示されました")
+    _restarting.set()
     render_display(["再起動しています", "しばらくお待ちください"])
     set_led("offline")
     time.sleep(1.0)   # 応答と画面を送り切ってから切る
@@ -1590,7 +1695,19 @@ def touch_loop(on_tag):
             reader = rc522.open_reader()
             print(f"[NFC] RC522 を初期化しました (VersionReg=0x{reader.version:02X})。"
                   "カードを待っています。")
+            checked_at = time.monotonic()
             while True:
+                now = time.monotonic()
+                # RC522 が自分でリセットしていないか定期的に見る。リセットすると例外の
+                # 無いまま読めなくなるので、ここで見ないと再起動するまで無反応が続く。
+                # カードを読んでいる最中は設定を入れ直さない（読み取りが途切れる）
+                if not holding and now - checked_at >= NFC_HEALTH_SEC:
+                    checked_at = now
+                    if not reader.healthy():
+                        log("[NFC] RC522 の設定が初期値に戻っていました。入れ直します")
+                        reader.reinit()
+                        if not reader.healthy():
+                            raise RuntimeError("入れ直しても RC522 が応答しません")
                 uid = reader.read_uid()
                 now = time.monotonic()
                 if uid:
@@ -1615,6 +1732,13 @@ def touch_loop(on_tag):
 
 
 def send_to_host_tag_id(tag_id):
+    # 切断中のタッチは送らない。paho は送れなかった qos=1 を溜めておき、繋がり直した
+    # 時点でまとめて送るので、何分も前のタッチで突然メニューが出ることになる
+    if not client.is_connected():
+        print(f"[NFC] サーバーに繋がっていないためタッチを送りません (tag={tag_id})")
+        render_display([f"Gemmba {DEVICE_ID}", "サーバーに再接続しています…",
+                        "繋がってからタッチしてください"])
+        return
     payload = json.dumps({
         "device_id": DEVICE_ID,
         "tag_id": tag_id,
@@ -1628,7 +1752,44 @@ def send_to_host_tag_id(tag_id):
         print(f"[MQTT] タッチの送信を確認できませんでした: {e}")
 
 
+_instance_lock = None   # 握っている間だけ有効。捨てるとロックが外れる
+
+
+def acquire_single_instance():
+    """
+    同じ DEVICE_ID の raspi.py が既に動いていれば False。
+
+    2つ動くと同じ client_id でブローカーに繋ぎ、互いを蹴り出し合ってオンライン/
+    オフラインを延々と繰り返す（nohup で二重に起動したときに起きる）。さらに2つとも
+    同じボタン・SPI を掴みに行く。ロックはプロセスが終われば OS が外すので、
+    落ちた後に残って起動を妨げることはない。os.execv での作り直しでもファイルは
+    閉じられる（Python は既定で close-on-exec）ので、新しい方が取り直せる。
+    """
+    global _instance_lock
+    try:
+        import fcntl
+    except ImportError:     # Windows（sim.py の試験など）では見ない
+        return True
+    path = f"/tmp/gemmba-raspi-{DEVICE_ID}.lock"
+    # "w" で開くと、取れなかった側が動いている方の PID を消してしまう。取れてから空にする
+    fp = open(path, "a")
+    try:
+        fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fp.close()
+        return False
+    fp.truncate(0)
+    fp.write(str(os.getpid()))
+    fp.flush()
+    _instance_lock = fp
+    return True
+
+
 def main():
+    if not acquire_single_instance():
+        print(f"[main] {DEVICE_ID} の raspi.py は既に動いています。二重に起動しないでください"
+              f"（止めるなら: pkill -f raspi.py）")
+        sys.exit(1)
     # 固まったときの調査用。`kill -USR1 <PID>` で全スレッドの現在位置をログ（journal）に出す
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     init_display()
