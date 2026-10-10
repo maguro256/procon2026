@@ -2126,6 +2126,17 @@ VOICE_TIMEOUT = 90
 WARMUP_TIMEOUT = 1800
 # タスク名の長さは voice/intent.py が持っている（文字起こしの整形もあちらの仕事）
 
+# 文字起こしを別のPC（GPU付き）に任せるときの宛先。例: http://100.64.1.2:8765
+# 向こうでは `voice/stt.py --http 8765` を常駐させておく。Tailscale で繋いだ家の
+# デスクトップ（RTX 3070 Ti）を想定。このPCのCPUだと large-v3 は0.7倍速しか出ない。
+# 繋がらない・時間内に返らないときは、このPCの常駐で文字起こしし直す。
+STT_URL = os.environ.get("GEMMBA_STT_URL", "").rstrip("/")
+# 別のPCへの接続を待つ上限（秒）。繋がらないときに早く手元へ切り替えるため短くする
+STT_CONNECT_TIMEOUT = 3
+# 別のPCに文字起こしを任せる上限（秒）。GPUなら数秒で返る。超えたら手元でやり直すので、
+# 手元のCPUで間に合う分（VOICE_TIMEOUT の残り）を残しておく
+STT_REMOTE_TIMEOUT = 20
+
 
 # 文字起こしは **常駐プロセス** に任せる（E-2）。
 #
@@ -2227,9 +2238,30 @@ def _stt_ensure():
     return proc
 
 
+def _transcribe_remote(path):
+    """
+    別のPC（STT_URL）で文字起こしする。戻り値: テキスト / None（繋がらない・失敗。
+    呼び出し側はこのPCでやり直す）
+    """
+    try:
+        with open(path, "rb") as fp:
+            res = requests.post(f"{STT_URL}/transcribe", data=fp.read(),
+                                timeout=(STT_CONNECT_TIMEOUT, STT_REMOTE_TIMEOUT))
+        body = res.json()
+    except (requests.RequestException, ValueError) as e:
+        print(f"[voice] {STT_URL} で文字起こしできませんでした。このPCで行います: {e}")
+        return None
+    if res.status_code != 200 or body.get("error"):
+        print(f"[voice] {STT_URL} で文字起こしに失敗しました。このPCで行います: {body.get('error')}")
+        return None
+    print(f"[voice] {STT_URL} で文字起こし: {body.get('audio_sec')}秒の音声を {body.get('elapsed_sec')}秒")
+    return (body.get("text") or "").strip()
+
+
 def _transcribe(path):
     """
     録音を文字にする。戻り値: テキスト / None（失敗）
+    STT_URL があればまずそちらに任せ、だめならこのPCの常駐で行う。
 
     **ロック待ちも含めて VOICE_TIMEOUT 以内に必ず返す。** 起動時の準備
     （start_stt_warmup）はモデルのダウンロード中ずっとロックを握るので、
@@ -2237,7 +2269,11 @@ def _transcribe(path):
     タスクが立つ（＝録り直しで同じタスクが2件）。
     """
     deadline = time.monotonic() + VOICE_TIMEOUT
-    if not _stt_lock.acquire(timeout=VOICE_TIMEOUT):
+    if STT_URL:
+        text = _transcribe_remote(path)
+        if text is not None:
+            return text
+    if not _stt_lock.acquire(timeout=max(1.0, deadline - time.monotonic())):
         print("[voice] 文字起こしの準備中・処理中のため時間内に受け付けられませんでした")
         return None
     try:
@@ -2281,6 +2317,15 @@ def start_stt_warmup():
     ので、ここでは警告を出すだけにする。
     """
     def run():
+        if STT_URL:
+            # 確認だけ。繋がらなくても止めない（録音のたびに試し、だめなら手元で行う）
+            try:
+                info = requests.get(f"{STT_URL}/health", timeout=STT_CONNECT_TIMEOUT).json()
+                print(f"[voice] 文字起こしは {STT_URL} に任せます "
+                      f"{info.get('model')} / {info.get('device')} {info.get('compute_type')}")
+            except (requests.RequestException, ValueError) as e:
+                print(f"[voice] {STT_URL} に繋がりません。繋がるまではこのPCで文字起こしします: {e}")
+        # 別のPCに繋がらなくなったときの控え。このPCでも準備しておく
         started = time.time()
         model = os.environ.get("GEMMBA_STT_MODEL", "既定")
         print(f"[voice] 文字起こし({model})を準備しています…")

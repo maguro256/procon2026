@@ -12,6 +12,7 @@ faster-whisper は 3.9 以降しか入らないため、`.venv-voice`（Python 3
 
     .venv-voice/Scripts/python voice/stt.py rec.wav
     .venv-voice/Scripts/python voice/stt.py rec.wav --json --model medium
+    .venv-voice/Scripts/python voice/stt.py --http 8765     # 別のPC（GPU付き）で常駐させる
 
 openai-whisper ではなく faster-whisper を使う。速度が約4倍でVRAMも半分、そして
 **ffmpeg の外部インストールが要らない**（同梱の PyAV が読む）。16kHz の WAV なら
@@ -345,6 +346,77 @@ def _serve(args) -> int:
     return 0
 
 
+def _serve_http(args) -> int:
+    """
+    HTTPで常駐する。GPUの無いPCで app.py を動かすとき、GPU付きの別のPC
+    （Tailscale で繋いだ家のデスクトップなど）で文字起こしだけを引き受ける。
+
+        POST /transcribe   body は録音そのもの（WAV）。結果は transcribe() と同じJSON
+        GET  /health       モデル名・デバイス。app.py の起動時の確認用
+
+    認証は無い。**Tailscale などの閉じた網の内側にだけ公開すること**（--http に
+    Tailscale のIPを付けると、そのアドレスでだけ待ち受ける）。
+    1件ずつ順に処理する（GPUで並行させても速くならない）。
+    """
+    import tempfile
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from uuid import uuid4
+
+    host, _, port = args.http.rpartition(":")
+    load_model(args.model, args.device, args.compute)
+    info = model_info()
+
+    class Handler(BaseHTTPRequestHandler):
+        def _reply(self, code, obj):
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/health":
+                self._reply(200, dict(info, ready=True))
+            else:
+                self._reply(404, {"error": "not found"})
+
+        def do_POST(self):
+            if self.path != "/transcribe":
+                self._reply(404, {"error": "not found"})
+                return
+            audio = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            tmp = Path(tempfile.gettempdir()) / f"gemmba_stt_{uuid4().hex[:8]}.wav"
+            try:
+                tmp.write_bytes(audio)
+                r = transcribe(tmp, model=args.model, device=args.device,
+                               compute_type=args.compute, language=args.language,
+                               prompt=args.prompt, vad=not args.no_vad,
+                               beam_size=args.beam_size, raw=args.raw)
+                print(f"[stt] {r['audio_sec']}秒 → {r['elapsed_sec']}秒: {r['text']}", file=sys.stderr)
+                self._reply(200, r)
+            except Exception as e:   # 1件の失敗で常駐を落とさない
+                self._reply(500, {"error": f"{type(e).__name__}: {e}"})
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+        def log_message(self, fmt, *a):   # 1依頼ごとのアクセスログは上の1行で足りる
+            pass
+
+    server = HTTPServer((host or "0.0.0.0", int(port)), Handler)
+    print(f"[stt] HTTPで常駐を開始しました {info['model']} / {info['device']} "
+          f"{info['compute_type']} → http://{host or '0.0.0.0'}:{port}/transcribe", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    print("[stt] 常駐を終了します", file=sys.stderr)
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Whisper で音声を文字起こしする")
     p.add_argument("files", nargs="*", help="WAV等の音声ファイル")
@@ -362,6 +434,9 @@ def main(argv=None) -> int:
     p.add_argument("--serve", action="store_true",
                    help="常駐する。標準入力にパスを1行、結果のJSONが1行返る。"
                         "モデルを読み直さないので app.py はこちらを使う")
+    p.add_argument("--http", metavar="[HOST:]PORT",
+                   help="HTTPで常駐する（別のPCで文字起こしを引き受ける）。"
+                        "app.py 側は GEMMBA_STT_URL=http://<このPC>:<PORT> で使う")
     args = p.parse_args(argv)
 
     # リダイレクト先では UTF-8 で出す。Windows の Python は既定で cp932 になるので、
@@ -375,6 +450,9 @@ def main(argv=None) -> int:
         # 来ても壊れないよう、こちらも合わせる
         sys.stdin.reconfigure(encoding="utf-8")
         return _serve(args)
+
+    if args.http:
+        return _serve_http(args)
 
     if args.warmup:
         # 読み込むだけ。モデルが手元に無ければ faster-whisper がここで落としてくる

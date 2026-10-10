@@ -835,6 +835,33 @@ pi01 の I2S マイクで台本3文を読み上げて通した。**録音した�
 - リダイレクト時の標準出力は cp932 になるので、`--json > out.json` が後段で読めなくなる。
   `sys.stdout.isatty()` が False のときだけ UTF-8 に切り替えている
 
+#### 文字起こし・意図分析を家のデスクトップに任せる（2026-10-10）
+
+発表で使うノートPCにはGPUが無く、large-v3 がCPU（0.7倍速）で動いて遅い。
+Tailscale で家のデスクトップ（RTX 3070 Ti）に繋いで、重い処理だけそちらに任せる。
+
+**デスクトップ側**（リポジトリと `.venv-voice` を用意しておく。スリープさせないこと）
+
+```
+.venv-voice/Scripts/python voice/stt.py --http <デスクトップのTailscale IP>:8765
+set OLLAMA_HOST=0.0.0.0& ollama serve
+```
+
+**ノートPC側**（app.py を起動する前に）
+
+```
+set GEMMBA_STT_URL=http://<デスクトップのTailscale IP>:8765
+set GEMMBA_INTENT_HOST=http://<デスクトップのTailscale IP>:11434
+```
+
+- 起動時に `[voice] 文字起こしは http://… に任せます` と出れば繋がっている
+- デスクトップに繋がらない・20秒で返らないときは、ノートPCの常駐でやり直す
+  （そのためノートPCでも従来どおりモデルを読み込んでおく）
+- `stt.py --http` には認証が無い。Tailscale のIPを付けて、その網の内側でだけ待ち受けること
+- VRAM 8GB に large-v3(float16, 約5GB) と gemma3:4b(約3.5GB) が同居すると溢れて
+  Ollama の一部がCPUに落ちる。遅ければ `set GEMMBA_STT_COMPUTE=int8_float16` で
+  Whisper 側を約3GBに減らす
+
 #### 意図分析 `voice/intent.py`（2026-09-16 完了）
 
 **Ollama + gemma3:4b。** 文字起こしのテキストを `tasks` の各列の形にする。
